@@ -62,6 +62,7 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
             PreemptModel::Unknown | PreemptModel::NotApplicable => Duration::from_micros(100),
         },
         preempt,
+        deepest_idle_state: deepest_idle_exit_latency_at(std::path::Path::new(CPU_SYSFS_ROOT), 0),
         clocksource,
     }
 }
@@ -701,6 +702,191 @@ pub(super) fn set_affinity(cpus: &[usize]) -> anyhow::Result<Vec<usize>> {
     current_affinity()
 }
 
+// ── CPU idle-state exit latency ─────────────────────────────────────────
+//
+// The absolute-sleep tick loop deliberately gives the core back for most of
+// every period — which is exactly the condition under which the cpuidle
+// governor promotes it into a deep C-state. The `menu` governor admits a state
+// when predicted idle time exceeds that state's target residency, so the SLOWER
+// the loop the DEEPER the state it licenses, and a 100 Hz mobile base is worse
+// off than a 4 kHz drone.
+//
+// On the reference box (`intel_idle`, `menu`): C1 exit 1 us, C2 exit 151 us
+// with a 453 us residency target, C3 exit 1034 us with 3102 us. Against a guard
+// spin of 20 us, that is 7.5x at 1 kHz and 51x at 100 Hz — and the guard cannot
+// prevent it, because the guard runs AFTER the wake the exit has already
+// delayed.
+//
+// Setting the cpufreq governor to `performance`, which this crate does do, is a
+// DIFFERENT SUBSYSTEM. It addresses frequency scaling and has no effect
+// whatsoever on idle states. The two are routinely conflated, including in this
+// project's own setup script until now.
+
+pub(super) const CPU_DMA_LATENCY_DEV: &str = "/dev/cpu_dma_latency";
+pub(super) const CPU_SYSFS_ROOT: &str = "/sys/devices/system/cpu";
+
+/// The four bytes for a `/dev/cpu_dma_latency` write.
+///
+/// NATIVE endian: the kernel does a raw `copy_from_user` of an `s32`, so this
+/// follows the target rather than a wire format. Exactly four bytes — a short
+/// write is a failure, never a partial constraint.
+pub(super) fn cpu_dma_latency_bytes(budget_us: u32) -> [u8; 4] {
+    (budget_us as i32).to_ne_bytes()
+}
+
+/// The string for a per-CPU `pm_qos_resume_latency_us` write.
+///
+/// Refuses 0. The two interfaces disagree about that value: 0 written to
+/// `/dev/cpu_dma_latency` means "tolerate no exit latency at all", pinning
+/// every core in POLL; 0 in `pm_qos_resume_latency_us` means "no constraint" —
+/// the exact opposite. Passing a zero budget to the per-CPU path would silently
+/// REMOVE the bound and report success.
+pub(super) fn resume_latency_value(budget_us: u32) -> anyhow::Result<String> {
+    if budget_us == 0 {
+        anyhow::bail!(
+            "a 0 us budget means `no constraint` to pm_qos_resume_latency_us and \
+             `tolerate nothing` to /dev/cpu_dma_latency; refusing rather than silently \
+             removing the bound"
+        );
+    }
+    Ok(budget_us.to_string())
+}
+
+/// Open `dev_path`, write the budget, and return the STILL-OPEN file.
+///
+/// The constraint lives exactly as long as the returned handle — the kernel
+/// releases it the instant the fd closes, including on SIGKILL. That is why the
+/// handle is returned rather than dropped, and why this needs no cleanup path.
+pub(super) fn bound_idle_latency_global_at(
+    dev_path: &std::path::Path,
+    budget_us: u32,
+) -> std::io::Result<std::fs::File> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).open(dev_path)?;
+    let bytes = cpu_dma_latency_bytes(budget_us);
+    f.write_all(&bytes)?;
+    f.flush()?;
+    Ok(f)
+}
+
+/// A per-CPU `pm_qos_resume_latency_us` hold, with the previous values kept so
+/// `Drop` restores them verbatim.
+///
+/// Unlike the global device, this is sysfs state: it does NOT go away when the
+/// process dies, so a hard kill leaks it. That is the reason `Global` is the
+/// default and this is opt-in.
+#[derive(Debug)]
+pub struct PerCpuIdleHold {
+    cpu_root: std::path::PathBuf,
+    /// `(cpu, previous file contents)`.
+    previous: Vec<(usize, String)>,
+}
+
+fn resume_latency_path(cpu_root: &std::path::Path, cpu: usize) -> std::path::PathBuf {
+    cpu_root
+        .join(format!("cpu{cpu}"))
+        .join("power")
+        .join("pm_qos_resume_latency_us")
+}
+
+/// Write the budget into each CPU's `pm_qos_resume_latency_us`, reading back to
+/// confirm sysfs took the value.
+pub(super) fn bound_idle_latency_per_cpu_at(
+    cpu_root: &std::path::Path,
+    cpus: &[usize],
+    budget_us: u32,
+) -> std::io::Result<PerCpuIdleHold> {
+    let value = resume_latency_value(budget_us)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut hold = PerCpuIdleHold {
+        cpu_root: cpu_root.to_path_buf(),
+        previous: Vec::with_capacity(cpus.len()),
+    };
+    for &cpu in cpus {
+        let path = resume_latency_path(cpu_root, cpu);
+        let prev = std::fs::read_to_string(&path)?;
+        std::fs::write(&path, &value)?;
+        // Read back: sysfs can accept a write and clamp it, and a constraint
+        // that was silently clamped is a constraint the operator does not have.
+        let now = std::fs::read_to_string(&path)?;
+        if now.trim() != value {
+            // Undo what we did before reporting, so a partial application does
+            // not outlive the failure.
+            let _ = std::fs::write(&path, &prev);
+            for (c, p) in hold.previous.drain(..) {
+                let _ = std::fs::write(resume_latency_path(cpu_root, c), p);
+            }
+            return Err(std::io::Error::other(format!(
+                "wrote {value} to {} but it reads back {}",
+                path.display(),
+                now.trim()
+            )));
+        }
+        hold.previous.push((cpu, prev));
+    }
+    Ok(hold)
+}
+
+impl Drop for PerCpuIdleHold {
+    fn drop(&mut self) {
+        for (cpu, prev) in self.previous.drain(..) {
+            let _ = std::fs::write(resume_latency_path(&self.cpu_root, cpu), prev);
+        }
+    }
+}
+
+/// The deepest ENABLED idle state under `cpu_root/cpu{n}/cpuidle`, as
+/// `(name, exit latency in microseconds)`.
+///
+/// "Deepest" is the largest exit latency, which is also the worst case a wake
+/// can pay. States whose `disable` file reads non-zero are skipped: the
+/// governor cannot enter them, so counting them would overstate the exposure.
+pub(super) fn deepest_idle_exit_latency_at(
+    cpu_root: &std::path::Path,
+    cpu: usize,
+) -> Option<(String, u32)> {
+    let dir = cpu_root.join(format!("cpu{cpu}")).join("cpuidle");
+    let mut best: Option<(String, u32)> = None;
+    for entry in std::fs::read_dir(dir).ok()? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if std::fs::read_to_string(path.join("disable"))
+            .map(|s| s.trim() != "0")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(latency) = std::fs::read_to_string(path.join("latency"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let name = std::fs::read_to_string(path.join("name"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        if best.as_ref().is_none_or(|(_, l)| latency > *l) {
+            best = Some((name, latency));
+        }
+    }
+    best
+}
+
+/// What is holding an idle-latency bound open.
+///
+/// Neither payload is ever read, and that is the point: the VALUE is the
+/// mechanism. An open `/dev/cpu_dma_latency` fd holds the constraint for as
+/// long as it is open, and `PerCpuIdleHold` restores the previous sysfs values
+/// in its `Drop`. Dropping this enum is what releases the bound.
+#[derive(Debug)]
+#[allow(dead_code, reason = "held for its lifetime and its Drop, never read")]
+pub(super) enum IdleHold {
+    /// The open `/dev/cpu_dma_latency` fd. Closing it releases the constraint.
+    Global(std::fs::File),
+    /// Per-CPU sysfs writes, restored on drop.
+    PerCpu(PerCpuIdleHold),
+}
+
 // ── RT bandwidth control ────────────────────────────────────────────────
 
 fn read_i64(path: &str) -> Option<i64> {
@@ -1227,6 +1413,143 @@ fn check_mlockall_permitted() -> bool {
 
 #[cfg(test)]
 mod tests {
+    // ── Idle-state exit latency ─────────────────────────────────────────
+
+    /// The two kernel interfaces disagree about what 0 means, and the
+    /// disagreement is a silent-wrong-answer trap.
+    #[test]
+    fn a_zero_budget_is_refused_by_the_per_cpu_path_and_encoded_by_the_global_one() {
+        // /dev/cpu_dma_latency: 0 means "tolerate no exit latency at all".
+        assert_eq!(cpu_dma_latency_bytes(0), 0i32.to_ne_bytes());
+        assert_eq!(cpu_dma_latency_bytes(20), 20i32.to_ne_bytes());
+        assert_eq!(cpu_dma_latency_bytes(1_034), 1_034i32.to_ne_bytes());
+
+        // pm_qos_resume_latency_us: 0 means "no constraint" — the opposite.
+        // Writing it would silently REMOVE the bound and report success.
+        assert_eq!(resume_latency_value(20).unwrap(), "20");
+        let err = resume_latency_value(0).unwrap_err().to_string();
+        assert!(
+            err.contains("no constraint"),
+            "the refusal must say why the two interfaces cannot share a 0: {err}"
+        );
+    }
+
+    /// The per-CPU path is sysfs state: it must restore what it found, and it
+    /// must not leave a partial application behind on failure.
+    #[test]
+    fn the_per_cpu_bound_restores_the_previous_values_on_drop() {
+        let tmp = std::env::temp_dir().join(format!(
+            "horus_idle_test_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let cpus = [2usize, 3];
+        for cpu in cpus {
+            let dir = tmp.join(format!("cpu{cpu}")).join("power");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("pm_qos_resume_latency_us"), "0\n").unwrap();
+        }
+
+        {
+            let _hold = bound_idle_latency_per_cpu_at(&tmp, &cpus, 20).expect("bound");
+            for cpu in cpus {
+                let v = std::fs::read_to_string(
+                    tmp.join(format!("cpu{cpu}"))
+                        .join("power")
+                        .join("pm_qos_resume_latency_us"),
+                )
+                .unwrap();
+                assert_eq!(v.trim(), "20", "cpu{cpu} must carry the bound while held");
+            }
+        }
+
+        for cpu in cpus {
+            let v = std::fs::read_to_string(
+                tmp.join(format!("cpu{cpu}"))
+                    .join("power")
+                    .join("pm_qos_resume_latency_us"),
+            )
+            .unwrap();
+            assert_eq!(
+                v.trim(),
+                "0",
+                "cpu{cpu} must be back to what it was — this is sysfs, so a value left \
+                 behind outlives the process"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// "Deepest" means the largest exit latency, and a state the governor
+    /// cannot enter must not be counted — that would overstate the exposure.
+    #[test]
+    fn the_deepest_idle_state_skips_disabled_states() {
+        let tmp = std::env::temp_dir().join(format!(
+            "horus_cpuidle_test_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        // The reference box's real states.
+        let states = [
+            ("state0", "POLL", "0", "0"),
+            ("state1", "C1_ACPI", "1", "0"),
+            ("state2", "C2_ACPI", "151", "0"),
+            ("state3", "C3_ACPI", "1034", "1"), // disabled
+        ];
+        for (dir, name, latency, disable) in states {
+            let d = tmp.join("cpu0").join("cpuidle").join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("name"), format!("{name}\n")).unwrap();
+            std::fs::write(d.join("latency"), format!("{latency}\n")).unwrap();
+            std::fs::write(d.join("disable"), format!("{disable}\n")).unwrap();
+        }
+
+        assert_eq!(
+            deepest_idle_exit_latency_at(&tmp, 0),
+            Some(("C2_ACPI".to_string(), 151)),
+            "C3 is disabled, so the governor cannot enter it and counting its 1034us \
+             exit would overstate what this machine is exposed to"
+        );
+
+        // Re-enable it and the answer changes.
+        std::fs::write(
+            tmp.join("cpu0")
+                .join("cpuidle")
+                .join("state3")
+                .join("disable"),
+            "0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            deepest_idle_exit_latency_at(&tmp, 0),
+            Some(("C3_ACPI".to_string(), 1034))
+        );
+
+        // A host with no cpuidle sysfs at all — a VM, or `cpuidle.off=1`.
+        assert_eq!(deepest_idle_exit_latency_at(&tmp, 99), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The global path holds the constraint by keeping the fd OPEN. A version
+    /// that wrote and closed would report success and constrain nothing.
+    #[test]
+    fn the_global_bound_writes_four_native_endian_bytes() {
+        let tmp =
+            std::env::temp_dir().join(format!("horus_dma_test_{}_{}", std::process::id(), line!()));
+        std::fs::write(&tmp, b"").unwrap();
+
+        let file = bound_idle_latency_global_at(&tmp, 20).expect("write");
+        drop(file);
+        let written = std::fs::read(&tmp).unwrap();
+        assert_eq!(
+            written,
+            20i32.to_ne_bytes(),
+            "the kernel copy_from_user's an s32, so this follows the target's endianness \
+             rather than a wire format, and it is exactly four bytes"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
     // ── RT bandwidth ────────────────────────────────────────────────────
 
     #[test]

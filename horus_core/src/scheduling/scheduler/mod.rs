@@ -38,6 +38,7 @@ pub fn set_network_auto_wire(f: impl Fn(&mut Scheduler) + Send + Sync + 'static)
     let _ = NETWORK_AUTO_WIRE.set(Box::new(f));
 }
 
+mod dispatch;
 mod recording;
 
 /// Truncate a name to fit in a column width, adding ".." if truncated.
@@ -163,6 +164,12 @@ pub enum RtFeature {
     Watchdog,
     /// Safety monitor
     SafetyMonitor,
+    /// A bound on CPU idle-state exit latency.
+    ///
+    /// Separate from [`RtFeature::CpuAffinity`] because it fails for a
+    /// different reason and has a different remedy: `/dev/cpu_dma_latency` is
+    /// root-only on a stock distribution, and no amount of CAP_SYS_NICE helps.
+    IdleLatency,
 }
 
 impl std::fmt::Display for RtFeature {
@@ -174,6 +181,7 @@ impl std::fmt::Display for RtFeature {
             RtFeature::NumaPinning => write!(f, "NUMA Pinning"),
             RtFeature::Watchdog => write!(f, "Watchdog"),
             RtFeature::SafetyMonitor => write!(f, "Safety Monitor"),
+            RtFeature::IdleLatency => write!(f, "Idle-Exit Latency Bound"),
         }
     }
 }
@@ -473,6 +481,26 @@ pub struct Scheduler {
     ///
     /// `None` until an RT executor is started, and on any run with no RT nodes.
     rt_thread_report: Option<std::sync::Arc<super::rt_status::RtThreadReport>>,
+    /// PM QoS constraint bounding CPU idle-state exit latency, held for as long
+    /// as this scheduler runs.
+    ///
+    /// `None` when there are no RT nodes, on a platform with no such interface,
+    /// or when the kernel refused — which is recorded as an
+    /// [`RtFeature::IdleLatency`] degradation rather than passing silently.
+    /// Dropping it releases the constraint, which is why it is a field and not
+    /// a local.
+    idle_latency: Option<horus_sys::rt::IdleLatencyGuard>,
+    /// Persistent lanes for `execute_ready_dispatch`.
+    ///
+    /// `None` until the run loop creates it: deterministic mode, `tick_once()`
+    /// and single-node graphs never dispatch in parallel and must not pay for
+    /// threads they will not use.
+    dispatch: Option<dispatch::ReadyDispatch>,
+    /// Per-tick scratch for `execute_ready_dispatch`, held across ticks so the
+    /// steady state reallocates nothing. Taken and put back around the dispatch
+    /// because the loop needs `&mut self` while it holds them.
+    dispatch_should_tick: Vec<bool>,
+    dispatch_results: Vec<dispatch::JobResult>,
     /// A duplicate node name seen at registration, reported by `run()`.
     ///
     /// Node names key the watchdog map, the SHM registry slot and the
@@ -645,6 +673,10 @@ impl Scheduler {
             rt_require_failed: false,
             rt_memory_locked: false,
             rt_thread_report: None,
+            idle_latency: None,
+            dispatch: None,
+            dispatch_should_tick: Vec::new(),
+            dispatch_results: Vec::new(),
             duplicate_node_name: None,
         };
 
@@ -2059,6 +2091,122 @@ impl Scheduler {
         Ok(())
     }
 
+    /// Ask the kernel to keep CPU idle-state exit latency inside the guard
+    /// spin, and hold that constraint for the run.
+    ///
+    /// # Why this is not covered by the cpufreq governor
+    ///
+    /// It is a different subsystem. Setting the governor to `performance`,
+    /// which the RT threads already do, addresses FREQUENCY SCALING. Idle
+    /// states are `cpuidle`, and the two are routinely conflated — including in
+    /// this project's own setup script until now.
+    ///
+    /// The absolute-sleep design deliberately gives the core back for most of
+    /// every period, which is exactly the condition under which the `menu`
+    /// governor promotes it into a deep C-state: it admits a state when
+    /// predicted idle exceeds that state's target residency. So the SLOWER the
+    /// loop, the DEEPER the state it licenses. On the reference box, C2 exits in
+    /// 151 us against a 453 us residency target and C3 in 1034 us against
+    /// 3102 us — so a 1 kHz loop licenses a 151 us exit (7.5x its 20 us guard)
+    /// and a 100 Hz loop licenses a 1034 us one (51x). The guard cannot prevent
+    /// it either: the guard runs AFTER the wake the exit has already delayed.
+    fn bound_idle_exit_latency(
+        &mut self,
+        rt_chains: &[Vec<super::types::RegisteredNode>],
+        rt_cpus: &[usize],
+    ) {
+        use horus_sys::rt::{IdleLatencyOutcome, IdleLatencyScope};
+
+        if rt_chains.is_empty() {
+            return;
+        }
+
+        let periods: Vec<Duration> = rt_chains
+            .iter()
+            .map(|chain| super::rt_executor::chain_tick_period(chain, self.tick.period))
+            .collect();
+
+        let budget_us = match std::env::var(super::rt_executor::RT_IDLE_LATENCY_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        {
+            Some(0) => {
+                // Accepted, but never silently: 0 tells the kernel to tolerate
+                // no exit latency at all, which pins every core in POLL.
+                print_line(
+                    "[RT] HORUS_RT_IDLE_LATENCY_US=0 — every CPU will be held in POLL. \
+                     This is the lowest-latency and highest-power setting; on a battery \
+                     robot it is a thermal and runtime cost, not a free win.",
+                );
+                0
+            }
+            Some(us) => us,
+            None => super::rt_executor::idle_latency_budget_us(&periods),
+        };
+
+        // Global by default: the kernel releases `/dev/cpu_dma_latency` the
+        // instant the fd closes, including on SIGKILL, so it cannot leak. The
+        // per-CPU sysfs path lets the perception cores keep their power savings
+        // on a shared box, but it survives the process and must be opted into.
+        let scope = if std::env::var("HORUS_RT_IDLE_LATENCY_SCOPE").as_deref() == Ok("percpu")
+            && !rt_cpus.is_empty()
+        {
+            IdleLatencyScope::PerCpu(rt_cpus.to_vec())
+        } else {
+            IdleLatencyScope::Global
+        };
+
+        match horus_sys::rt::bound_idle_latency(budget_us, scope) {
+            IdleLatencyOutcome::Bounded(guard) => {
+                if self.pending_config.monitoring.verbose {
+                    print_line(&format!(
+                        "[RT] Idle-exit latency bounded: {}",
+                        guard.describe()
+                    ));
+                }
+                self.idle_latency = Some(guard);
+            }
+            IdleLatencyOutcome::Unsupported { platform, note } => {
+                // Not a degradation: nothing was refused, and there is nothing
+                // the operator could do about it.
+                if self.pending_config.monitoring.verbose {
+                    print_line(&format!(
+                        "[RT] Idle-exit latency not bounded on {platform}: {note}"
+                    ));
+                }
+            }
+            IdleLatencyOutcome::Refused { path, error } => {
+                let deepest = horus_sys::rt::deepest_idle_exit_latency_us(
+                    rt_cpus.first().copied().unwrap_or(0),
+                );
+                let exposure = match &deepest {
+                    Some((name, exit_us)) => format!(
+                        "the cpuidle governor may still enter {name} (exit {exit_us}us) on \
+                         the RT cores, against a {budget_us}us guard spin"
+                    ),
+                    None => "the cpuidle states on this host could not be read either".to_string(),
+                };
+                let reason = format!(
+                    "could not bound CPU idle-exit latency via {path} ({error}); {exposure}. \
+                     /dev/cpu_dma_latency is root-only on a stock distribution and \
+                     CAP_SYS_NICE does not help — install a udev rule granting the \
+                     robot's group write access (scripts/setup-realtime.sh does this), or \
+                     set HORUS_RT_IDLE_LATENCY_SCOPE=percpu where the sysfs files are \
+                     writable."
+                );
+                // Unconditional: an operator who believes the constraint is in
+                // force and is not measuring it is exactly who this defect
+                // costs, and a silent pass is what created it.
+                print_line(&format!("[RT] WARNING: {reason}"));
+                self.rt.degradations.push(RtFeatureDegradation {
+                    feature: RtFeature::IdleLatency,
+                    reason,
+                    severity: DegradationSeverity::Medium,
+                });
+            }
+        }
+    }
+
     /// Lock all memory pages to prevent page faults (critical for <20μs latency).
     ///
     /// Delegates to [`super::rt::lock_all_memory`].
@@ -3329,6 +3477,10 @@ impl Scheduler {
                     let rt_chains: Vec<Vec<super::types::RegisteredNode>> =
                         groups.rt_nodes.into_iter().map(|n| vec![n]).collect();
 
+                    // Before the pool starts, so the very first tick is
+                    // already covered.
+                    self.bound_idle_exit_latency(&rt_chains, &rt_cpus);
+
                     let started = super::rt_executor::RtExecutor::start_pool(
                         rt_chains,
                         self.running.clone(),
@@ -3494,6 +3646,24 @@ impl Scheduler {
             // kind of thing nobody notices.
             self.tick.next_deadline = Instant::now() + self.effective_tick_period();
 
+            // Persistent lanes for the main-thread ready dispatch.
+            //
+            // Spawned HERE, once, on the loop's own thread — so they inherit
+            // the policy and affinity `finalize_config`'s `RtConfig::apply`
+            // already put this thread in, which is exactly what the per-tick
+            // `crossbeam::scope` gave them, minus the `clone(2)`.
+            //
+            // Only when the loop will actually dispatch in parallel:
+            // deterministic mode runs its steps sequentially and a single-node
+            // graph takes the `execute_single_node` path, so neither should pay
+            // for threads it will never use.
+            if self.nodes.len() > 1
+                && self.dependency_graph.is_some()
+                && !self.pending_config.timing.deterministic_order
+            {
+                self.dispatch = Some(dispatch::ReadyDispatch::new(self.nodes.len()));
+            }
+
             // Main tick loop
             while self.is_running() {
                 if self.should_stop_loop(clock_start, duration) {
@@ -3515,6 +3685,13 @@ impl Scheduler {
 
             // Stop executors and reclaim nodes for shutdown
             self.running.store(false, Ordering::SeqCst);
+
+            // The lanes hold no node and no borrow between ticks, so this is
+            // just a join. `Drop for ReadyDispatch` is the backstop for any
+            // early return above.
+            if let Some(mut d) = self.dispatch.take() {
+                d.shutdown();
+            }
             if let Some(executor) = rt_executor {
                 let rt_nodes = executor.stop();
                 self.nodes.extend(rt_nodes);
@@ -6055,233 +6232,113 @@ impl Scheduler {
     ///
     /// Uses crossbeam::scope for safe parallel execution with borrowed data.
     fn execute_ready_dispatch(&mut self, node_filter: Option<&[&str]>) {
-        let graph = match self.dependency_graph {
-            Some(ref g) => g,
-            None => return,
-        };
-
         let n = self.nodes.len();
-        if n == 0 {
+        if n == 0 || self.dependency_graph.is_none() {
             return;
         }
 
-        let successors: Vec<Vec<usize>> = graph.successors().to_vec();
-        let initial_dep_counts: Vec<usize> = graph.dep_counts().to_vec();
-
-        // Determine which nodes should tick this cycle.
-        // Nodes that are skipped (stopped, rate-limited, etc.) need their
-        // successors' pending counts adjusted as if they completed.
-        let mut should_tick = vec![false; n];
-        for i in 0..n {
-            should_tick[i] = self.should_tick_node(i, node_filter);
+        // Determine which nodes should tick this cycle. A skipped node
+        // (stopped, rate-limited) has its successors' counts adjusted as if it
+        // had completed.
+        let mut should_tick = std::mem::take(&mut self.dispatch_should_tick);
+        should_tick.clear();
+        should_tick.resize(n, false);
+        for (i, slot) in should_tick.iter_mut().enumerate() {
+            *slot = self.should_tick_node(i, node_filter);
         }
 
-        // Prepare all ticking nodes sequentially (needs &mut self for replay, recording)
+        // Prepare sequentially: needs &mut self for replay and recording.
         for i in 0..n {
             if should_tick[i] {
                 self.prepare_node_tick(i);
             }
         }
 
-        // Set up per-node context info needed during tick.
-        // We pre-compute this sequentially because it reads from self.clock.
-        struct NodeTickContext {
-            tick_number: u64,
-            node_name: std::sync::Arc<str>,
-            node_dt: Duration,
-            sim_time: Duration,
-            tick_start_ci: crate::core::clock::ClockInstant,
-            tick_budget: Option<Duration>,
+        // Per-node context, computed here because it reads self.clock.
+        //
+        // The lanes are created before the loop starts, so this is normally a
+        // no-op. It creates them rather than returning because the alternative
+        // failure mode — a caller reaching this function without a pool — would
+        // be nodes silently ceasing to tick, and a control loop must not have a
+        // way to stop running that produces no error.
+        if self.dispatch.is_none() {
+            self.dispatch = Some(dispatch::ReadyDispatch::new(n));
         }
-
-        let mut tick_contexts: Vec<Option<NodeTickContext>> = Vec::with_capacity(n);
-        for i in 0..n {
-            if should_tick[i] {
-                let registered = &mut self.nodes[i];
-                if let Some(ref mut context) = registered.context {
-                    context.start_tick();
-                    let tick_number = context.metrics().total_ticks();
-                    let node_dt = registered
-                        .rate_hz
-                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
-                        .unwrap_or(self.tick.period);
-                    tick_contexts.push(Some(NodeTickContext {
-                        tick_number,
-                        node_name: registered.name.clone(),
-                        node_dt,
-                        sim_time: self.clock.elapsed(),
-                        tick_start_ci: self.clock.now(),
-                        tick_budget: registered.tick_budget,
-                    }));
-                } else {
-                    tick_contexts.push(None);
-                    should_tick[i] = false;
-                }
-            } else {
-                tick_contexts.push(None);
-            }
-        }
-
-        // Adjusted pending counts: skip non-ticking nodes by treating them as
-        // already completed (their successors don't wait for them).
-        let mut pending: Vec<std::sync::atomic::AtomicUsize> = Vec::with_capacity(n);
-        for i in 0..n {
-            let count = initial_dep_counts[i];
-            pending.push(std::sync::atomic::AtomicUsize::new(count));
-        }
-
-        // Propagate skipped nodes: if a node won't tick, decrement its successors
+        self.dispatch
+            .as_mut()
+            .expect("created immediately above")
+            .reset_contexts(n);
         for i in 0..n {
             if !should_tick[i] {
-                for &succ in &successors[i] {
-                    pending[succ].fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            let period = self.tick.period;
+            let sim_time = self.clock.elapsed();
+            let tick_start_ci = self.clock.now();
+            let registered = &mut self.nodes[i];
+            let ctx = registered.context.as_mut().map(|context| {
+                context.start_tick();
+                dispatch::NodeTickContext {
+                    tick_number: context.metrics().total_ticks(),
+                    node_name: registered.name.clone(),
+                    node_dt: registered
+                        .rate_hz
+                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
+                        .unwrap_or(period),
+                    sim_time,
+                    tick_start_ci,
+                    tick_budget: registered.tick_budget,
                 }
+            });
+            if ctx.is_none() {
+                should_tick[i] = false;
+            }
+            self.dispatch
+                .as_mut()
+                .expect("checked above")
+                .set_context(i, ctx);
+        }
+
+        // The graph's own vectors, borrowed rather than cloned. These used to
+        // be `graph.successors().to_vec()` and `graph.dep_counts().to_vec()` —
+        // a deep clone of a `Vec<Vec<usize>>`, so 1 + n heap allocations every
+        // tick, purely to release the borrow before the `&mut self` calls
+        // above. Doing the preparation first means the borrow can simply be
+        // taken last and held across the dispatch.
+        let graph = self
+            .dependency_graph
+            .as_ref()
+            .expect("checked at entry, and nothing above rebuilds it");
+        let successors = graph.successors();
+        let dep_counts = graph.dep_counts();
+
+        let nodes_ptr = self.nodes.as_mut_ptr();
+        let clock_ptr = &*self.clock as *const dyn crate::core::clock::Clock;
+
+        let mut results = std::mem::take(&mut self.dispatch_results);
+        results.clear();
+        {
+            let disp = self.dispatch.as_mut().expect("checked above");
+            // SAFETY: `nodes_ptr` addresses `self.nodes`, which has `n` entries
+            // and is borrowed for the whole call; `clock_ptr` addresses
+            // `self.clock`, which lives as long as the scheduler. `run` returns
+            // only once every dispatched job has reported — its `Barrier`
+            // enforces that even on an unwind — so no lane can outlive either
+            // borrow.
+            unsafe {
+                disp.run(
+                    successors,
+                    dep_counts,
+                    &should_tick,
+                    nodes_ptr,
+                    clock_ptr,
+                    &mut results,
+                );
             }
         }
 
-        // Channel for ready-dispatch coordination
-        let (ready_tx, ready_rx) = crossbeam::channel::unbounded::<usize>();
-
-        // Seed: all ticking nodes with adjusted pending == 0
-        for i in 0..n {
-            if should_tick[i] && pending[i].load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                let _ = ready_tx.send(i);
-            }
-        }
-
-        // Count how many nodes need to complete
-        let total_to_tick: usize = should_tick.iter().filter(|&&b| b).count();
-        if total_to_tick == 0 {
-            return;
-        }
-
-        // Results collected from parallel ticks
-        struct TickOutput {
-            index: usize,
-            tick_start: Instant,
-            duration: Duration,
-            result: std::thread::Result<()>,
-        }
-
-        // SAFETY wrappers for raw pointers that need to cross thread boundaries.
-        // crossbeam::scope guarantees all threads join before the borrow ends,
-        // so the pointed-to data is alive for the entire scope.
-        struct SendNodePtr(*mut super::types::RegisteredNode);
-        unsafe impl Send for SendNodePtr {}
-        unsafe impl Sync for SendNodePtr {}
-
-        struct SendClockPtr(*const dyn crate::core::clock::Clock);
-        unsafe impl Send for SendClockPtr {}
-        unsafe impl Sync for SendClockPtr {}
-
-        let (results_tx, results_rx) = crossbeam::channel::unbounded::<TickOutput>();
-
-        // Determine worker count: min(total_to_tick, available_parallelism)
-        let num_workers = total_to_tick.min(
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(4),
-        );
-
-        let nodes_ptr = SendNodePtr(self.nodes.as_mut_ptr());
-        let clock_ptr = SendClockPtr(&*self.clock as *const dyn crate::core::clock::Clock);
-        let completed = std::sync::atomic::AtomicUsize::new(0);
-
-        crossbeam::scope(|s| {
-            for _ in 0..num_workers {
-                let ready_rx = &ready_rx;
-                let ready_tx = &ready_tx;
-                let pending = &pending;
-                let successors = &successors;
-                let should_tick = &should_tick;
-                let tick_contexts = &tick_contexts;
-                let completed = &completed;
-                let results_tx = &results_tx;
-                let nodes_ptr = &nodes_ptr;
-                let clock_ptr = &clock_ptr;
-
-                s.spawn(move |_| {
-                    // These workers are spawned from the scheduler thread,
-                    // which `apply_rt_optimizations` may already have put on
-                    // SCHED_FIFO and pinned to the reserved cores — so without
-                    // this they tick best-effort nodes at real-time priority on
-                    // the control loop's own CPU.
-                    //
-                    // TODO(defect-03): this is two syscalls per worker per
-                    // tick, on top of the `clone(2)` this function already pays
-                    // per worker per tick. The persistent pool replaces both
-                    // with one demotion at pool construction; until then,
-                    // correct beats cheap.
-                    crate::scheduling::rt::enter_best_effort("ready-dispatch", 0);
-                    loop {
-                        if completed.load(std::sync::atomic::Ordering::Acquire) >= total_to_tick {
-                            break;
-                        }
-
-                        let i = match ready_rx.recv_timeout(Duration::from_millis(1)) {
-                            Ok(i) => i,
-                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
-                        };
-
-                        // Set up thread-local node context for this tick
-                        if let Some(ref ctx) = tick_contexts[i] {
-                            set_node_context(&ctx.node_name, ctx.tick_number);
-                            // SAFETY: clock_ptr points to self.clock which lives for
-                            // the entire crossbeam scope.
-                            let clock_ref: &dyn crate::core::clock::Clock =
-                                unsafe { &*clock_ptr.0 };
-                            set_tick_context(
-                                &ctx.node_name,
-                                ctx.tick_number,
-                                clock_ref,
-                                ctx.node_dt,
-                                ctx.sim_time,
-                                ctx.tick_start_ci,
-                                ctx.tick_budget,
-                            );
-                        }
-
-                        // SAFETY: Each node index is dispatched exactly once.
-                        // No two threads access the same node simultaneously.
-                        let node_ref = unsafe { &mut *nodes_ptr.0.add(i) };
-                        let tr = super::primitives::NodeRunner::run_tick(&mut node_ref.node);
-
-                        clear_tick_context();
-                        clear_node_context();
-
-                        let _ = results_tx.send(TickOutput {
-                            index: i,
-                            tick_start: tr.tick_start,
-                            duration: tr.duration,
-                            result: tr.result,
-                        });
-
-                        // Notify successors: decrement their pending count.
-                        // When a successor's count hits zero, dispatch it.
-                        for &succ in &successors[i] {
-                            if !should_tick[succ] {
-                                continue;
-                            }
-                            let prev =
-                                pending[succ].fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                            if prev == 1 {
-                                let _ = ready_tx.send(succ);
-                            }
-                        }
-
-                        completed.fetch_add(1, std::sync::atomic::Ordering::Release);
-                    }
-                });
-            }
-        })
-        .expect("ready-dispatch crossbeam scope panicked");
-
-        // Drop the send-side so results_rx doesn't block
-        drop(results_tx);
-
-        // Process all tick results sequentially (needs &mut self for profiling etc.)
-        for output in results_rx.try_iter() {
+        // Process results sequentially: needs &mut self for profiling.
+        for output in results.drain(..) {
             self.process_tick_result(
                 output.index,
                 output.tick_start,
@@ -6289,6 +6346,10 @@ impl Scheduler {
                 output.result,
             );
         }
+
+        // Put the scratch back so the next tick reuses its capacity.
+        self.dispatch_results = results;
+        self.dispatch_should_tick = should_tick;
     }
 }
 

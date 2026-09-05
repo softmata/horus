@@ -35,6 +35,16 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         cpu_affinity: true,
         kernel_version: get_macos_version(),
         cpu_count,
+        // Darwin has no preemption model to read and no cpuidle sysfs. Both are
+        // reported as inapplicable rather than unknown: `Unknown` is an
+        // admission that a value exists and could not be read, and neither does
+        // here.
+        preempt: super::PreemptInfo::not_applicable(),
+        deepest_idle_state: None,
+        // Our label, not a string any Darwin API returns. `mach_absolute_time`
+        // is a userspace read — the commpage on x86, `CNTVCT_EL0` on Apple
+        // Silicon — so it is never a syscall.
+        clocksource: super::Clocksource::from_name("mach_absolute_time"),
         estimated_jitter: Duration::from_micros(500), // macOS ~100-500us jitter
     }
 }

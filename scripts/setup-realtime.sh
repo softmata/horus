@@ -3,11 +3,16 @@
 # Configures Linux for optimal real-time robotics performance.
 #
 # What this script does:
-#   1. Sets CPU governor to 'performance' (prevents frequency scaling latency spikes)
-#   2. Configures RT scheduling limits (SCHED_FIFO/RR up to priority 99)
-#   3. Increases memlock limits (for mlockall to prevent page faults)
-#   4. Installs a udev rule for shared memory permissions
-#   5. Optionally installs cpupower/cpufrequtils for governor persistence
+#   1. Sets CPU governor to 'performance'. This addresses FREQUENCY SCALING
+#      ONLY. It has no effect whatsoever on CPU idle states, which are a
+#      different subsystem (cpuidle) and, on most machines, the larger source of
+#      wake latency. The two are routinely conflated, including here until now.
+#   2. Grants access to /dev/cpu_dma_latency so HORUS can bound CPU IDLE-STATE
+#      exit latency. This is the idle-state half of step 1.
+#   3. Configures RT scheduling limits (SCHED_FIFO/RR up to priority 99)
+#   4. Increases memlock limits (for mlockall to prevent page faults)
+#   5. Installs a udev rule for shared memory permissions
+#   6. Optionally installs cpupower/cpufrequtils for governor persistence
 #
 # Usage:
 #   sudo ./scripts/setup-realtime.sh          # Full setup
@@ -138,6 +143,68 @@ GOVEOF
         echo -e "  ${YELLOW}${WARN}${NC} 'performance' governor not available"
         echo "  This CPU may not support frequency scaling (already at max)"
     fi
+fi
+
+echo ""
+
+# ============================================================================
+# 1b. CPU IDLE-STATE EXIT LATENCY
+# ============================================================================
+#
+# A DIFFERENT SUBSYSTEM from the governor above. `performance` stops the CPU
+# changing frequency; it does nothing about how deep an idle state the CPU
+# enters between ticks, or how long it takes to come back out.
+#
+# This matters precisely because the HORUS tick loop sleeps to an absolute
+# deadline and gives the core back for most of every period — which is exactly
+# what tells the cpuidle governor a deep state is safe. The `menu` governor
+# admits a state when predicted idle exceeds that state's target residency, so
+# the SLOWER the loop, the DEEPER the state it licenses: a 100 Hz mobile base is
+# worse off here than a 4 kHz drone.
+#
+# HORUS bounds it at runtime by holding /dev/cpu_dma_latency open — the kernel
+# releases the constraint the instant the fd closes, including on SIGKILL, so it
+# cannot leak. The device is root-only on a stock distribution, which is what
+# this section fixes.
+
+echo -e "${CYAN}${INFO}${NC} CPU Idle-State Exit Latency"
+
+if [ -d /sys/devices/system/cpu/cpu0/cpuidle ]; then
+    for st in /sys/devices/system/cpu/cpu0/cpuidle/state*/; do
+        st_name=$(cat "$st/name" 2>/dev/null || echo "?")
+        st_lat=$(cat "$st/latency" 2>/dev/null || echo "?")
+        st_res=$(cat "$st/residency" 2>/dev/null || echo "?")
+        st_dis=$(cat "$st/disable" 2>/dev/null || echo "0")
+        if [ "$st_dis" = "0" ]; then
+            echo "  $st_name: exit ${st_lat}us, target residency ${st_res}us"
+        else
+            echo "  $st_name: exit ${st_lat}us (disabled)"
+        fi
+    done
+else
+    echo "  No cpuidle sysfs (cpuidle.off=1, or a VM) — nothing to bound"
+fi
+
+if [ -c /dev/cpu_dma_latency ]; then
+    if [ -w /dev/cpu_dma_latency ]; then
+        echo -e "  ${GREEN}${OK}${NC} /dev/cpu_dma_latency is writable by this user"
+    elif $check_only; then
+        echo -e "  ${YELLOW}${WARN}${NC} /dev/cpu_dma_latency is not writable — HORUS cannot bound idle-exit latency"
+        echo "  Fix: run this script without --check to install the udev rule"
+    else
+        cat > /etc/udev/rules.d/99-horus-cpu-dma-latency.rules << 'DMAEOF'
+# HORUS: let an unprivileged real-time process bound CPU idle-state exit
+# latency by holding /dev/cpu_dma_latency open. The kernel releases the
+# constraint when the fd closes, so this grants no persistent power over the
+# machine.
+KERNEL=="cpu_dma_latency", MODE="0660", GROUP="dialout"
+DMAEOF
+        udevadm control --reload-rules 2>/dev/null || true
+        udevadm trigger --name-match=cpu_dma_latency 2>/dev/null || true
+        echo -e "  ${GREEN}${OK}${NC} Installed udev rule (group 'dialout'); add the robot's user to that group"
+    fi
+else
+    echo "  /dev/cpu_dma_latency not present — this kernel has no PM QoS device"
 fi
 
 echo ""

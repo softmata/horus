@@ -24,6 +24,9 @@ pub struct RtReport {
     /// rather than assumed — and preferring a tighter cgroup budget, which is
     /// what actually binds inside a container.
     pub rt_bandwidth: horus_sys::rt::RtBandwidth,
+    /// The deepest idle state the cpuidle governor may enter, and its exit
+    /// latency in microseconds. `None` where cpuidle sysfs is absent.
+    pub deepest_idle_state: Option<(String, u32)>,
     /// The clocksource in force when the report was generated.
     ///
     /// Read again after the benchmark: a clocksource that changed *during* the
@@ -240,9 +243,37 @@ impl RtReport {
                 "P99 jitter {:.0}μs exceeds 500μs threshold",
                 jitter.p99
             ));
+            // Two causes, ordered by likelihood, and deliberately no longer
+            // one line. The governor line alone conflated two different
+            // subsystems: `performance` addresses FREQUENCY SCALING and has no
+            // effect at all on idle-state exit latency, which on this class of
+            // machine is the larger term by an order of magnitude.
             recs.push(
-                "Check for CPU frequency scaling: cpupower frequency-set -g performance".into(),
+                "Check CPU idle-state exit latency: a deep C-state exit can cost \
+                 hundreds of microseconds, and the cpufreq governor does not affect it. \
+                 HORUS bounds it automatically when it can open /dev/cpu_dma_latency; \
+                 run `horus setup-rt` or scripts/setup-realtime.sh to grant that access."
+                    .into(),
             );
+            recs.push(
+                "Check for CPU frequency scaling: cpupower frequency-set -g performance \
+                 (a different subsystem from the above)"
+                    .into(),
+            );
+        }
+
+        // A state whose exit the guard spin cannot absorb is worth naming with
+        // its own numbers, whatever the measured jitter came out at.
+        if let Some((name, exit_us)) = &caps.deepest_idle_state {
+            let guard_us = target_period_us / 16.0;
+            if (*exit_us as f64) > guard_us {
+                issues.push(format!(
+                    "cpuidle may enter {name}, whose exit costs {exit_us}us — {:.0}% of \
+                     the {target_period_us:.0}us period, against a {guard_us:.0}us guard \
+                     spin that runs AFTER the wake it would have to absorb",
+                    *exit_us as f64 * 100.0 / target_period_us
+                ));
+            }
         }
         if jitter.p99 > 50.0 && caps.preempt_rt {
             issues.push(format!(
@@ -273,6 +304,7 @@ impl RtReport {
             preempt_rt: caps.preempt_rt,
             preempt: caps.preempt,
             rt_bandwidth: horus_sys::rt::rt_bandwidth(),
+            deepest_idle_state: horus_sys::rt::deepest_idle_exit_latency_us(0),
             clocksource: clocksource_after,
             sched_fifo: caps.rt_priority_permitted,
             memory_locking: caps.memory_locking,
@@ -347,6 +379,13 @@ impl RtReport {
         crate::terminal::print_line(&format!(
             "║    RT budget:      {:<40} ║",
             self.rt_bandwidth.describe()
+        ));
+        crate::terminal::print_line(&format!(
+            "║    Deepest idle:   {:<40} ║",
+            match &self.deepest_idle_state {
+                Some((name, us)) => format!("{name} (exit {us}us)"),
+                None => "unknown (no cpuidle sysfs)".to_string(),
+            }
         ));
         crate::terminal::print_line(&format!(
             "║    SCHED_FIFO:     {}                                        ║",

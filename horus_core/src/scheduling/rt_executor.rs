@@ -453,6 +453,61 @@ const SPIN_GUARD_DEFAULT_NS: u64 = 20_000;
 /// every rate, leaving the remainder of the budget for the nodes' real work.
 const SPIN_GUARD_PERIOD_SHIFT: u32 = 4;
 
+/// The tick period one chain will run at: the fastest declared rate in it, or
+/// the fallback when no node declared one.
+///
+/// Extracted so `start_pool` and the idle-latency budget cannot disagree about
+/// what period a chain has — they are two consumers of the same decision, and a
+/// budget computed against a different period than the loop actually runs is
+/// worse than no budget.
+pub(crate) fn chain_tick_period(nodes: &[RegisteredNode], fallback: Duration) -> Duration {
+    let max_rate_hz = nodes
+        .iter()
+        .filter_map(|n| n.rate_hz)
+        .fold(0.0_f64, f64::max);
+    if max_rate_hz > 0.0 {
+        max_rate_hz.hz().period()
+    } else {
+        fallback
+    }
+}
+
+/// Environment override for the idle-exit latency budget, in microseconds.
+pub(crate) const RT_IDLE_LATENCY_ENV: &str = "HORUS_RT_IDLE_LATENCY_US";
+
+/// The idle-exit latency budget, in microseconds, for a run whose RT chains
+/// have these tick periods.
+///
+/// The invariant: the cpuidle governor may only enter states whose exit the
+/// guard spin can still absorb. The guard is
+/// `min(SPIN_GUARD_DEFAULT_NS, period >> SPIN_GUARD_PERIOD_SHIFT)`, so a 4 kHz
+/// chain has a 15.6 us guard rather than 20 — the budget has to track it, or it
+/// would license a state the fastest chain cannot survive.
+///
+/// Floored at 1, never 0. Zero means opposite things in the two kernel
+/// interfaces: "tolerate no exit latency at all" to `/dev/cpu_dma_latency`,
+/// which pins every core in POLL and costs real power on a battery robot, and
+/// "no constraint" to `pm_qos_resume_latency_us`. A default that means opposite
+/// things is not a default.
+pub(crate) fn idle_latency_budget_us(chain_periods: &[Duration]) -> u32 {
+    let requested_guard_ns = std::env::var("HORUS_RT_SPIN_GUARD_US")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|us| us.saturating_mul(1_000))
+        .unwrap_or(SPIN_GUARD_DEFAULT_NS);
+
+    let tightest_guard_ns = chain_periods
+        .iter()
+        .map(|p| {
+            let period_ns = (p.as_nanos() as u64).max(1);
+            requested_guard_ns.min(period_ns >> SPIN_GUARD_PERIOD_SHIFT)
+        })
+        .min()
+        .unwrap_or(SPIN_GUARD_DEFAULT_NS);
+
+    ((tightest_guard_ns / 1_000) as u32).max(1)
+}
+
 /// Minimum slack worth an absolute-sleep syscall, in nanoseconds.
 ///
 /// Arming an hrtimer, switching out, taking the timer interrupt and switching
@@ -1167,17 +1222,8 @@ impl RtExecutor {
         let report = super::rt_status::RtThreadReport::new(num_chains);
 
         for (chain_idx, nodes) in chains.into_iter().enumerate() {
-            // Determine tick period from the fastest node in this chain
-            let max_rate_hz = nodes
-                .iter()
-                .filter_map(|n| n.rate_hz)
-                .fold(0.0_f64, f64::max);
-
-            let tick_period = if max_rate_hz > 0.0 {
-                max_rate_hz.hz().period()
-            } else {
-                fallback_period
-            };
+            // Determine tick period from the fastest node in this chain.
+            let tick_period = chain_tick_period(&nodes, fallback_period);
 
             // Already resolved above — `.core(n)` if a node named one, else the
             // round-robin slot.
@@ -2113,6 +2159,58 @@ impl Drop for RtExecutor {
 
 #[cfg(test)]
 mod tests {
+    /// The idle-exit budget must track the guard spin it has to fit inside,
+    /// not a constant.
+    ///
+    /// The guard is `min(SPIN_GUARD_DEFAULT_NS, period >> SPIN_GUARD_PERIOD_SHIFT)`,
+    /// so it is 20 us only above a 320 us period. A budget that ignored the
+    /// clamp would license the governor to enter a state the fastest chain
+    /// cannot survive.
+    #[test]
+    fn the_idle_latency_budget_tracks_the_guard_spin() {
+        // 1 kHz: the /16 clamp does not bind, so the guard is the full 20 us.
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_millis(1)]),
+            20
+        );
+        // 100 Hz: still 20 us — a slower loop does not get a bigger guard.
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_millis(10)]),
+            20
+        );
+        // 4 kHz (250 us): 250/16 = 15.6 us, so the guard IS the clamp and the
+        // budget must follow it down.
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_micros(250)]),
+            15
+        );
+
+        // Several chains: the tightest wins, because the governor's decision is
+        // machine-wide and the fastest chain is the one that cannot absorb it.
+        assert_eq!(
+            super::idle_latency_budget_us(&[
+                Duration::from_millis(10),
+                Duration::from_micros(250),
+                Duration::from_millis(1),
+            ]),
+            15
+        );
+    }
+
+    /// Never 0, whatever the period.
+    ///
+    /// 0 means opposite things in the two kernel interfaces: "tolerate no exit
+    /// latency at all" to /dev/cpu_dma_latency, which pins every core in POLL,
+    /// and "no constraint" to pm_qos_resume_latency_us.
+    #[test]
+    fn the_idle_latency_budget_is_never_zero() {
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_micros(1)]),
+            1
+        );
+        assert_eq!(super::idle_latency_budget_us(&[Duration::from_nanos(1)]), 1);
+        assert_eq!(super::idle_latency_budget_us(&[]), 20);
+    }
 
     /// `start_pool` with the pre-`memory_locked` argument list.
     ///

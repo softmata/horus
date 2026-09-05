@@ -27,6 +27,17 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         cpu_affinity: true,
         kernel_version: get_windows_version(),
         cpu_count,
+        // Windows has no preemption model to read and no cpuidle sysfs. Idle
+        // depth is governed by the active power plan, a machine-wide setting
+        // with no per-process interface.
+        preempt: super::PreemptInfo::not_applicable(),
+        deepest_idle_state: None,
+        // Our label, not a string any Win32 API returns, and deliberately one
+        // the cost table does NOT recognise: QueryPerformanceCounter is usually
+        // served from KUSER_SHARED_DATA, but the HAL may select HPET or the PM
+        // timer and Windows exposes that choice nowhere ordinary — so
+        // `vdso_fast()` correctly answers "unknown" rather than guessing.
+        clocksource: super::Clocksource::from_name("qpc"),
         estimated_jitter: Duration::from_millis(1), // Windows ~1-10ms jitter
     }
 }

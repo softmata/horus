@@ -800,6 +800,33 @@ fn check_rt() -> CheckResult {
                 .to_string(),
         );
     }
+    // Idle-state exit latency: a different subsystem from the cpufreq governor,
+    // and on most machines the larger term. The governor stops the CPU changing
+    // frequency; it does nothing about how long a deep C-state takes to leave.
+    match &caps.deepest_idle_state {
+        Some((name, exit_us)) => {
+            details.push(format!("Deepest idle state: {name} (exit {exit_us}us)"));
+            let writable = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/dev/cpu_dma_latency")
+                .is_ok();
+            if writable {
+                details.push(
+                    "  /dev/cpu_dma_latency is writable — HORUS will bound idle-exit \
+                     latency automatically while a scheduler runs."
+                        .to_string(),
+                );
+            } else {
+                details.push(format!(
+                    "  /dev/cpu_dma_latency is not writable, so that {exit_us}us exit is \
+                     unbounded. CAP_SYS_NICE does not help; run `horus setup-rt` or \
+                     scripts/setup-realtime.sh to install the udev rule."
+                ));
+            }
+        }
+        None => details.push("Deepest idle state: unknown (no cpuidle sysfs)".to_string()),
+    }
+
     // The budget that decides whether an RT thread gets dequeued mid-loop, and
     // whether SCHED_FIFO can be granted here at all.
     let bandwidth = horus_sys::rt::rt_bandwidth();

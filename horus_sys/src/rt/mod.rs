@@ -244,6 +244,174 @@ impl Clocksource {
     }
 }
 
+// ── CPU idle-state exit latency ─────────────────────────────────────────
+//
+// See `linux::deepest_idle_exit_latency_at` for the mechanism and the measured
+// numbers. The short version: the absolute-sleep design gives the core back for
+// most of every period, which is precisely what licenses the cpuidle governor
+// to promote it into a deep C-state whose exit dwarfs the guard spin — and
+// setting the cpufreq governor to `performance`, which this crate does do, is a
+// different subsystem and does nothing about it.
+
+/// Which CPUs an idle-latency bound applies to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdleLatencyScope {
+    /// Every CPU, via `/dev/cpu_dma_latency`.
+    ///
+    /// The kernel releases the constraint the instant the fd closes — including
+    /// on SIGKILL — so it cannot leak. The default for that reason.
+    Global,
+    /// Only these CPUs, via `cpu{N}/power/pm_qos_resume_latency_us`.
+    ///
+    /// KERNEL CPU IDS, not indices into a core list. Lets the perception cores
+    /// keep their power savings on a shared box — but it is sysfs state, so it
+    /// must be restored on drop and it LEAKS if the process is killed. Opt-in
+    /// for that reason.
+    PerCpu(Vec<usize>),
+}
+
+impl IdleLatencyScope {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Global => "all CPUs, via /dev/cpu_dma_latency".to_string(),
+            Self::PerCpu(cpus) => format!("CPUs {cpus:?}, via pm_qos_resume_latency_us"),
+        }
+    }
+}
+
+/// A live idle-latency bound. The constraint lasts exactly as long as this
+/// value.
+#[derive(Debug)]
+pub struct IdleLatencyGuard {
+    budget_us: u32,
+    scope: IdleLatencyScope,
+    #[cfg(target_os = "linux")]
+    _hold: linux::IdleHold,
+}
+
+impl IdleLatencyGuard {
+    /// The exit latency, in microseconds, the governor was told to stay under.
+    pub fn budget_us(&self) -> u32 {
+        self.budget_us
+    }
+
+    pub fn scope(&self) -> &IdleLatencyScope {
+        &self.scope
+    }
+
+    pub fn describe(&self) -> String {
+        format!("{} us — {}", self.budget_us, self.scope.describe())
+    }
+}
+
+/// The outcome of asking the kernel to bound idle-state exit latency.
+#[derive(Debug)]
+pub enum IdleLatencyOutcome {
+    /// In force until the guard is dropped.
+    Bounded(IdleLatencyGuard),
+    /// This platform has no idle-state QoS interface.
+    ///
+    /// NOT a degradation: nothing was refused, and there is nothing the
+    /// operator could do about it.
+    Unsupported {
+        platform: &'static str,
+        note: &'static str,
+    },
+    /// The interface exists and the kernel said no. THIS is the degradation —
+    /// the machine has deep idle states, they will be entered, and the operator
+    /// believes otherwise unless told.
+    Refused { path: String, error: String },
+}
+
+/// Ask the kernel to keep CPU idle-state exit latency under `budget_us`.
+///
+/// Hold the returned guard for as long as the RT loop runs. On Linux the global
+/// scope is an open fd; dropping it releases the constraint immediately, which
+/// is the whole reason the fd is carried rather than closed after the write.
+pub fn bound_idle_latency(budget_us: u32, scope: IdleLatencyScope) -> IdleLatencyOutcome {
+    #[cfg(target_os = "linux")]
+    {
+        match &scope {
+            IdleLatencyScope::Global => {
+                let path = std::path::Path::new(linux::CPU_DMA_LATENCY_DEV);
+                match linux::bound_idle_latency_global_at(path, budget_us) {
+                    Ok(f) => IdleLatencyOutcome::Bounded(IdleLatencyGuard {
+                        budget_us,
+                        scope,
+                        _hold: linux::IdleHold::Global(f),
+                    }),
+                    Err(e) => IdleLatencyOutcome::Refused {
+                        path: linux::CPU_DMA_LATENCY_DEV.to_string(),
+                        error: e.to_string(),
+                    },
+                }
+            }
+            IdleLatencyScope::PerCpu(cpus) => {
+                let root = std::path::Path::new(linux::CPU_SYSFS_ROOT);
+                match linux::bound_idle_latency_per_cpu_at(root, cpus, budget_us) {
+                    Ok(h) => IdleLatencyOutcome::Bounded(IdleLatencyGuard {
+                        budget_us,
+                        scope,
+                        _hold: linux::IdleHold::PerCpu(h),
+                    }),
+                    Err(e) => IdleLatencyOutcome::Refused {
+                        path: format!(
+                            "{}/cpuN/power/pm_qos_resume_latency_us",
+                            linux::CPU_SYSFS_ROOT
+                        ),
+                        error: e.to_string(),
+                    },
+                }
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (budget_us, scope);
+        IdleLatencyOutcome::Unsupported {
+            platform: "macOS",
+            note: "Darwin exposes no PM QoS interface for idle-state exit latency; \
+                   the closest equivalent is a power-assertion, which governs sleep \
+                   rather than per-core C-states",
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (budget_us, scope);
+        IdleLatencyOutcome::Unsupported {
+            platform: "Windows",
+            note: "idle-state depth is governed by the active power plan \
+                   (`powercfg /setacvalueindex ... IDLEDISABLE`), a machine-wide \
+                   setting with no per-process interface",
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (budget_us, scope);
+        IdleLatencyOutcome::Unsupported {
+            platform: "this platform",
+            note: "no known idle-state QoS interface",
+        }
+    }
+}
+
+/// The deepest idle state the cpuidle governor may currently enter on `cpu`,
+/// and its exit latency in microseconds.
+///
+/// `None` where cpuidle sysfs is absent — non-Linux, `cpuidle.off=1`, and most
+/// VMs.
+pub fn deepest_idle_exit_latency_us(cpu: usize) -> Option<(String, u32)> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::deepest_idle_exit_latency_at(std::path::Path::new(linux::CPU_SYSFS_ROOT), cpu)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cpu;
+        None
+    }
+}
+
 // ── RT bandwidth control ────────────────────────────────────────────────
 //
 // Linux polices the SCHED_FIFO/SCHED_RR class as a whole: `sched_rt_runtime_us`
@@ -458,6 +626,12 @@ pub struct RtCapabilities {
     /// `voluntary`, `full` and `lazy` in one bucket spanning two orders of
     /// magnitude of scheduling latency.
     pub preempt: PreemptInfo,
+    /// The deepest idle state the cpuidle driver may enter on CPU 0, and its
+    /// exit latency in microseconds.
+    ///
+    /// `None` where cpuidle sysfs is absent: non-Linux, `cpuidle.off=1`, and
+    /// most VMs.
+    pub deepest_idle_state: Option<(String, u32)>,
     /// The clocksource in force AT DETECTION TIME.
     ///
     /// The kernel can demote it mid-run without asking, which is why this is
@@ -480,6 +654,7 @@ impl Default for RtCapabilities {
                 .unwrap_or(1),
             estimated_jitter: Duration::from_millis(10),
             preempt: PreemptInfo::not_applicable(),
+            deepest_idle_state: None,
             clocksource: Clocksource::unknown(),
         }
     }
