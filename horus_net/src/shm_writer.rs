@@ -50,6 +50,15 @@ pub struct ShmRingWriter {
     cap_mask: usize,
     slot_size: usize,
     is_pod: bool,
+    /// Whether the region uses the co-located layout (stamp and payload in one
+    /// slot) rather than the split layout (payloads packed after a separate
+    /// sequence array).
+    ///
+    /// Read from the header's `OFF_LAYOUT_KIND` at open time, exactly as
+    /// `horus_core::communication` does. This crate used to assume the split
+    /// form unconditionally, so every offset it computed for a colo region
+    /// named the wrong bytes (#80).
+    colo: bool,
     /// Topic name for logging.
     topic_name: String,
 }
@@ -110,9 +119,31 @@ impl ShmRingWriter {
         // the sequence array and a small file passes a check for a ring that does
         // not fit in the mapping at all. `required_region_len_checked` refuses
         // instead of wrapping.
-        let stride = if is_pod { type_size } else { slot_size };
-        let required = layout::required_region_len_checked(capacity, stride)?;
-        if stride == 0 || mmap.len() < required {
+        // Read the layout kind the owner stamped, like `horus_core::communication`
+        // does (mod.rs:252). This crate ignored it and assumed the split form.
+        //
+        // Note what this size check does and does not do. A colo slot is
+        // `round_up_64(8 + type_size)`, which is always >= the split layout's
+        // `8 + type_size` per slot, so a valid colo region already satisfied the
+        // split formula — the import never failed, and that is why the bug was
+        // silent rather than loud. What this branch adds is the colo invariant
+        // the split formula cannot express: a slot must hold stamp AND payload.
+        // The offsets in `write_pod` are where the corruption actually was.
+        let colo = is_pod && mmap[layout::OFF_LAYOUT_KIND] == layout::LAYOUT_COLO;
+        let required = if colo {
+            // slot_size is the colo stride; it must at least hold stamp+payload.
+            if slot_size < layout::COLO_PAYLOAD_OFF + type_size {
+                return None;
+            }
+            layout::colo_required_region_len_checked(capacity, slot_size)?
+        } else {
+            let stride = if is_pod { type_size } else { slot_size };
+            if stride == 0 {
+                return None;
+            }
+            layout::required_region_len_checked(capacity, stride)?
+        };
+        if mmap.len() < required {
             return None;
         }
 
@@ -123,6 +154,7 @@ impl ShmRingWriter {
             cap_mask,
             slot_size,
             is_pod,
+            colo,
             topic_name: topic_name.to_string(),
         })
     }
@@ -198,7 +230,22 @@ impl ShmRingWriter {
 
         let head = self.load_head();
         let index = (head as usize) & self.cap_mask;
-        let slot_start = layout::data_slot_offset(self.capacity, index, self.type_size);
+        // Both offsets come from one layout decision, so the stamp this writer
+        // publishes and the payload it copies can never describe different
+        // slots - which is what a split-layout `seq_slot_offset` did on a colo
+        // region: it stamped the sequence array a colo reader never reads,
+        // while writing payload bytes over another slot's stamp.
+        let (slot_start, ready_off) = if self.colo {
+            (
+                layout::colo_payload_offset(index, self.slot_size),
+                layout::colo_stamp_offset(index, self.slot_size),
+            )
+        } else {
+            (
+                layout::data_slot_offset(self.capacity, index, self.type_size),
+                layout::seq_slot_offset(index),
+            )
+        };
         // `checked_add`, not `+`: on a 32-bit controller these offsets are u32
         // arithmetic over header-supplied geometry, and a wrapped `slot_end`
         // compares as in-bounds while naming a slot that is not. See `open_path`.
@@ -211,7 +258,6 @@ impl ShmRingWriter {
         }
 
         let new_head = head.wrapping_add(1);
-        let ready_off = layout::seq_slot_offset(index);
 
         // Seqlock write phase — mark BEFORE touching the data.
         //
@@ -337,6 +383,68 @@ mod tests {
 
     fn tmp(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("horus_shmw_{}_{}", name, std::process::id()))
+    }
+
+    /// Build a valid CO-LOCATED POD region: no sequence array, stamp and
+    /// payload share a cache-line-aligned slot.
+    fn make_colo_region(path: &std::path::Path, capacity: usize, type_size: usize) -> usize {
+        let slot_size = layout::colo_slot_size(type_size);
+        let total = layout::colo_required_region_len(capacity, slot_size);
+        let mut buf = vec![0u8; total];
+        buf[layout::OFF_MAGIC..layout::OFF_MAGIC + 8].copy_from_slice(&layout::MAGIC.to_ne_bytes());
+        buf[layout::OFF_TYPE_SIZE..layout::OFF_TYPE_SIZE + 4]
+            .copy_from_slice(&(type_size as u32).to_ne_bytes());
+        buf[layout::OFF_IS_POD] = layout::IS_POD_YES;
+        buf[layout::OFF_CAPACITY..layout::OFF_CAPACITY + 4]
+            .copy_from_slice(&(capacity as u32).to_ne_bytes());
+        buf[layout::OFF_CAPACITY_MASK..layout::OFF_CAPACITY_MASK + 4]
+            .copy_from_slice(&((capacity - 1) as u32).to_ne_bytes());
+        buf[layout::OFF_SLOT_SIZE..layout::OFF_SLOT_SIZE + 4]
+            .copy_from_slice(&(slot_size as u32).to_ne_bytes());
+        // The byte this crate used to ignore.
+        buf[layout::OFF_LAYOUT_KIND] = layout::LAYOUT_COLO;
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&buf).unwrap();
+        slot_size
+    }
+
+    /// And the bytes must land in the colo slot, not where the split layout
+    /// would have put them.
+    ///
+    /// This is the whole bug. A valid colo region always passed the size check
+    /// (a colo slot is `round_up_64(8 + type_size)`, never smaller than the
+    /// split layout's `8 + type_size`), so the import succeeded and the writer
+    /// then used split offsets on a colo region: payload written over another
+    /// slot's stamp, and the sequence published into an array a colo reader
+    /// never looks at. Replication appeared to work and delivered nothing.
+    #[test]
+    fn colo_write_lands_in_the_slot_not_the_seq_array() {
+        let path = tmp("colo_offset");
+        let slot_size = make_colo_region(&path, 8, 4);
+        let mut w = ShmRingWriter::open_path("t", &path).expect("colo region must open");
+        assert!(w.write(&[0x11, 0x22, 0x33, 0x44], Encoding::PodLe));
+
+        let bytes = std::fs::read(&path).unwrap();
+        let payload_at = layout::colo_payload_offset(0, slot_size);
+        assert_eq!(
+            &bytes[payload_at..payload_at + 4],
+            &[0x11, 0x22, 0x33, 0x44],
+            "payload must land at colo_payload_offset"
+        );
+
+        // The stamp belongs beside it, not in a sequence array this layout has
+        // no room for.
+        let stamp_at = layout::colo_stamp_offset(0, slot_size);
+        let stamp = u64::from_ne_bytes(bytes[stamp_at..stamp_at + 8].try_into().unwrap());
+        assert_eq!(
+            stamp, 1,
+            "the colo slot's own stamp must carry the sequence"
+        );
+        assert_eq!(
+            stamp & layout::SLOT_WRITING,
+            0,
+            "the write phase must be closed before the writer returns"
+        );
     }
 
     #[test]
