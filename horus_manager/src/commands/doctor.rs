@@ -800,6 +800,19 @@ fn check_rt() -> CheckResult {
                 .to_string(),
         );
     }
+    // The budget that decides whether an RT thread gets dequeued mid-loop, and
+    // whether SCHED_FIFO can be granted here at all.
+    let bandwidth = horus_sys::rt::rt_bandwidth();
+    details.push(format!("RT budget: {}", bandwidth.describe()));
+    if bandwidth.is_starved() {
+        details.push(
+            "  This task's RT budget is ZERO: SCHED_FIFO cannot be granted in this cgroup. \
+             The EPERM that produces looks exactly like a missing CAP_SYS_NICE and is not — \
+             raise cpu.rt_runtime_us, or run outside the cgroup."
+                .to_string(),
+        );
+    }
+
     match caps.clocksource.vdso_fast() {
         Some(true) => details.push(format!(
             "Clocksource: {} (userspace read)",

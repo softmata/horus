@@ -1,7 +1,8 @@
 // Linux RT: SCHED_FIFO + mlockall + sched_setaffinity + /proc detection
 
 use super::{
-    BestEffortReport, Clocksource, PreemptInfo, PreemptModel, PreemptSource, RtCapabilities,
+    BestEffortReport, Clocksource, PreemptInfo, PreemptModel, PreemptSource, RtBandwidth,
+    RtBandwidthSource, RtCapabilities,
 };
 use std::time::Duration;
 
@@ -700,6 +701,87 @@ pub(super) fn set_affinity(cpus: &[usize]) -> anyhow::Result<Vec<usize>> {
     current_affinity()
 }
 
+// ── RT bandwidth control ────────────────────────────────────────────────
+
+fn read_i64(path: &str) -> Option<i64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// This task's cgroup cpu-controller path, from `/proc/self/cgroup`.
+///
+/// Split out from the file read so both formats are testable on a string: a
+/// unified v2 line `0::/user.slice/...`, and a v1 line
+/// `4:cpu,cpuacct:/docker/<id>`.
+pub(crate) fn cgroup_cpu_path(proc_self_cgroup: &str) -> Option<String> {
+    let mut unified: Option<String> = None;
+    for line in proc_self_cgroup.lines() {
+        let mut parts = line.splitn(3, ':');
+        let (_hier, controllers, path) = (parts.next()?, parts.next()?, parts.next()?);
+        if controllers.split(',').any(|c| c == "cpu") {
+            return Some(path.to_string());
+        }
+        if controllers.is_empty() {
+            unified = Some(path.to_string());
+        }
+    }
+    unified
+}
+
+/// `cpu.rt_runtime_us` / `cpu.rt_period_us` for this task's cgroup.
+///
+/// Present only where `CONFIG_RT_GROUP_SCHED` is compiled in, which most
+/// distributions do not do — the files being absent is the NORMAL case, not an
+/// error.
+fn read_cgroup_rt_budget() -> Option<RtBandwidth> {
+    let path = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|s| cgroup_cpu_path(&s))?;
+    for root in ["/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpu,cpuacct"] {
+        let base = format!("{root}{path}");
+        if let (Some(r), Some(p)) = (
+            read_i64(&format!("{base}/cpu.rt_runtime_us")),
+            read_i64(&format!("{base}/cpu.rt_period_us")),
+        ) {
+            return Some(RtBandwidth::from_raw(r, p, RtBandwidthSource::CgroupV1));
+        }
+    }
+    None
+}
+
+/// The RT class budget that actually binds this task.
+pub(super) fn read_rt_bandwidth() -> RtBandwidth {
+    let global = match (
+        read_i64("/proc/sys/kernel/sched_rt_runtime_us"),
+        read_i64("/proc/sys/kernel/sched_rt_period_us"),
+    ) {
+        (Some(r), Some(p)) => RtBandwidth::from_raw(r, p, RtBandwidthSource::ProcSys),
+        _ => return RtBandwidth::UNAVAILABLE,
+    };
+
+    // A cgroup budget, where one exists, is the tighter of the two and is what
+    // the kernel will enforce. `cpu.rt_runtime_us == 0` is the default for a
+    // non-root group and is why `sched_setscheduler(SCHED_FIFO)` fails with
+    // EPERM inside an ordinary container.
+    match read_cgroup_rt_budget() {
+        Some(cg) if tighter_than(cg, global) => cg,
+        _ => global,
+    }
+}
+
+/// Whether `a` permits strictly less RT execution than `b`.
+fn tighter_than(a: RtBandwidth, b: RtBandwidth) -> bool {
+    if !a.is_known() {
+        return false;
+    }
+    if !b.is_known() || b.is_unlimited() {
+        return !a.is_unlimited();
+    }
+    match (a.duty_fraction(), b.duty_fraction()) {
+        (Some(x), Some(y)) => x < y,
+        _ => false,
+    }
+}
+
 // ── Preemption model: a ladder, with the rung recorded ──────────────────
 
 const DEBUGFS_PREEMPT: &str = "/sys/kernel/debug/sched/preempt";
@@ -1145,6 +1227,85 @@ fn check_mlockall_permitted() -> bool {
 
 #[cfg(test)]
 mod tests {
+    // ── RT bandwidth ────────────────────────────────────────────────────
+
+    #[test]
+    fn the_cgroup_cpu_path_is_parsed_in_both_formats() {
+        // cgroup v2: one unified line, empty controller field.
+        assert_eq!(
+            cgroup_cpu_path("0::/user.slice/user-1000.slice/app.slice/x.scope\n"),
+            Some("/user.slice/user-1000.slice/app.slice/x.scope".to_string())
+        );
+        // cgroup v1: the cpu controller may be joined with cpuacct, and the
+        // matching line is not the first.
+        assert_eq!(
+            cgroup_cpu_path("11:devices:/docker/abc\n4:cpu,cpuacct:/docker/abc\n0::/init.scope\n"),
+            Some("/docker/abc".to_string()),
+            "a v1 cpu line must win over the unified fallback"
+        );
+        assert_eq!(cgroup_cpu_path(""), None);
+        assert_eq!(
+            cgroup_cpu_path("11:devices:/docker/abc\n"),
+            None,
+            "no cpu controller and no unified line means no path, not a guess"
+        );
+    }
+
+    /// The read must be self-consistent on whatever host runs the suite.
+    #[test]
+    fn reading_the_rt_budget_on_this_machine_is_self_consistent() {
+        let bw = read_rt_bandwidth();
+        if bw.is_known() {
+            assert!(bw.period_us > 0);
+            assert!(bw.runtime_us >= -1);
+            // Exactly one of the three states holds.
+            let states = [bw.is_unlimited(), bw.is_finite()];
+            assert_eq!(
+                states.iter().filter(|b| **b).count(),
+                1,
+                "unlimited and finite are mutually exclusive: {bw:?}"
+            );
+            if bw.is_finite() {
+                assert!(bw.throttle_window().is_some());
+                assert!(bw.duty_fraction().is_some());
+            }
+        }
+        assert!(!bw.describe().is_empty());
+    }
+
+    /// A garbled or unreadable budget must not be mistaken for "no throttle".
+    #[test]
+    fn an_inconsistent_budget_is_unknown_rather_than_unlimited() {
+        let garbled = RtBandwidth::from_raw(-1, 0, RtBandwidthSource::ProcSys);
+        assert!(!garbled.is_known());
+        assert!(
+            !garbled.is_unlimited(),
+            "period_us == 0 is not a documented kernel state; reading it as unlimited \
+             would suppress the throttle warning in exactly the case where nothing \
+             about the host is understood"
+        );
+        assert_eq!(garbled.describe(), "unknown");
+        assert!(!RtBandwidth::UNAVAILABLE.is_known());
+        assert!(!RtBandwidth::UNAVAILABLE.is_unlimited());
+    }
+
+    #[test]
+    fn a_tighter_cgroup_budget_wins_over_the_host_wide_one() {
+        let host = RtBandwidth::from_raw(950_000, 1_000_000, RtBandwidthSource::ProcSys);
+        let container = RtBandwidth::from_raw(0, 1_000_000, RtBandwidthSource::CgroupV1);
+        assert!(
+            tighter_than(container, host),
+            "a zero cgroup budget is what actually binds — it is why \
+             sched_setscheduler(SCHED_FIFO) fails with EPERM inside a container"
+        );
+        assert!(!tighter_than(host, container));
+
+        // An unlimited host budget loses to any finite cgroup budget.
+        let unlimited = RtBandwidth::from_raw(-1, 1_000_000, RtBandwidthSource::ProcSys);
+        assert!(tighter_than(container, unlimited));
+        assert!(!tighter_than(unlimited, host));
+    }
+
     // ── Preemption model: the parsers, each rung on its own ─────────────
 
     #[test]

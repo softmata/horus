@@ -244,6 +244,177 @@ impl Clocksource {
     }
 }
 
+// ── RT bandwidth control ────────────────────────────────────────────────
+//
+// Linux polices the SCHED_FIFO/SCHED_RR class as a whole: `sched_rt_runtime_us`
+// out of every `sched_rt_period_us`, 950 ms out of 1000 ms by default. An RT
+// runqueue that exceeds its share is forcibly DEQUEUED for the remainder of the
+// period — 50 ms with the defaults, which at 1 kHz is fifty consecutive missed
+// deadlines.
+//
+// The tick loop's own comments have named these two sysctls, and the ~50 ms
+// dequeue that motivated the absolute-sleep rewrite, for a while. Nothing ever
+// read them. So the spin-mode warning was REASONED rather than MEASURED, with
+// three consequences: it fired even for an operator who had already set
+// `sched_rt_runtime_us=-1` — the exact remedy the comment recommends — which is
+// how operators learn to ignore a warning block; its "~50 ms" and "~50 missed
+// deadlines at 1kHz" were hardcoded, and are wrong for any other budget or tick
+// rate; and under `CONFIG_RT_GROUP_SCHED` a task in a non-root cpu cgroup has
+// `cpu.rt_runtime_us == 0`, so `sched_setscheduler(SCHED_FIFO)` fails with
+// EPERM and surfaced as a generic refusal pointing at CAP_SYS_NICE — the wrong
+// remedy entirely.
+
+/// Where an [`RtBandwidth`] reading came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum RtBandwidthSource {
+    /// `/proc/sys/kernel/sched_rt_{runtime,period}_us` — the host-wide budget.
+    ProcSys,
+    /// `cpu.rt_runtime_us` in this task's cgroup-v1 cpu controller. Present
+    /// only where `CONFIG_RT_GROUP_SCHED` is compiled in, and TIGHTER than the
+    /// host-wide budget when it is, so it is what actually binds.
+    CgroupV1,
+    /// Nothing readable — not Linux, or `/proc/sys` hidden.
+    #[default]
+    Unavailable,
+}
+
+/// The real-time class's CPU budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RtBandwidth {
+    /// Microseconds of RT execution permitted per period. `-1` is unlimited.
+    pub runtime_us: i64,
+    /// Length of the accounting period in microseconds.
+    pub period_us: i64,
+    /// Which file answered.
+    pub source: RtBandwidthSource,
+}
+
+impl Default for RtBandwidth {
+    fn default() -> Self {
+        Self::UNAVAILABLE
+    }
+}
+
+impl RtBandwidth {
+    /// Nothing could be read.
+    pub const UNAVAILABLE: Self = Self {
+        runtime_us: 0,
+        period_us: 0,
+        source: RtBandwidthSource::Unavailable,
+    };
+
+    pub fn from_raw(runtime_us: i64, period_us: i64, source: RtBandwidthSource) -> Self {
+        Self {
+            runtime_us,
+            period_us,
+            source,
+        }
+    }
+
+    /// Readable AND self-consistent.
+    ///
+    /// `period_us <= 0` and `runtime_us < -1` are not documented kernel states.
+    /// They must report unknown rather than unlimited: treating a garbled read
+    /// as "no throttle" would suppress the warning in exactly the case where
+    /// nothing is understood about the host.
+    pub fn is_known(&self) -> bool {
+        self.source != RtBandwidthSource::Unavailable && self.period_us > 0 && self.runtime_us >= -1
+    }
+
+    /// `sched_rt_runtime_us == -1`: no throttle — and no runaway defence either.
+    pub fn is_unlimited(&self) -> bool {
+        self.is_known() && self.runtime_us == -1
+    }
+
+    /// A finite share of each period.
+    pub fn is_finite(&self) -> bool {
+        self.is_known() && self.runtime_us >= 0
+    }
+
+    /// Zero budget: `sched_setscheduler(SCHED_FIFO)` cannot succeed here at all.
+    pub fn is_starved(&self) -> bool {
+        self.is_known() && self.runtime_us == 0
+    }
+
+    /// Fraction of each period the RT class may execute for.
+    pub fn duty_fraction(&self) -> Option<f64> {
+        self.is_finite()
+            .then(|| (self.runtime_us as f64 / self.period_us as f64).min(1.0))
+    }
+
+    /// `period_us - runtime_us`: the window, per RT period, during which an
+    /// over-budget RT runqueue is dequeued. 50 ms for the 950000/1000000
+    /// default — the number the tick loop's comments quote.
+    pub fn throttle_window(&self) -> Option<Duration> {
+        self.is_finite()
+            .then(|| Duration::from_micros((self.period_us - self.runtime_us).max(0) as u64))
+    }
+
+    /// Consecutive deadlines missed per RT period, at a given tick rate.
+    ///
+    /// The hardcoded "~50 missed deadlines at 1kHz" is only true for the
+    /// default budget at a 1 ms tick; at a 250 µs tick the same budget costs
+    /// ~200.
+    pub fn missed_ticks_per_period(&self, tick_period: Duration) -> Option<u64> {
+        let window = self.throttle_window()?.as_nanos() as u64;
+        let tick = (tick_period.as_nanos() as u64).max(1);
+        Some(window / tick)
+    }
+
+    /// One line for a status block.
+    pub fn describe(&self) -> String {
+        if !self.is_known() {
+            return "unknown".to_string();
+        }
+        if self.is_unlimited() {
+            return "unlimited (sched_rt_runtime_us = -1: no throttle, and no runaway defence)"
+                .to_string();
+        }
+        let pct = self.duty_fraction().unwrap_or(0.0) * 100.0;
+        let window = self.throttle_window().unwrap_or_default();
+        format!(
+            "{}/{} us ({:.1}% of each period; over-budget RT is dequeued for {:?}) from {}",
+            self.runtime_us,
+            self.period_us,
+            pct,
+            window,
+            match self.source {
+                RtBandwidthSource::ProcSys => "/proc/sys/kernel",
+                RtBandwidthSource::CgroupV1 => "the cgroup cpu controller",
+                RtBandwidthSource::Unavailable => "nowhere",
+            }
+        )
+    }
+}
+
+/// The real-time class's CPU budget, as it applies to THIS task.
+///
+/// Reads the host-wide sysctls, then prefers a tighter cgroup-v1
+/// `cpu.rt_runtime_us` when one exists — that is the budget that actually
+/// binds. Every read is world-readable and unprivileged; a failure is
+/// [`RtBandwidth::UNAVAILABLE`], never an error.
+///
+/// Not applicable off Linux, which has no equivalent policing of a real-time
+/// class.
+pub fn rt_bandwidth() -> RtBandwidth {
+    // Cached: every RT chain asks, and they would otherwise each open the same
+    // three files. A process that changes the sysctl mid-run keeps the value
+    // read at startup, which is the right scope for a startup diagnostic — and
+    // the alternative, re-reading, would put `open`/`read`/`close` on a path
+    // reached once per RT thread during the phase-anchor window.
+    static CACHED: std::sync::OnceLock<RtBandwidth> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        #[cfg(target_os = "linux")]
+        {
+            linux::read_rt_bandwidth()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            RtBandwidth::UNAVAILABLE
+        }
+    })
+}
+
 /// Platform RT capabilities detected at startup.
 #[derive(Debug, Clone)]
 pub struct RtCapabilities {

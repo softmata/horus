@@ -706,17 +706,44 @@ impl CyclicWaiter {
         // SPIN_GUARD_PERIOD_SHIFT.
         let guard_ns = requested_guard_ns.min(period_ns >> SPIN_GUARD_PERIOD_SHIFT);
 
-        if mode == WaitMode::Spin && rt_policy_active {
-            // Unconditional, not verbose-gated: this is the exact combination
-            // that produces the ~50 ms dequeue, and an operator who opted into
-            // it deserves to be told on every boot.
-            print_line(
-                "[RT-thread] WARNING: HORUS_RT_WAIT=spin with a real RT policy. The tick loop \
-                 will busy-wait every period; Linux RT bandwidth control will dequeue this \
-                 thread for ~50ms once its share is exhausted (~50 missed deadlines at 1kHz). \
-                 Median wake jitter improves to ~100ns and the worst case gets far worse.",
-            );
-        } else if period_ns < (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) && rt_policy_active {
+        // Measured, not reasoned. This used to fire on
+        // `mode == Spin && rt_policy_active` with the budget not an input, so
+        // an operator who had already set `sched_rt_runtime_us=-1` — the exact
+        // remedy this file's own comments recommend — was told on every boot
+        // that the kernel would dequeue them anyway. It also hardcoded "~50ms"
+        // and "~50 missed deadlines at 1kHz", which are right for one budget at
+        // one tick rate, and said nothing about a zero cgroup budget, whose
+        // EPERM reads as a missing CAP_SYS_NICE and is not.
+        //
+        // The read is three `open`/`read`/`close` pairs, cached process-wide,
+        // here on the startup path alongside the affinity and governor syscalls
+        // — never from the loop below.
+        {
+            let bandwidth = horus_sys::rt::rt_bandwidth();
+            let duty = if mode == WaitMode::Spin {
+                super::rt_bandwidth::LoopDuty::Spin
+            } else {
+                super::rt_bandwidth::LoopDuty::Yielding {
+                    guard_ns,
+                    period_ns,
+                }
+            };
+            let verdict = super::rt_bandwidth::classify(bandwidth, rt_policy_active, duty);
+            if let Some(line) = super::rt_bandwidth::advisory(
+                verdict,
+                bandwidth,
+                tick_period,
+                bandwidth.source == horus_sys::rt::RtBandwidthSource::CgroupV1,
+                verbose,
+            ) {
+                print_line(&line);
+            }
+        }
+
+        // The sub-160us floor is a syscall-cost fact, not a budget fact, so it
+        // keeps its own branch — and it is no longer an `else if`: a spin-mode
+        // chain at a 100us period is BOTH, and only the first line was printed.
+        if period_ns < (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) && rt_policy_active {
             print_line(&format!(
                 "[RT-thread] WARNING: tick period {}us is below the {}us floor where an \
                  absolute sleep is cheaper than spinning; the final approach will be \

@@ -18,6 +18,12 @@ pub struct RtReport {
     pub preempt_rt: bool,
     /// The kernel's preemption model, and how confident we are in it.
     pub preempt: horus_sys::rt::PreemptInfo,
+    /// The real-time class's CPU budget, as it applies to this task.
+    ///
+    /// The sysctls the tick loop's comments blame for the ~50 ms dequeue, read
+    /// rather than assumed — and preferring a tighter cgroup budget, which is
+    /// what actually binds inside a container.
+    pub rt_bandwidth: horus_sys::rt::RtBandwidth,
     /// The clocksource in force when the report was generated.
     ///
     /// Read again after the benchmark: a clocksource that changed *during* the
@@ -164,6 +170,34 @@ impl RtReport {
             }
             Some(true) => {}
         }
+        // RT bandwidth control. Narrow on purpose: a finite budget is the
+        // correct default on almost every host and must not become an issue,
+        // or every machine would grow one.
+        let bandwidth = horus_sys::rt::rt_bandwidth();
+        if bandwidth.is_starved() {
+            issues.push(
+                "The RT budget for this task is ZERO — SCHED_FIFO cannot be granted here \
+                 at all. The refusal reads as a permission error, but CAP_SYS_NICE is not \
+                 the remedy."
+                    .into(),
+            );
+            recs.push(
+                "Raise cpu.rt_runtime_us for this cgroup, or run outside it. This is the \
+                 default state of a non-root cpu cgroup on a kernel built with \
+                 CONFIG_RT_GROUP_SCHED."
+                    .into(),
+            );
+        } else if bandwidth.is_finite() && std::env::var("HORUS_RT_WAIT").as_deref() == Ok("spin") {
+            let window = bandwidth.throttle_window().unwrap_or_default();
+            recs.push(format!(
+                "HORUS_RT_WAIT=spin against a finite RT budget ({}/{} µs): the kernel will \
+                 dequeue the tick thread for {:?} out of every RT period once its share is \
+                 exhausted. Raise /proc/sys/kernel/sched_rt_runtime_us or use the default \
+                 absolute-sleep wait.",
+                bandwidth.runtime_us, bandwidth.period_us, window
+            ));
+        }
+
         if clocksource_before != clocksource_after {
             issues.push(format!(
                 "The clocksource changed DURING this benchmark, from `{}` to `{}` — the \
@@ -238,6 +272,7 @@ impl RtReport {
             kernel: caps.kernel_version,
             preempt_rt: caps.preempt_rt,
             preempt: caps.preempt,
+            rt_bandwidth: horus_sys::rt::rt_bandwidth(),
             clocksource: clocksource_after,
             sched_fifo: caps.rt_priority_permitted,
             memory_locking: caps.memory_locking,
@@ -308,6 +343,10 @@ impl RtReport {
         crate::terminal::print_line(&format!(
             "║    Clocksource:    {:<40} ║",
             self.clocksource.describe()
+        ));
+        crate::terminal::print_line(&format!(
+            "║    RT budget:      {:<40} ║",
+            self.rt_bandwidth.describe()
         ));
         crate::terminal::print_line(&format!(
             "║    SCHED_FIFO:     {}                                        ║",

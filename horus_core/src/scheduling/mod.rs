@@ -43,6 +43,7 @@ pub mod rt_report;
 // What the RT tick threads actually got from the kernel, as opposed to what
 // was asked for. `rt_report` above audits the *system*; this reports the
 // *running scheduler's own threads*.
+pub mod rt_bandwidth;
 pub mod rt_status;
 
 // Parallel compute thread pool executor
@@ -291,6 +292,7 @@ pub use registry::SchedulerRegistry;
 /// and anything else that spawns a thread inside a scheduler process can reach
 /// it without depending on the `scheduling::rt` module path.
 pub use rt::{enter_best_effort, spawn_best_effort};
+pub use rt_bandwidth::{advisory, classify, LoopDuty, RtBandwidthVerdict};
 #[doc(hidden)]
 pub use safety_monitor::{
     set_emergency_stop_hook, set_safe_state_hook, take_pending_local_estop,
