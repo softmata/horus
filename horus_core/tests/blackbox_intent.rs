@@ -224,3 +224,54 @@ fn test_blackbox_intent_anomaly_detection() {
         );
     }
 }
+
+// ============================================================================
+// The external-event hook
+// ============================================================================
+
+/// INTENT: "An event recorded from outside the scheduler reaches the recorder."
+///
+/// `record_external_event` is how a subsystem that does not own the scheduler
+/// -- horus_net's replicator, which reports peer loss, replication failure and
+/// desync -- gets into the flight recorder. It forwards to a process-global
+/// hook, and `set_blackbox_hook` documents itself as "Called by the Scheduler
+/// at startup to wire the blackbox".
+///
+/// Nothing called it. The hook stayed unset for the life of every process, so
+/// `record_external_event` looked up an empty `OnceLock` and dropped the event
+/// on the floor. A distributed robot's recorder held a complete local timeline
+/// and nothing at all about the network, which is the half of a distributed
+/// incident you most need.
+///
+/// Enabling `.blackbox()` is the user's request for a flight recorder, so that
+/// is where the wiring belongs. This asserts through the public surface: build
+/// a scheduler with a recorder, emit an external event, read it back.
+#[cfg(feature = "blackbox")]
+#[test]
+fn an_external_event_reaches_a_scheduler_that_enabled_its_blackbox() {
+    use horus_core::core::DurationExt;
+    use horus_core::scheduling::{record_external_event, Scheduler};
+
+    let scheduler = Scheduler::new().tick_rate(100_u64.hz()).blackbox(1);
+
+    record_external_event(BlackBoxEvent::NodeError {
+        name: "peer_link".to_string(),
+        error: "replication peer lost".to_string(),
+        severity: horus_core::error::Severity::Permanent,
+    });
+
+    let recorder = scheduler
+        .get_blackbox()
+        .expect(".blackbox(1) must give the scheduler a recorder");
+    let events = recorder.lock().unwrap_or_else(|p| p.into_inner()).events();
+
+    assert!(
+        events.iter().any(|r| matches!(
+            &r.event,
+            BlackBoxEvent::NodeError { error, .. } if error == "replication peer lost"
+        )),
+        "an external event never reached the flight recorder: the hook \
+         set_blackbox_hook exists for is not wired. Recorded: {} event(s)",
+        events.len()
+    );
+}

@@ -887,7 +887,29 @@ impl Scheduler {
         self.pending_config.monitoring.black_box_size_mb = size_mb;
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
         let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
-        self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+        let shared = Arc::new(Mutex::new(bb));
+
+        // Wire the external-event hook. `set_blackbox_hook` says "Called by the
+        // Scheduler at startup to wire the blackbox" and nothing called it, so
+        // `record_external_event` -- the entry point horus_net's replicator uses
+        // for peer-lost, replication-failure and desync events -- looked up an
+        // unset OnceLock and dropped every event. A distributed robot's flight
+        // recorder therefore held nothing about the network, which is the part
+        // of a distributed incident you most want a timeline of.
+        //
+        // OnceLock: the first scheduler to enable a blackbox owns the hook for
+        // the life of the process. A second scheduler's `.blackbox()` still gets
+        // its own recorder for local events; only external ones stay with the
+        // first. That is the existing contract of a process-global hook, not a
+        // new limitation.
+        let hook_target = Arc::clone(&shared);
+        super::blackbox::set_blackbox_hook(move |event| {
+            if let Ok(mut bb) = hook_target.lock() {
+                bb.record(event);
+            }
+        });
+
+        self.monitor.blackbox = Some(shared);
         self
     }
 
