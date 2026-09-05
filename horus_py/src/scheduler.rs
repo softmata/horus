@@ -859,6 +859,25 @@ impl PyScheduler {
     }
 }
 
+/// `self.inner` is `None` for exactly one reason: `run()` took the
+/// scheduler out to drive it (`with_inner_run`), so it is running right now.
+///
+/// Introspection used to answer that state with an invented value -- zero
+/// nodes, zero ticks, `false` for `is_recording`, the literal string
+/// `"PythonScheduler"` -- which is indistinguishable from a real
+/// observation. A node-health check polling from inside a tick therefore
+/// read "no nodes, tick 0, not recording" off a scheduler that had all
+/// three, and `is_recording() == false` on a session that was recording is
+/// the kind of answer someone deletes data over.
+///
+/// `get_node_stats` in this same block already refuses ("Stats unavailable
+/// while scheduler is running"), Invariant 3 in the module header says a
+/// re-entrant call "will find `self.inner == None` and receive
+/// `RuntimeError`", and every mutator here says so too. This is that error.
+fn unavailable_while_running(what: &str) -> pyo3::PyErr {
+    PyRuntimeError::new_err(format!("{what} unavailable while scheduler is running"))
+}
+
 #[pymethods]
 impl PyScheduler {
     #[new]
@@ -1103,7 +1122,7 @@ impl PyScheduler {
                 let removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
                 Ok(sched.node_list().len() - removed.len())
             }
-            None => Ok(0),
+            None => Err(unavailable_while_running("Node count")),
         }
     }
 
@@ -1115,7 +1134,7 @@ impl PyScheduler {
                 let removed = self.removed_nodes.lock().map_err(lock_poisoned)?;
                 Ok(sched.node_list().contains(&name) && !removed.contains(&name))
             }
-            None => Ok(false),
+            None => Err(unavailable_while_running("The node list")),
         }
     }
 
@@ -1131,7 +1150,7 @@ impl PyScheduler {
                     .filter(|n| !removed.contains(n))
                     .collect())
             }
-            None => Ok(Vec::new()),
+            None => Err(unavailable_while_running("The node list")),
         }
     }
 
@@ -1147,7 +1166,7 @@ impl PyScheduler {
                 }
                 Ok(None)
             }
-            None => Ok(None),
+            None => Err(unavailable_while_running("Node info")),
         }
     }
 
@@ -1167,10 +1186,9 @@ impl PyScheduler {
     /// Get runtime capabilities as a dict.
     fn capabilities(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = match guard.as_ref() {
-            Some(s) => s,
-            None => return Ok(None),
-        };
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| unavailable_while_running("Capabilities"))?;
         match inner.capabilities() {
             Some(caps) => {
                 let dict = PyDict::new(py);
@@ -1189,17 +1207,16 @@ impl PyScheduler {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.has_full_rt()),
-            None => Ok(false),
+            None => Err(unavailable_while_running("RT capability")),
         }
     }
 
     /// Get RT degradations as a list of dicts.
     fn degradations(&self, py: Python) -> PyResult<Py<PyAny>> {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = match guard.as_ref() {
-            Some(s) => s,
-            None => return Ok(PyList::empty(py).into()),
-        };
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| unavailable_while_running("Degradations"))?;
         let result = PyList::empty(py);
         for deg in inner.degradations() {
             let dict = PyDict::new(py);
@@ -1216,7 +1233,7 @@ impl PyScheduler {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.current_tick()),
-            None => Ok(0),
+            None => Err(unavailable_while_running("The tick count")),
         }
     }
 
@@ -1225,7 +1242,7 @@ impl PyScheduler {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.scheduler_name().to_string()),
-            None => Ok("PythonScheduler".to_string()),
+            None => Err(unavailable_while_running("The scheduler name")),
         }
     }
 
@@ -1236,10 +1253,9 @@ impl PyScheduler {
     /// Get safety statistics as a dict.
     fn safety_stats(&self, py: Python) -> PyResult<Option<Py<PyAny>>> {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
-        let inner = match guard.as_ref() {
-            Some(s) => s,
-            None => return Ok(None),
-        };
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| unavailable_while_running("Safety stats"))?;
         match inner.safety_stats() {
             Some(stats) => {
                 let dict = PyDict::new(py);
@@ -1263,7 +1279,7 @@ impl PyScheduler {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.is_recording()),
-            None => Ok(false),
+            None => Err(unavailable_while_running("Recording state")),
         }
     }
 
@@ -1272,7 +1288,7 @@ impl PyScheduler {
         let guard = self.inner.lock().map_err(lock_poisoned)?;
         match guard.as_ref() {
             Some(sched) => Ok(sched.is_replaying()),
-            None => Ok(false),
+            None => Err(unavailable_while_running("Replay state")),
         }
     }
 
