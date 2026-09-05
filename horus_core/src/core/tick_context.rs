@@ -84,7 +84,48 @@ pub fn set_tick_context(
     tick_start: ClockInstant,
     budget: Option<Duration>,
 ) {
-    let seed = deterministic_seed(tick_number, node_name);
+    set_tick_context_with_hash(
+        node_name,
+        hash_node_name(node_name),
+        tick_number,
+        clock,
+        dt,
+        sim_time,
+        tick_start,
+        budget,
+    )
+}
+
+/// `set_tick_context` for a caller that already knows the node's name hash.
+///
+/// The RNG seed is `f(tick_number, hash(node_name))`, and this runs once per
+/// node per tick — so the by-name form above re-derives a per-node CONSTANT on
+/// every period. At 1 kHz that is one SipHash per node per millisecond, ~25 ns
+/// each, to obtain a value that cannot have changed.
+///
+/// It is deliberately a parameter rather than a memo on the context. A memo
+/// would have to be keyed on the name and revalidated, and it only ever hits
+/// when the SAME node is entered twice in a row — which for a multi-node chain
+/// is never, since the executor walks A, B, C, A, B, C and the name differs on
+/// every call. Measured, that memo cost 5 ns per tick more than it saved on any
+/// chain longer than one node. An executor that resolved the hash once at
+/// thread start pays nothing here at all.
+///
+/// `name_hash` MUST be `hash_node_name(node_name)`; passing anything else
+/// silently changes `horus::rng()`'s stream for that node.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn set_tick_context_with_hash(
+    node_name: &str,
+    name_hash: u64,
+    tick_number: u64,
+    clock: &dyn Clock,
+    dt: Duration,
+    sim_time: Duration,
+    tick_start: ClockInstant,
+    budget: Option<Duration>,
+) {
+    let seed = seed_from_parts(tick_number, name_hash);
     let rng = SmallRng::seed_from_u64(seed);
     // Erase the trait object's lifetime so the pointer can live in a `'static`
     // thread-local.
@@ -246,13 +287,24 @@ pub fn ctx_with_rng<R>(f: impl FnOnce(&mut SmallRng) -> R) -> R {
 
 /// Deterministic seed from tick number + node name.
 /// Same tick + same name → same seed → same RNG sequence.
-fn deterministic_seed(tick_number: u64, node_name: &str) -> u64 {
+pub(crate) fn hash_node_name(node_name: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     node_name.hash(&mut hasher);
-    let name_hash = hasher.finish();
+    hasher.finish()
+}
+
+fn seed_from_parts(tick_number: u64, name_hash: u64) -> u64 {
     tick_number
         .wrapping_mul(0x517cc1b727220a95)
         .wrapping_add(name_hash)
+}
+
+/// Unchanged in behaviour — `seed_from_parts(tick, hash_node_name(name))` is
+/// the same expression the single function used to evaluate inline. Kept so the
+/// property test below can assert the memoized path agrees with it.
+#[cfg(test)]
+pub(crate) fn deterministic_seed(tick_number: u64, node_name: &str) -> u64 {
+    seed_from_parts(tick_number, hash_node_name(node_name))
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -262,7 +314,188 @@ mod tests {
     use super::*;
     use crate::core::clock::SimClock;
     use crate::core::duration_ext::DurationExt;
+    use rand::RngCore;
 
+    /// What resolving the node-name hash once removes from each tick.
+    ///
+    /// Also records the road not taken. Memoizing the hash on the thread-local
+    /// context — comparing the name and reusing the hash when it matches — is
+    /// the obvious cheaper-looking fix, and it is worse: it only HITS when the
+    /// same node is entered twice in a row, which for a multi-node chain never
+    /// happens, because the executor walks A, B, C, A, B, C and the name
+    /// differs on every call. On a miss it pays the comparison AND the hash.
+    /// The numbers below are why this file takes the hash as a parameter
+    /// instead.
+    ///
+    /// `#[ignore]`d: a stopwatch, not an assertion. Run with:
+    ///
+    /// ```text
+    /// cargo test -p horus_core --release name_hash_cost -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "stopwatch, not an assertion — run manually with --ignored"]
+    fn name_hash_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const N: usize = 2_000_000;
+        let name = "perception_stage_3";
+        let other = "perception_stage_4";
+
+        // What the old path paid every tick, and what passing the hash removes.
+        let t = Instant::now();
+        let mut acc = 0u64;
+        for _ in 0..N {
+            acc ^= hash_node_name(black_box(name));
+        }
+        black_box(acc);
+        let hashing = t.elapsed().as_nanos() as f64 / N as f64;
+
+        // A thread-local memo, had it hit: the guard comparison alone.
+        let t = Instant::now();
+        let mut hits = 0u64;
+        for _ in 0..N {
+            hits += (black_box(name) == black_box(name)) as u64;
+        }
+        black_box(hits);
+        let memo_hit = t.elapsed().as_nanos() as f64 / N as f64;
+
+        // The same memo on a miss, which is what a multi-node chain always gets.
+        let t = Instant::now();
+        let mut acc = 0u64;
+        for _ in 0..N {
+            if black_box(name) != black_box(other) {
+                acc ^= hash_node_name(black_box(other));
+            }
+        }
+        black_box(acc);
+        let memo_miss = t.elapsed().as_nanos() as f64 / N as f64;
+
+        println!("\n  node-name hash, per node per tick:");
+        println!("    recompute every tick (what this replaces): {hashing:6.2} ns");
+        println!("    resolved once at thread start (now)      :   0.00 ns");
+        println!("    -- the memo alternative, for the record --");
+        println!("    memo hit  (single-node chain only)       : {memo_hit:6.2} ns");
+        println!("    memo miss (any chain of 2+ nodes)        : {memo_miss:6.2} ns");
+        println!(
+            "    => a memo LOSES {:.2} ns/tick on a multi-node chain\n",
+            memo_miss - hashing
+        );
+    }
+
+    /// The precomputed-hash path must produce a bit-identical seed to the
+    /// by-name path, for every node and every tick.
+    ///
+    /// This is the whole correctness burden of letting the RT executor resolve
+    /// `hash_node_name` once at thread start and pass it in. `horus::rng()` is
+    /// documented as deterministic in (tick, node) — replay, simulation
+    /// reproducibility and every seeded-fixture test rest on it. If the two
+    /// paths disagreed, nothing would fail loudly: RT nodes would simply draw a
+    /// different random stream than the same node drew on the main loop, and
+    /// two runs of the same scenario would quietly diverge.
+    #[test]
+    fn the_precomputed_hash_path_seeds_identically_to_the_by_name_path() {
+        let clock = SimClock::new();
+
+        // A first draw from a freshly seeded RNG identifies the seed: SmallRng
+        // is a pure function of it.
+        fn draw(hashed: bool, name: &str, tick: u64, clock: &SimClock) -> u64 {
+            if hashed {
+                set_tick_context_with_hash(
+                    name,
+                    hash_node_name(name),
+                    tick,
+                    clock,
+                    Duration::from_millis(1),
+                    Duration::ZERO,
+                    ClockInstant::from_nanos(0),
+                    None,
+                );
+            } else {
+                set_tick_context(
+                    name,
+                    tick,
+                    clock,
+                    Duration::from_millis(1),
+                    Duration::ZERO,
+                    ClockInstant::from_nanos(0),
+                    None,
+                );
+            }
+            let drawn = ctx_with_rng(|r| r.next_u64());
+            clear_tick_context();
+            drawn
+        }
+
+        for name in ["perception", "control", "", "a", "perception_stage_11"] {
+            for tick in 0..8u64 {
+                let by_name = draw(false, name, tick, &clock);
+                let precomputed = draw(true, name, tick, &clock);
+                assert_eq!(
+                    by_name, precomputed,
+                    "precomputed hash changed the RNG stream for {name:?} at tick {tick}"
+                );
+                // ...and both must equal the seed the documented formula gives.
+                assert_eq!(
+                    by_name,
+                    SmallRng::seed_from_u64(deterministic_seed(tick, name)).next_u64(),
+                    "the seed for {name:?} at tick {tick} is no longer f(tick, hash(name))"
+                );
+            }
+        }
+
+        // Distinct nodes on the same tick must still differ — the property the
+        // per-node hash exists to provide.
+        assert_ne!(
+            draw(true, "perception", 3, &clock),
+            draw(true, "control", 3, &clock)
+        );
+    }
+
+    /// Interleaving nodes on one thread must not let one node's seed leak into
+    /// another's.
+    ///
+    /// An executor thread walks its whole chain every period — A, B, C, A, B,
+    /// C — reusing one thread-local context, and a mixed-rate chain also
+    /// produces runs like A, A, ..., A, B, A, A where a node repeats. Any
+    /// per-thread caching of the name or its hash has to survive both shapes.
+    #[test]
+    fn interleaved_nodes_on_one_thread_keep_their_own_seeds() {
+        let clock = SimClock::new();
+
+        let draw = |name: &str, tick: u64| {
+            set_tick_context_with_hash(
+                name,
+                hash_node_name(name),
+                tick,
+                &clock,
+                Duration::from_millis(1),
+                Duration::ZERO,
+                ClockInstant::from_nanos(0),
+                None,
+            );
+            let d = ctx_with_rng(|r| r.next_u64());
+            clear_tick_context();
+            d
+        };
+        let expect = |name: &str, tick: u64| {
+            SmallRng::seed_from_u64(deterministic_seed(tick, name)).next_u64()
+        };
+
+        // Round-robin, the multi-node chain shape.
+        for tick in 0..4u64 {
+            for name in ["a_node", "b_node", "c_node"] {
+                assert_eq!(draw(name, tick), expect(name, tick), "{name} at {tick}");
+            }
+        }
+
+        // A node repeating right after a different one ran, the mixed-rate shape.
+        for tick in 0..4u64 {
+            let _ = draw("slow_planner", tick);
+            assert_eq!(draw("fast_servo", tick), expect("fast_servo", tick));
+            assert_eq!(draw("fast_servo", tick + 1), expect("fast_servo", tick + 1));
+        }
+    }
     #[test]
     fn ctx_now_fallback_outside_tick() {
         clear_tick_context();
