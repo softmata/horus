@@ -91,7 +91,17 @@ CMake finds the library in `target/` automatically from a checkout; pass
 ## Prerequisites
 
 - [Horus](https://github.com/softmata/horus) installed (`horus` CLI available)
-- [sim3d](https://github.com/softmata/horus-sim3d) installed (for physics simulation)
+- **sim3d is not publicly available yet.** The simulator is a private
+  repository, so `https://github.com/softmata/horus-sim3d` returns 404 and
+  `horus install horus-sim3d` cannot find it (#49).
+
+  Every example still builds and runs without it — skip the `sim3d ...` line.
+  What you lose depends on the example: the control examples
+  (`differential_drive`, `differential_drive_cpp`, `quadruped`, `robot_arm`,
+  `multi_robot`) publish commands and are fully exercised on their own, while
+  `sensor_navigation` and `sensor_navigation_py` **subscribe to `lidar.scan`
+  and `imu.data`, which the simulator is what publishes** — they will start,
+  tick, and receive nothing.
 - Python 3.9+ (for `python_robot` and `sensor_navigation_py`)
 - A C++17 compiler, cmake 3.20+, and make or ninja (for `differential_drive_cpp`
   and the `horus_cpp/examples/` programs) — `horus doctor` checks all three
@@ -101,7 +111,9 @@ CMake finds the library in `target/` automatically from a checkout; pass
 Every Rust example follows the same workflow:
 
 ```bash
-# Terminal 1: start the simulator (optional — examples work without sim)
+# Terminal 1: start the simulator.
+# SKIP THIS - sim3d is not public yet (see Prerequisites). The controller
+# below runs on its own; it just has no simulated world to talk to.
 sim3d --mode visual --robot robots/<robot>.urdf --world worlds/<world>.yaml
 
 # Terminal 2: run the controller
