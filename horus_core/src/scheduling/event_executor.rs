@@ -338,9 +338,32 @@ impl EventExecutor {
             super::primitives::honor_safe_state_request(&mut node, &monitors);
             super::primitives::honor_restart_request(&mut node, &monitors);
 
+            // Operator commands reach every executor through the shared
+            // node_controls map: `horus node kill` sets stopped, `horus node
+            // pause` sets paused. Only the RT executor used to read them, so
+            // pausing or killing a event node from the CLI printed success and
+            // then did nothing at all -- while `should_tick_node` says it is
+            // "honored the same way the executor threads do" and the control
+            // handler says the pause holds "for ALL node classes".
+            //
+            // A pause does not latch -- it is re-read every pass, so ResumeNode
+            // takes effect on the next one. That is the half the CLI actually
+            // drives: ControlCommand::PauseNode/ResumeNode set this flag.
+            //
+            // The `stopped` half latches into `is_stopped` the way the RT
+            // executor does. Nothing in the CLI sets it today (`set_stopped` is
+            // `#[allow(dead_code)]`, and `horus node kill` goes through the
+            // launch supervisor instead), so this is parity with the RT
+            // executor rather than a second user-facing fix -- but a flag two
+            // of five tick gates honour is exactly how the pause bug started.
+            if monitors.node_controls.is_stopped(node.name.as_ref()) {
+                node.is_stopped = true;
+            }
+
             if !node.initialized
                 || node.is_stopped
                 || node.is_paused
+                || monitors.node_controls.is_paused(node.name.as_ref())
                 || !node.failure_policy_allows_tick()
             {
                 // Not tickable. Deliberately a timed sleep and not a wait on
@@ -642,6 +665,98 @@ mod tests {
             use_sched_deadline: false,
             no_alloc: false,
         }
+    }
+
+    /// `horus node pause` must reach a event node.
+    ///
+    /// Operator commands travel through the shared `node_controls` map. Only
+    /// the RT executor read it, so pausing or killing a event node from the
+    /// CLI reported success and changed nothing -- while `should_tick_node`
+    /// says the flag is "honored the same way the executor threads do" and the
+    /// control handler says an operator pause holds "for ALL node classes".
+    ///
+    /// Counts, not flags: the question is whether the node stopped running.
+    /// The `stopped` half is checked for parity with the RT executor; no CLI
+    /// path sets it today.
+    #[test]
+    fn an_operator_pause_and_kill_reach_an_event_node() {
+        let count = Arc::new(AtomicU64::new(0));
+        let monitors = test_monitors();
+        monitors.node_controls.register("paused_event");
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = EventExecutor::start(
+            vec![make_event_node(
+                "paused_event",
+                "pause_topic",
+                count.clone(),
+            )],
+            running.clone(),
+            monitors.clone(),
+        );
+
+        // Wait for the watcher to register its notifier.
+        let mut registered = false;
+        for _ in 0..100 {
+            if crate::core::NodeInfo::notify_event("paused_event") {
+                registered = true;
+                break;
+            }
+            std::thread::sleep(5_u64.ms());
+        }
+        assert!(
+            registered,
+            "the event watcher never registered its notifier"
+        );
+
+        let poke_until = |from: u64| {
+            for _ in 0..200 {
+                crate::core::NodeInfo::notify_event("paused_event");
+                if count.load(Ordering::Relaxed) > from {
+                    return true;
+                }
+                std::thread::sleep(5_u64.ms());
+            }
+            false
+        };
+
+        assert!(poke_until(0), "the node never ticked at all");
+
+        // Paused: poking it must not tick it.
+        monitors.node_controls.set_paused("paused_event", true);
+        std::thread::sleep(30_u64.ms());
+        let frozen = count.load(Ordering::Relaxed);
+        for _ in 0..12 {
+            crate::core::NodeInfo::notify_event("paused_event");
+            std::thread::sleep(5_u64.ms());
+        }
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            frozen,
+            "the node kept ticking through an operator pause"
+        );
+
+        monitors.node_controls.set_paused("paused_event", false);
+        assert!(
+            poke_until(frozen),
+            "the node never resumed after ResumeNode"
+        );
+
+        monitors.node_controls.set_stopped("paused_event");
+        std::thread::sleep(30_u64.ms());
+        let killed_at = count.load(Ordering::Relaxed);
+        for _ in 0..12 {
+            crate::core::NodeInfo::notify_event("paused_event");
+            std::thread::sleep(5_u64.ms());
+        }
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            killed_at,
+            "the node kept ticking after an operator kill"
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
     }
 
     #[test]

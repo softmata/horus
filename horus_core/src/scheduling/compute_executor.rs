@@ -635,12 +635,37 @@ impl ComputeExecutor {
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
+            // Operator commands reach every executor through the shared
+            // node_controls map: `horus node kill` sets stopped, `horus node
+            // pause` sets paused. Only the RT executor used to read them, so
+            // pausing or killing a compute node from the CLI printed success and
+            // then did nothing at all -- while `should_tick_node` says it is
+            // "honored the same way the executor threads do" and the control
+            // handler says the pause holds "for ALL node classes".
+            //
+            // A pause does not latch -- it is re-read every pass, so ResumeNode
+            // takes effect on the next one. That is the half the CLI actually
+            // drives: ControlCommand::PauseNode/ResumeNode set this flag.
+            //
+            // The `stopped` half latches into `is_stopped` the way the RT
+            // executor does. Nothing in the CLI sets it today (`set_stopped` is
+            // `#[allow(dead_code)]`, and `horus node kill` goes through the
+            // launch supervisor instead), so this is parity with the RT
+            // executor rather than a second user-facing fix -- but a flag two
+            // of five tick gates honour is exactly how the pause bug started.
+            for node in nodes.iter_mut() {
+                if monitors.node_controls.is_stopped(node.name.as_ref()) {
+                    node.is_stopped = true;
+                }
+            }
+
             // Classify which nodes should tick this cycle
             ready_indices.clear();
             for (i, node) in nodes.iter().enumerate() {
                 if !node.initialized
                     || node.is_stopped
                     || node.is_paused
+                    || monitors.node_controls.is_paused(node.name.as_ref())
                     || !node.failure_policy_allows_tick()
                 {
                     continue;
@@ -973,6 +998,73 @@ mod tests {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// `horus node pause` must reach a compute node.
+    ///
+    /// Operator commands travel through the shared `node_controls` map. Only
+    /// the RT executor read it, so pausing or killing a compute node from the
+    /// CLI reported success and changed nothing -- while `should_tick_node`
+    /// says the flag is "honored the same way the executor threads do" and the
+    /// control handler says an operator pause holds "for ALL node classes".
+    ///
+    /// Counts, not flags: the question is whether the node stopped running.
+    /// The `stopped` half is checked for parity with the RT executor; no CLI
+    /// path sets it today.
+    #[test]
+    fn an_operator_pause_and_kill_reach_a_compute_node() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let monitors = test_monitors();
+        monitors.node_controls.register("paused_compute");
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = ComputeExecutor::start(
+            vec![make_compute_node("paused_compute", count.clone())],
+            running.clone(),
+            1_u64.ms(),
+            monitors.clone(),
+        );
+
+        let ticked = |from: u64| {
+            for _ in 0..200 {
+                if count.load(Ordering::Relaxed) > from {
+                    return true;
+                }
+                std::thread::sleep(5_u64.ms());
+            }
+            false
+        };
+
+        assert!(ticked(0), "the node never ticked at all");
+
+        // Pause: the count must stop moving.
+        monitors.node_controls.set_paused("paused_compute", true);
+        std::thread::sleep(30_u64.ms()); // let any in-flight pass finish
+        let frozen = count.load(Ordering::Relaxed);
+        std::thread::sleep(60_u64.ms());
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            frozen,
+            "the node kept ticking through an operator pause"
+        );
+
+        // Resume: it must move again.
+        monitors.node_controls.set_paused("paused_compute", false);
+        assert!(ticked(frozen), "the node never resumed after ResumeNode");
+
+        // Kill: the count must stop, and stay stopped.
+        monitors.node_controls.set_stopped("paused_compute");
+        std::thread::sleep(30_u64.ms());
+        let killed_at = count.load(Ordering::Relaxed);
+        std::thread::sleep(60_u64.ms());
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            killed_at,
+            "the node kept ticking after an operator kill"
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
     }
 
     /// A safing diagnostic from a non-RT executor must actually be printed.
