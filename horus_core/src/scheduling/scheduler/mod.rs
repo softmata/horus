@@ -2631,7 +2631,16 @@ impl Scheduler {
         // tick_once() always executes sequentially (reproducibility over wall-time).
         // The dependency graph determines ORDER, not parallelism.
         // Phase 2 rebuild: check for new topic registrations after first tick.
-        if self.first_tick_done && self.graph_registry_version > 0 {
+        // No `graph_registry_version > 0` guard here. It read as "have we
+        // seeded yet", but 0 is the legitimate seeded value for the shape this
+        // rebuild exists to serve: `Topic::new` registers nothing, registration
+        // happens lazily on the first `send()`/`recv()`, so a node that first
+        // touches a topic inside `tick()` leaves the registry at version 0 when
+        // `finalize_and_init` seeds from it. The sentinel then excluded exactly
+        // the transition it was written to catch, and the rebuild could never
+        // fire for the common program shape (#186). The `!=` below is already
+        // the whole "did the topology change" test, and it is correct from 0.
+        if self.first_tick_done {
             let current_version = crate::communication::topic_node_registry().version();
             if current_version != self.graph_registry_version {
                 self.build_dependency_graph();
@@ -6011,7 +6020,16 @@ impl Scheduler {
         // Phase 2: rebuild graph once after first tick if topology changed.
         // send()/recv() during the first tick register topics that weren't
         // visible at init() time. One rebuild captures them; then locked.
-        if self.first_tick_done && self.graph_registry_version > 0 {
+        // No `graph_registry_version > 0` guard here. It read as "have we
+        // seeded yet", but 0 is the legitimate seeded value for the shape this
+        // rebuild exists to serve: `Topic::new` registers nothing, registration
+        // happens lazily on the first `send()`/`recv()`, so a node that first
+        // touches a topic inside `tick()` leaves the registry at version 0 when
+        // `finalize_and_init` seeds from it. The sentinel then excluded exactly
+        // the transition it was written to catch, and the rebuild could never
+        // fire for the common program shape (#186). The `!=` below is already
+        // the whole "did the topology change" test, and it is correct from 0.
+        if self.first_tick_done {
             let current_version = crate::communication::topic_node_registry().version();
             if current_version != self.graph_registry_version {
                 self.build_dependency_graph();

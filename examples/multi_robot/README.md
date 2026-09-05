@@ -33,6 +33,11 @@ Each scout runs proportional control toward its formation offset from the coordi
 
 **Terminal 1 — start the simulator:**
 
+> **sim3d is not public yet.** The simulator lives in a private repository,
+> so this command will not work for you — see [../README.md](../README.md#prerequisites).
+> The example below runs without it; the simulator only adds visualisation
+> and simulated sensor input.
+
 ```bash
 sim3d --mode visual --world worlds/arena.yaml
 ```

@@ -6668,3 +6668,72 @@ fn launch_rate_hz_overrides_the_compiled_in_tick_rate() {
          this was 2000us: the key was exported, validated, and read by nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase-2 graph rebuild fires for topics first used in tick() (#186)
+// ---------------------------------------------------------------------------
+
+/// The rebuild must fire for the shape it was written for.
+///
+/// `Topic::new` registers nothing; registration is lazy, on the first
+/// `send()`/`recv()`. So a node that first touches a topic inside `tick()`
+/// leaves the registry at version 0 when `finalize_and_init` seeds
+/// `graph_registry_version` from it — and the old guard, `first_tick_done &&
+/// graph_registry_version > 0`, then excluded exactly that case forever. The
+/// sentinel meant "have we seeded yet", but 0 is a legitimate seeded value.
+///
+/// Ablation-checked: restore the `> 0` term and this fails with the version
+/// still at 0 after ticking.
+#[test]
+fn phase_two_rebuild_fires_for_a_topic_first_used_in_tick() {
+    let _guard = lock_scheduler();
+
+    struct LateTopicNode {
+        out: Option<crate::communication::Topic<u64>>,
+        name: String,
+    }
+    impl Node for LateTopicNode {
+        fn name(&self) -> &str {
+            "late_topic"
+        }
+        fn tick(&mut self) {
+            // First touch is HERE, not in init() — the shape the rebuild exists
+            // for, and the one the sentinel excluded.
+            if self.out.is_none() {
+                self.out = crate::communication::Topic::new(&self.name).ok();
+            }
+            if let Some(ref t) = self.out {
+                t.send(1u64);
+            }
+        }
+    }
+
+    let topic = format!("phase2_late_{}", std::process::id());
+    let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz()).verbose(false);
+    let _ = scheduler
+        .add(LateTopicNode {
+            out: None,
+            name: topic.clone(),
+        })
+        .build();
+
+    // Two ticks: the first registers the topic, the second is where the guard
+    // is consulted with `first_tick_done` already true.
+    scheduler.tick_once().expect("first tick");
+    let registry_after_first = crate::communication::topic_node_registry().version();
+    scheduler.tick_once().expect("second tick");
+
+    assert!(
+        registry_after_first > 0,
+        "the node's send() must have registered the topic — if this is 0 the \
+         test is not exercising lazy registration and proves nothing"
+    );
+    assert_eq!(
+        scheduler.graph_registry_version,
+        crate::communication::topic_node_registry().version(),
+        "the Phase-2 rebuild must have caught up to the registry. Before #186 \
+         this stayed at its seeded 0 forever: the guard required \
+         graph_registry_version > 0, which is exactly what a topic first used \
+         in tick() can never satisfy"
+    );
+}
