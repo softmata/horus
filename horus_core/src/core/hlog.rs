@@ -309,6 +309,114 @@ pub fn log_type_enabled(log_type: &LogType) -> bool {
 /// C FFI, `log_horus_error`, anything holding a `String` already): they still
 /// pay for the message they built, but not for the timestamp, the buffer mutex
 /// or the console write.
+/// The `hlog!` entry point.
+///
+/// Carries the message as `core::fmt::Arguments` rather than a `String`, which
+/// is what lets the real-time path format it into a fixed-size ring slot
+/// without ever reaching the allocator. The macro used to commit to a `String`
+/// before anything could intervene: by the time RT-aware code could run, the
+/// allocation had already happened — and on a `.no_alloc()` node that
+/// allocation is itself the violation.
+#[inline]
+pub fn log_fmt(level: LogType, args: std::fmt::Arguments<'_>) {
+    if !log_type_enabled(&level) {
+        return;
+    }
+    if crate::core::hlog_rt::in_rt_thread() {
+        // Reads the thread-local WITHOUT cloning the name: `queue` copies the
+        // bytes straight out of the borrow into the slot.
+        CURRENT_NODE.with(|ctx| {
+            // The borrow is held across `queue` on purpose: that is what lets
+            // the node name reach the ring as a `&str` the slot copies from,
+            // instead of the `String` clone the old path made per line.
+            let guard = ctx.borrow();
+            let (name, tick_us, tick_number) = match *guard {
+                Some(ref c) => (
+                    c.name.as_str(),
+                    c.tick_start
+                        .map(|t| t.elapsed().as_micros() as u64)
+                        .unwrap_or(0),
+                    c.tick_number,
+                ),
+                None => ("unknown", 0, 0),
+            };
+            crate::core::hlog_rt::queue(level.clone(), name, tick_number, tick_us, args);
+        });
+        return;
+    }
+    log_with_context(level, fmt_to_string(args));
+}
+
+/// Render `Arguments` with one allocation.
+///
+/// `as_str()` returns `Some(&'static str)` for a literal with no interpolation,
+/// which is the common `hlog!(info, "started")` shape — one `to_owned` instead
+/// of running the whole formatting machine.
+#[inline]
+fn fmt_to_string(args: std::fmt::Arguments<'_>) -> String {
+    match args.as_str() {
+        Some(s) => s.to_owned(),
+        None => args.to_string(),
+    }
+}
+
+/// Emit an entry that was queued on an RT thread and drained off it.
+///
+/// Takes the node name and timing explicitly because the drain thread's own
+/// `CURRENT_NODE` is empty — it never ticks a node — and attributing every
+/// RT-queued line to "unknown" would defeat `horus log --node <name>`, which
+/// filters on exactly that field.
+pub(crate) fn emit_recorded(
+    level: &LogType,
+    node_name: &str,
+    message: &str,
+    tick_number: u64,
+    tick_us: u64,
+) {
+    let now = chrono::Local::now();
+    let console = format_console_line(level, node_name, message, cached_raw_mode());
+
+    publish_log(LogEntry {
+        timestamp: now.format("%H:%M:%S%.3f").to_string(),
+        tick_number,
+        node_name: node_name.to_string(),
+        log_type: level.clone(),
+        topic: None,
+        message: message.to_string(),
+        tick_us,
+        ipc_ns: 0,
+    });
+
+    if let Some(line) = console {
+        write_console_line(&line);
+    }
+}
+
+/// Cached answer to "is the terminal in raw mode".
+///
+/// `is_raw_mode()` is an `isatty` plus a `tcgetattr`, and it ran on every
+/// single log line. `u8::MAX` means not yet sampled.
+static RAW_MODE: AtomicU8 = AtomicU8::new(u8::MAX);
+
+/// Whether the terminal is in raw mode, from the cache.
+#[inline]
+pub(crate) fn cached_raw_mode() -> bool {
+    match RAW_MODE.load(Ordering::Relaxed) {
+        u8::MAX => {
+            let raw = is_raw_mode();
+            RAW_MODE.store(raw as u8, Ordering::Relaxed);
+            raw
+        }
+        v => v != 0,
+    }
+}
+
+/// Re-sample raw mode. Called once per drain poll, so a TUI entering raw mode
+/// is picked up within one poll instead of costing two syscalls per line.
+pub(crate) fn refresh_raw_mode() {
+    RAW_MODE.store(is_raw_mode() as u8, Ordering::Relaxed);
+}
+
 pub fn log_with_context(level: LogType, message: String) {
     if !log_type_enabled(&level) {
         return;
@@ -335,7 +443,7 @@ pub fn log_with_context(level: LogType, message: String) {
     // Render the console line BEFORE the entry takes ownership. This used to
     // `.clone()` both `node_name` and `message` — two heap allocations and two
     // copies on every log line, on a path that runs inside `tick()`.
-    let console = format_console_line(&level, &node_name, &message, is_raw_mode());
+    let console = format_console_line(&level, &node_name, &message, cached_raw_mode());
 
     // Write to shared memory log buffer for monitor
     publish_log(LogEntry {
@@ -381,7 +489,7 @@ pub fn log_as_node(level: LogType, node_name: &str, message: &str) {
         None => (0, 0),
     });
 
-    let console = format_console_line(&level, node_name, message, is_raw_mode());
+    let console = format_console_line(&level, node_name, message, cached_raw_mode());
 
     publish_log(LogEntry {
         timestamp: now.format("%H:%M:%S%.3f").to_string(),
@@ -419,7 +527,7 @@ pub fn emit_console(level: &LogType, node_name: &str, message: &str) {
         return;
     }
     // A TUI in raw mode has no implicit carriage return.
-    let Some(line) = format_console_line(level, node_name, message, is_raw_mode()) else {
+    let Some(line) = format_console_line(level, node_name, message, cached_raw_mode()) else {
         return;
     };
     write_console_line(&line);
@@ -539,22 +647,22 @@ macro_rules! hlog {
     // paid for everything the filter exists to avoid.
     (info, $($arg:tt)*) => {
         if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_INFO) {
-            $crate::core::hlog::log_with_context($crate::core::LogType::Info, format!($($arg)*))
+            $crate::core::hlog::log_fmt($crate::core::LogType::Info, format_args!($($arg)*))
         }
     };
     (warn, $($arg:tt)*) => {
         if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_WARN) {
-            $crate::core::hlog::log_with_context($crate::core::LogType::Warning, format!($($arg)*))
+            $crate::core::hlog::log_fmt($crate::core::LogType::Warning, format_args!($($arg)*))
         }
     };
     (error, $($arg:tt)*) => {
         if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_ERROR) {
-            $crate::core::hlog::log_with_context($crate::core::LogType::Error, format!($($arg)*))
+            $crate::core::hlog::log_fmt($crate::core::LogType::Error, format_args!($($arg)*))
         }
     };
     (debug, $($arg:tt)*) => {
         if $crate::core::hlog::level_enabled($crate::core::hlog::LEVEL_DEBUG) {
-            $crate::core::hlog::log_with_context($crate::core::LogType::Debug, format!($($arg)*))
+            $crate::core::hlog::log_fmt($crate::core::LogType::Debug, format_args!($($arg)*))
         }
     };
     // Failure arm. Without it, forgetting the level produced:

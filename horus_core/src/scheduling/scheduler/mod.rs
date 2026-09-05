@@ -3130,6 +3130,10 @@ impl Scheduler {
         // the same move: a panic during node `init()` is now reported too.
         self.install_panic_hook();
         self.setup_signal_handlers();
+        // Deterministic mode and the plain main-thread scheduler have no RT
+        // executor to start the drain, and the RT branch of the panic hook
+        // above needs somewhere for its lines to go.
+        crate::core::hlog_rt::start_drain();
 
         self.finalize_and_init();
         if let Some(ref dup) = self.duplicate_node_name {
@@ -3737,6 +3741,38 @@ impl Scheduler {
         let prev_hook = std::panic::take_hook();
 
         std::panic::set_hook(Box::new(move |info| {
+            // On an RT tick thread, everything below allocates, opens files, or
+            // blocks on a console — and the default hook this chains to
+            // symbolises a backtrace under RUST_BACKTRACE=1, reading
+            // /proc/self/maps and the binary itself. That is the single worst
+            // blocking event reachable from the RT path, and it fires for any
+            // node bug. Queue the facts instead and let the drain do all of it.
+            //
+            // Nothing here allocates: `Location::file()` is `&'static str`, the
+            // downcasts yield references, and the whole thing formats straight
+            // into a ring slot. `HEAD.fetch_add` and the atomic byte stores
+            // cannot panic, so the hook cannot panic inside a panic.
+            if crate::core::hlog_rt::in_rt_thread() {
+                let loc = info.location();
+                let payload: &str = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("unknown panic payload");
+                crate::core::hlog::log_fmt(
+                    crate::core::LogType::Error,
+                    format_args!(
+                        "PANIC on RT thread at {}:{}:{}: {}",
+                        loc.map(|l| l.file()).unwrap_or("<unknown>"),
+                        loc.map(|l| l.line()).unwrap_or(0),
+                        loc.map(|l| l.column()).unwrap_or(0),
+                        payload
+                    ),
+                );
+                return;
+            }
+
             // 1. Flush blackbox to disk
             if let Some(ref bb) = blackbox {
                 if let Ok(mut bb) = bb.try_lock() {

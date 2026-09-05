@@ -1216,6 +1216,9 @@ impl RtExecutor {
         // The blocking half of RT diagnostics lives on its own thread, started
         // here — on the caller's thread, never on an RT thread.
         start_rt_diag_drain();
+        // The same discipline for `hlog!`. Node code has no other logging API,
+        // and its direct path ends in an unbuffered blocking write to stderr.
+        crate::core::hlog_rt::start_drain();
 
         // One slot per chain, sized before any thread is spawned so
         // `wait_for_all` knows what a complete report looks like.
@@ -1307,6 +1310,9 @@ impl RtExecutor {
         // in the final milliseconds, which is the interesting case — would exit
         // with its diagnostics still sitting in the ring.
         rt_diag_drain(print_line);
+        // Same reason: a run shorter than one drain poll must not exit with its
+        // RT log lines still sitting in the ring.
+        crate::core::hlog_rt::flush();
         all_nodes
     }
 
@@ -1478,7 +1484,7 @@ impl RtExecutor {
                         // broadcast and peer robots were never told this one
                         // emergency-stopped.
                         if let Some(ref estop) = monitors.estop {
-                            estop.trigger(format!(
+                            estop.trigger_fmt(format_args!(
                                 "RT node '{}' budget violation ({:?} > {:?}) with BudgetPolicy::EmergencyStop",
                                 node.name, tr.duration, tick_budget
                             ));
@@ -1613,7 +1619,7 @@ impl RtExecutor {
                         // See the budget branch: without this the e-stop is a
                         // silent local shutdown that the fleet never hears about.
                         if let Some(ref estop) = monitors.estop {
-                            estop.trigger(format!(
+                            estop.trigger_fmt(format_args!(
                                 "RT node '{}' deadline miss escalated to emergency stop",
                                 node.name
                             ));
@@ -2040,6 +2046,18 @@ impl RtExecutor {
         // it describe the right tick. Zero for the first iteration, which is
         // released by the loop being entered rather than by a wait.
         let mut release_late_ns: u64 = 0;
+
+        // From here to the end of the loop this thread is real-time, and
+        // `hlog!` from node code, from the panic hook and from the
+        // emergency-stop latch routes through the ring instead of allocating,
+        // taking two process-global mutexes and blocking on stderr.
+        //
+        // Scoped to the loop only: every `print_line` above runs once, before
+        // any tick, on a thread that is not yet cycling — the direct path is
+        // right for those, and routing them would only delay startup output by
+        // a poll.
+        let rt_log_guard = crate::core::hlog_rt::enter_rt_thread();
+
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
@@ -2135,6 +2153,10 @@ impl RtExecutor {
             // reasoning and for the median-jitter cost this trade accepts.
             release_late_ns = waiter.wait();
         }
+
+        // Back on the direct path for teardown, whose output should not wait
+        // for a poll that may never come.
+        drop(rt_log_guard);
 
         waiter.finish(monitors.verbose);
 
