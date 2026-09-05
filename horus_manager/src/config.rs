@@ -61,10 +61,24 @@ pub fn plugin_registry_url() -> Option<String> {
     resolve_registry_url("HORUS_PLUGIN_REGISTRY_URL", DEFAULT_PLUGIN_REGISTRY_URL)
 }
 
+/// Resolve a registry base URL, normalised so callers can join paths freely.
+///
+/// The trailing slash is stripped HERE rather than at each use. Every caller
+/// builds paths as `format!("{base}/api/...")`, and of roughly two dozen such
+/// sites exactly two remembered to `trim_end_matches('/')` — so a
+/// `HORUS_REGISTRY_URL` ending in `/` produced `//api/...` almost everywhere
+/// and the correct URL in two places. Normalising once means no site has to
+/// remember, and the two that did can stop.
+///
+/// `RegistryClient::with_base_url` deliberately stores whatever it is handed;
+/// that contract is unchanged. This is the layer that decides what to hand it.
 fn resolve_registry_url(var: &str, fallback: Option<&str>) -> Option<String> {
+    fn normalise(url: &str) -> String {
+        url.trim().trim_end_matches('/').to_string()
+    }
     match std::env::var(var) {
-        Ok(url) if !url.trim().is_empty() => Some(url.trim().to_string()),
-        _ => fallback.map(str::to_string),
+        Ok(url) if !url.trim().is_empty() => Some(normalise(&url)),
+        _ => fallback.map(normalise),
     }
 }
 
