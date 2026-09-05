@@ -1155,16 +1155,42 @@ fn launch_node(
         // NOTE: nothing in the workspace reads HORUS_NODE_PRIORITY, so this is
         // currently a no-op — kept because removing it would silently drop the
         // only trace of a user's configured value. See the `priority` field doc.
+        //
+        // The note above told maintainers; it never told the operator. Someone
+        // writing `priority: 80` in a launch file had no way to learn it was
+        // not applied, which is the same failure `rate_hz` had (#185) —
+        // parsed, validated, exported, discarded. Say it out loud until a
+        // reader exists; RT priority reaches nodes through RtConfig::priority
+        // and wiring an environment override into that is a scheduling change,
+        // not a launcher one.
+        eprintln!(
+            "  warning: node '{}' sets priority: {} — HORUS does not apply it yet. \
+             The node will run at the priority its own RtConfig requests. \
+             Set it with .priority() in the node, or an execution class.",
+            node.name, priority
+        );
         cmd.env("HORUS_NODE_PRIORITY", priority.to_string());
     }
     if let Some(rate) = node.rate_hz {
         cmd.env("HORUS_NODE_RATE_HZ", rate.to_string());
     }
+    // Namespace: the launch file's, then the node's own overriding it.
+    //
+    // Both write HORUS_NAMESPACE, which is the key the runtime actually reads
+    // (horus_sys/src/discover/mod.rs:527). The per-node value used to be
+    // exported as HORUS_NODE_NAMESPACE, a spelling that appears nowhere else in
+    // the tree - so a node-level `namespace:` was parsed, exported and ignored,
+    // and the node silently stayed in the file-level namespace. Same defect as
+    // the `rate_hz` key in #185: written on one side, read by nobody on the
+    // other, with no error to notice.
+    //
+    // Node-level last so it wins: a setting on the node is more specific than
+    // the file's default, which is the only reason to write one.
     if let Some(ref ns) = namespace {
         cmd.env("HORUS_NAMESPACE", ns);
     }
     if let Some(ref ns) = node.namespace {
-        cmd.env("HORUS_NODE_NAMESPACE", ns);
+        cmd.env("HORUS_NAMESPACE", ns);
     }
 
     // Set parameters as environment.
@@ -2386,5 +2412,91 @@ nodes:
         // Should succeed with no active sessions (not panic)
         let result = show_launch_status();
         result.unwrap();
+    }
+
+    /// Every environment key this launcher exports must have a reader.
+    ///
+    /// Two keys were exported and read by nobody: `HORUS_NODE_RATE_HZ` (#185,
+    /// now honoured in `Scheduler::finalize_config`) and
+    /// `HORUS_NODE_NAMESPACE`, whose per-node `namespace:` was parsed,
+    /// validated, exported and silently discarded because the runtime reads
+    /// `HORUS_NAMESPACE`. Both were internally consistent on the writing side,
+    /// which is why nothing caught them.
+    ///
+    /// This walks the keys this file exports and fails on any that appear
+    /// nowhere else in the workspace.
+    #[test]
+    fn every_exported_env_key_has_a_reader_somewhere() {
+        let src = include_str!("launch.rs");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace root");
+
+        // Keys this launcher hands to a child process.
+        let mut exported: Vec<String> = Vec::new();
+        for line in src.lines() {
+            let Some(rest) = line.split_once("cmd.env(\"") else {
+                continue;
+            };
+            let Some((key, _)) = rest.1.split_once('"') else {
+                continue;
+            };
+            // HORUS_PARAM_* is a prefix built at runtime, not a literal key.
+            //
+            // HORUS_NODE_PRIORITY is a KNOWN, documented no-op: the note at its
+            // export site says so, and the launcher now warns the operator at
+            // launch time. It is exempt so this guard keeps failing on NEW dead
+            // keys instead of being deleted for one it already accounts for.
+            // Delete this arm when a reader lands.
+            if key.starts_with("HORUS_") && !key.ends_with('_') && key != "HORUS_NODE_PRIORITY" {
+                exported.push(key.to_string());
+            }
+        }
+        assert!(
+            exported.len() >= 3,
+            "found {} exported keys - the scan stopped matching and proves nothing",
+            exported.len()
+        );
+
+        for key in &exported {
+            let mut readers = 0usize;
+            for dir in [
+                "horus_core/src",
+                "horus_sys/src",
+                "horus_py/src",
+                "horus/src",
+            ] {
+                let d = root.join(dir);
+                if !d.exists() {
+                    continue;
+                }
+                readers += count_key_in_tree(&d, key);
+            }
+            assert!(
+                readers > 0,
+                "`{key}` is exported to every launched node and read by nothing. \
+                 Either wire a reader or stop exporting it - a key that is \
+                 parsed, validated and discarded looks like a working feature \
+                 to whoever writes it in a launch file."
+            );
+        }
+    }
+
+    fn count_key_in_tree(dir: &std::path::Path, key: &str) -> usize {
+        let mut n = 0;
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return 0;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                n += count_key_in_tree(&p, key);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && std::fs::read_to_string(&p).is_ok_and(|s| s.contains(key))
+            {
+                n += 1;
+            }
+        }
+        n
     }
 }
