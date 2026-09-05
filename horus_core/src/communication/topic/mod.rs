@@ -4719,6 +4719,13 @@ impl Topic<Image> {
     /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
     pub fn try_send(&self, img: Image) -> Result<(), Image> {
         self.register_pub("Image");
+        // Same "new data exists" signal the typed `try_send` counts. Pool-backed
+        // types reach `ring.try_send` directly rather than through it, so they
+        // were left out of that fix — and these are the high-bandwidth topics
+        // (camera, lidar, depth) where a staleness watchdog matters most:
+        // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
+        // subscriber whose frames were arriving normally.
+        self.ring.bump_messages_total();
         let wire = img.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -4778,6 +4785,13 @@ impl Topic<PointCloud> {
     /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
     pub fn try_send(&self, pc: PointCloud) -> Result<(), PointCloud> {
         self.register_pub("PointCloud");
+        // Same "new data exists" signal the typed `try_send` counts. Pool-backed
+        // types reach `ring.try_send` directly rather than through it, so they
+        // were left out of that fix — and these are the high-bandwidth topics
+        // (camera, lidar, depth) where a staleness watchdog matters most:
+        // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
+        // subscriber whose frames were arriving normally.
+        self.ring.bump_messages_total();
         let wire = pc.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -4837,6 +4851,13 @@ impl Topic<DepthImage> {
     /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
     pub fn try_send(&self, depth: DepthImage) -> Result<(), DepthImage> {
         self.register_pub("DepthImage");
+        // Same "new data exists" signal the typed `try_send` counts. Pool-backed
+        // types reach `ring.try_send` directly rather than through it, so they
+        // were left out of that fix — and these are the high-bandwidth topics
+        // (camera, lidar, depth) where a staleness watchdog matters most:
+        // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
+        // subscriber whose frames were arriving normally.
+        self.ring.bump_messages_total();
         let wire = depth.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -5376,6 +5397,49 @@ mod staleness_signal_tests {
             10,
             "ten try_send calls delivered ten messages; a watchdog reading this \
              counter must not conclude the topic is dead"
+        );
+
+        drop(topic);
+        cleanup(&name);
+    }
+
+    /// Pool-backed types count too.
+    ///
+    /// `Image`, `PointCloud` and `DepthImage` have their own `try_send`, which
+    /// reaches `ring.try_send` directly rather than through the typed one — so
+    /// they were left out when the staleness counter was wired into the typed
+    /// path. These are the high-bandwidth topics a freshness watchdog is most
+    /// likely to be guarding: a camera publishing through `try_send` read as
+    /// 0 Hz, and `StalePolicy::SafeState` would safe-state a subscriber whose
+    /// frames were arriving normally.
+    #[test]
+    fn pool_backed_try_send_moves_the_staleness_counter() {
+        let name = format!("staleness_pool_{}", std::process::id());
+        cleanup(&name);
+        let Ok(topic) = Topic::<crate::memory::Image>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        let before = topic.ring.header().messages_total();
+        let mut sent = 0u64;
+        for _ in 0..5 {
+            let Ok(img) = crate::memory::Image::new(4, 4, crate::types::ImageEncoding::Rgb8) else {
+                eprintln!("skipping: no tensor pool available");
+                return;
+            };
+            if topic.try_send(img).is_ok() {
+                sent += 1;
+            }
+        }
+
+        assert!(sent > 0, "precondition: the topic accepted some frames");
+        assert_eq!(
+            topic.ring.header().messages_total() - before,
+            5,
+            "every try_send is counted, delivered or refused — the typed path \
+             counts attempts the same way, and a publisher hammering a full \
+             ring is still alive"
         );
 
         drop(topic);
