@@ -151,3 +151,77 @@ fn one_handle_leaving_does_not_deregister_its_siblings_on_the_same_thread() {
         "the last handle to go gives the registration back"
     );
 }
+
+/// Concurrent claim and release must leave the counters exactly where they
+/// started.
+///
+/// The release path guards on (slot, generation) and per-role handle counts,
+/// and those are read-modify-write sequences on shared memory that several
+/// threads reach at once. Reading the code cannot rule out an interleaving that
+/// double-decrements or strands a slot, and both directions are bad:
+/// over-counting pins a command topic on a lossy broadcast backend, while
+/// under-counting lets `nothing_is_draining` retire unread slots beneath a
+/// subscriber that is still reading.
+///
+/// Threads churn handles against one topic; when they are all joined, nothing
+/// is alive, so both counts must be back to zero.
+#[test]
+fn concurrent_churn_returns_every_registration() {
+    let name = "leak_concurrent_churn";
+    let producer: Topic<u64> = Topic::new(name).expect("producer");
+    producer.send(1u64);
+
+    const THREADS: usize = 8;
+    const ROUNDS: usize = 40;
+
+    let mut handles = Vec::new();
+    for _ in 0..THREADS {
+        let n = name.to_string();
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..ROUNDS {
+                // A subscriber and a publisher on the same thread share ONE
+                // participant entry, so this exercises the per-role handle
+                // counts as well as the generation guard.
+                let sub: Topic<u64> = Topic::new(&n).expect("subscriber");
+                let pubr: Topic<u64> = Topic::new(&n).expect("publisher");
+                let _ = sub.try_recv();
+                pubr.send(2u64);
+                drop(sub);
+                drop(pubr);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().expect("churn thread");
+    }
+
+    // The producer above is this thread's own handle and is still alive, so it
+    // still holds a publisher registration. Everything the churn threads
+    // claimed must be gone.
+    assert_eq!(
+        producer.sub_count(),
+        0,
+        "every churn subscriber was dropped, so no subscriber registration may \
+         remain — a leak here pins the topic on a broadcast backend for the \
+         life of the segment"
+    );
+    assert_eq!(
+        producer.pub_count(),
+        1,
+        "only this thread's producer is still alive; the churn publishers must \
+         have given their registrations back, and none may have taken this \
+         one's with it"
+    );
+
+    // And the topic still works, which under-counting would have broken.
+    producer.send(3u64);
+    let reader: Topic<u64> = Topic::new(name).expect("reader");
+    let mut seen = false;
+    for _ in 0..1000 {
+        if reader.try_recv().is_some() {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "the topic must still deliver after the churn");
+}
