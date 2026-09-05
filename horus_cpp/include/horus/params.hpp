@@ -59,11 +59,30 @@ public:
         return horus_params_get_bool(handle_, key, &v) ? std::optional<bool>(v) : std::nullopt;
     }
 
+    /// The string value for `key`, complete, or nullopt if absent.
+    ///
+    /// This used to hand back whatever fitted in a 1024-byte stack buffer, with
+    /// no way for a caller to tell a clipped value from a whole one — the same
+    /// defect this class's constructor refuses to ship for a bad file, because
+    /// "`get<T>(key, default)` gives the caller no way to tell those apart from
+    /// the values in the file". Rust and Python always returned the whole
+    /// string; only C++ clipped. The shim reports the required length now, so a
+    /// value that does not fit is fetched again into a buffer that holds it.
     std::optional<std::string> get_string(const char* key) const {
         char buf[1024];
         int len = horus_params_get_string(handle_, key, reinterpret_cast<char*>(buf), sizeof(buf));
         if (len < 0) return std::nullopt;
-        return std::string(buf, static_cast<size_t>(len));
+        const size_t needed = static_cast<size_t>(len);
+        if (needed < sizeof(buf)) {
+            return std::string(buf, needed);
+        }
+        // Did not fit: re-call with a buffer sized from the reported length.
+        std::string out(needed + 1, '\0');
+        int again = horus_params_get_string(handle_, key, reinterpret_cast<char*>(&out[0]),
+                                            out.size());
+        if (again < 0) return std::nullopt;
+        out.resize(static_cast<size_t>(again));
+        return out;
     }
 
     // ── Typed setters ──────────────────────────────────────────────────
