@@ -1179,8 +1179,13 @@ impl SafetyMonitor {
     /// Record a deadline miss with severity tracking.
     ///
     /// Tracks per-node: total misses, consecutive misses, worst miss duration.
-    /// Triggers emergency stop only when the process-wide total crosses
-    /// `max_deadline_misses`.
+    /// Triggers an emergency stop only when THIS node's CONSECUTIVE run reaches
+    /// `max_deadline_misses`; the run is cleared by `record_deadline_met` on
+    /// any tick that met its deadline. The process-wide `deadline_misses` total
+    /// is kept for the timing report and triggers nothing — it used to be the
+    /// e-stop trigger, and as a lifetime count across every node that was
+    /// indefensible on a real robot. See the note in
+    /// `record_deadline_miss_with_severity`.
     pub(crate) fn record_deadline_miss(&self, node_name: &str) {
         self.record_deadline_miss_with_severity(node_name, 0);
     }

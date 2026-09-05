@@ -1015,10 +1015,14 @@ impl TopicHeader {
             .count();
         Err(HorusError::Communication(
             format!(
-                "No available participant slots ({}/{} active). \
-                 Consider reducing the number of concurrent publishers/subscribers \
-                 on this topic, or increasing lease timeout to allow faster reclamation.",
-                active, MAX_PARTICIPANTS
+                "No available participant slots ({}/{} active). Drop `Topic` \
+                 handles this process no longer uses — a registration is returned \
+                 when its last handle drops — or reduce the number of concurrent \
+                 publishers/subscribers on this topic. A slot held by a process \
+                 that has died is reclaimed once its {} ms lease expires.",
+                active,
+                MAX_PARTICIPANTS,
+                self.lease_timeout()
             )
             .into(),
         ))
