@@ -72,6 +72,28 @@ pub fn load() -> HorusResult<Vec<(String, Box<dyn Node>)>> {
     load_from(&path)
 }
 
+/// Whether a `[hardware.<name>]` table asks to be substituted by a stub under
+/// `horus run --sim`.
+///
+/// `simulated` is an ALIAS of `sim`, not a second key. `horus add <name>
+/// --driver --source sim` — and `--source simulated`, and `--source sim3d` —
+/// all write `simulated = true` into horus.toml, so HORUS generated a key its
+/// own loader then ignored: the entry constructed the REAL driver under
+/// `horus run --sim`, which is the exact failure `--sim` exists to prevent.
+/// `horus check` said nothing either, because `simulated` is a known field
+/// rather than an unknown one, and the loader's `RESERVED` list kept it away
+/// from the driver as well.
+///
+/// A free function so the truth table can be tested without a config file or
+/// the process-global environment — the same reason `sim_mode_enabled` is one.
+fn asks_for_simulation(config: &toml::value::Table) -> bool {
+    config
+        .get("sim")
+        .or_else(|| config.get("simulated"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
 /// Load hardware nodes from a specific config file.
 ///
 /// Useful for testing with alternate configs or multi-robot setups.
@@ -135,8 +157,7 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
             }
         };
 
-        // Check sim override
-        let is_sim_target = config.get("sim").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_sim_target = asks_for_simulation(config);
 
         if sim_mode && is_sim_target {
             let should_sim = match &selective_targets {
@@ -226,7 +247,7 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
                 })
                 .unwrap_or_default();
 
-            Box::new(ExecDriver::from_config(exec_path, args, &params)?)
+            Box::new(ExecDriver::from_config(name, exec_path, args, &params)?)
         } else {
             // Look up in node registry
             match registry::lookup(&use_name) {
@@ -404,6 +425,55 @@ pub fn find_manifest() -> HorusResult<std::path::PathBuf> {
             .to_string(),
     )
     .into())
+}
+
+#[cfg(test)]
+mod sim_target_tests {
+    use super::asks_for_simulation;
+
+    fn table(toml_src: &str) -> toml::value::Table {
+        toml::from_str(toml_src).expect("test table")
+    }
+
+    /// `simulated` must substitute the stub, because HORUS writes that key.
+    ///
+    /// `horus add <name> --driver --source sim` (and `--source simulated`, and
+    /// `--source sim3d`) all emit `simulated = true`. The loader read only
+    /// `sim`, so an entry HORUS generated itself constructed the REAL driver
+    /// under `horus run --sim` — the exact failure `--sim` exists to prevent —
+    /// and `horus check` stayed quiet, because `simulated` is a known field
+    /// rather than an unknown one.
+    #[test]
+    fn simulated_is_an_alias_of_sim() {
+        assert!(
+            asks_for_simulation(&table("use = \"rplidar\"\nsimulated = true\n")),
+            "`simulated = true` is what `horus add --source sim` writes; the \
+             loader must honour it"
+        );
+        assert!(asks_for_simulation(&table(
+            "use = \"rplidar\"\nsim = true\n"
+        )));
+    }
+
+    /// Neither key, or either set false, means the real driver.
+    #[test]
+    fn the_real_driver_is_the_default() {
+        assert!(!asks_for_simulation(&table("use = \"rplidar\"\n")));
+        assert!(!asks_for_simulation(&table(
+            "use = \"rplidar\"\nsim = false\n"
+        )));
+        assert!(!asks_for_simulation(&table(
+            "use = \"rplidar\"\nsimulated = false\n"
+        )));
+    }
+
+    /// An explicit `sim` wins over the alias — it is the documented key.
+    #[test]
+    fn sim_takes_precedence_over_the_alias() {
+        assert!(!asks_for_simulation(&table(
+            "sim = false\nsimulated = true\n"
+        )));
+    }
 }
 
 #[cfg(test)]

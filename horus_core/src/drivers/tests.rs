@@ -329,8 +329,12 @@ use = "exec:/bin/echo"
         let nodes = crate::drivers::load_from(&path).unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].0, "camera");
-        // ExecDriver node name is derived from binary name
-        assert_eq!(nodes[0].1.name(), "echo");
+        // The driver is named after the [hardware.<name>] key, matching the
+        // name the scheduler knows it by. This used to assert "echo" — the
+        // binary's file stem — which is the defect, not the contract: two
+        // [hardware] entries pointing at one binary were indistinguishable in
+        // the driver's own logs while the scheduler knew them apart.
+        assert_eq!(nodes[0].1.name(), "camera");
         std::fs::remove_file(&path).ok();
     }
 
