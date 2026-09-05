@@ -319,6 +319,128 @@ sim = true
         std::fs::remove_file(&path).ok();
     }
 
+    /// The two loaders must agree about what `--sim` covers.
+    ///
+    /// `load_from` substituted a stub while `load_config_entries` -- the whole
+    /// of the Python path -- reported nothing, so `hardware.load()` in Python
+    /// constructed the REAL driver under `horus run --sim`. Constructing a
+    /// driver is where the port is opened and the motor enabled, so `--sim`
+    /// was inert on that path. Load one manifest through both and require the
+    /// same verdict per entry.
+    #[test]
+    fn both_loaders_agree_on_what_sim_mode_covers() {
+        let _guard = SIM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: guarded by SIM_ENV_LOCK to prevent parallel env var mutation
+        unsafe {
+            std::env::set_var("HORUS_SIM_MODE", "1");
+        }
+
+        registry::register("AgreementReal", |p| Ok(Box::new(StubNode::from_params(p)?)));
+
+        let content = r#"
+[hardware.simmed]
+use = "AgreementReal"
+sim = true
+
+[hardware.aliased]
+use = "AgreementReal"
+simulated = true
+
+[hardware.real]
+use = "AgreementReal"
+"#;
+        let path = write_temp_toml(content);
+
+        let nodes = crate::drivers::load_from(&path).unwrap();
+        let entries = crate::drivers::load_config_entries(&path).unwrap();
+
+        for (name, node) in &nodes {
+            let stubbed_by_load = node.name().contains("sim_stub");
+            let (_, _, _, simulated) = entries
+                .iter()
+                .find(|(n, _, _, _)| n == name)
+                .unwrap_or_else(|| panic!("load_config_entries dropped {name}"));
+            assert_eq!(
+                stubbed_by_load, *simulated,
+                "the two loaders disagree about {name}: load_from stubbed={stubbed_by_load}, \
+                 load_config_entries simulated={simulated}"
+            );
+        }
+
+        // And the verdicts themselves are the right ones.
+        let simulated_names: Vec<&str> = entries
+            .iter()
+            .filter(|(_, _, _, sim)| *sim)
+            .map(|(n, _, _, _)| n.as_str())
+            .collect();
+        assert_eq!(simulated_names, vec!["aliased", "simmed"]);
+
+        unsafe {
+            std::env::remove_var("HORUS_SIM_MODE");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// Outside `--sim`, `sim = true` changes nothing on either path.
+    #[test]
+    fn config_entries_report_no_simulation_without_sim_mode() {
+        let _guard = SIM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe {
+            std::env::remove_var("HORUS_SIM_MODE");
+        }
+
+        let content = r#"
+[hardware.sensor]
+use = "AnythingAtAll"
+sim = true
+"#;
+        let path = write_temp_toml(content);
+        let entries = crate::drivers::load_config_entries(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(
+            !entries[0].3,
+            "`sim = true` alone must not simulate - only `--sim` does"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// HORUS_SIM_TARGETS must narrow both loaders the same way.
+    #[test]
+    fn config_entries_honour_the_selective_target_filter() {
+        let _guard = SIM_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        unsafe {
+            std::env::set_var("HORUS_SIM_MODE", "1");
+            std::env::set_var("HORUS_SIM_TARGETS", "lidar");
+        }
+
+        let content = r#"
+[hardware.lidar]
+use = "SomeType"
+sim = true
+
+[hardware.imu]
+use = "SomeType"
+sim = true
+"#;
+        let path = write_temp_toml(content);
+        let entries = crate::drivers::load_config_entries(&path).unwrap();
+        let sim_of = |want: &str| {
+            entries
+                .iter()
+                .find(|(n, _, _, _)| n == want)
+                .map(|(_, _, _, s)| *s)
+                .unwrap()
+        };
+        assert!(sim_of("lidar"), "lidar is in HORUS_SIM_TARGETS");
+        assert!(!sim_of("imu"), "imu is not in HORUS_SIM_TARGETS");
+
+        unsafe {
+            std::env::remove_var("HORUS_SIM_MODE");
+            std::env::remove_var("HORUS_SIM_TARGETS");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
     #[test]
     fn load_exec_prefix() {
         let content = r#"
