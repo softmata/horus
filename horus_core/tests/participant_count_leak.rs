@@ -225,3 +225,69 @@ fn concurrent_churn_returns_every_registration() {
     }
     assert!(seen, "the topic must still deliver after the churn");
 }
+
+/// A handle taking a role a SIBLING already holds must still be counted.
+///
+/// An entry is keyed on (pid, thread) and its role bits are shared by every
+/// handle on that thread, so "the entry already has the producer bit" says
+/// nothing about whether THIS handle holds it. The per-role handle count was
+/// incremented only when the bit was newly set on the entry, or when the handle
+/// had no slot yet — so the second handle to take an already-set role was not
+/// counted, and the first `Drop` handed back a role another live handle was
+/// still using.
+///
+/// That is the under-count direction, which is the dangerous one:
+/// `nothing_is_draining` lets a producer retire unread slots once `sub_count()`
+/// reads 0, so a lost subscriber registration becomes silent message loss on a
+/// subscriber that is still reading.
+#[test]
+fn a_second_handle_taking_a_shared_role_is_counted() {
+    let name = "leak_shared_roles";
+
+    // Two handles on THIS thread, each publisher and subscriber, so both take
+    // both roles on one shared participant entry.
+    let a: Topic<u64> = Topic::new(name).expect("handle a");
+    let b: Topic<u64> = Topic::new(name).expect("handle b");
+    a.send(1u64);
+    let _ = a.try_recv();
+    b.send(2u64);
+    let _ = b.try_recv();
+
+    assert_eq!(a.pub_count(), 1, "precondition: one thread, one entry");
+    assert_eq!(a.sub_count(), 1);
+
+    drop(a);
+
+    assert_eq!(
+        b.pub_count(),
+        1,
+        "b is still publishing, so the producer registration must survive a's \
+         departure — releasing it lets a peer's detect_optimal_backend see a \
+         topic with no publisher"
+    );
+    assert_eq!(
+        b.sub_count(),
+        1,
+        "b is still reading, so the subscriber registration must survive. At 0, \
+         `nothing_is_draining` lets a producer retire slots b has not read"
+    );
+
+    // And b really can still both send and receive.
+    b.send(3u64);
+    let mut seen = false;
+    for _ in 0..1000 {
+        if b.try_recv().is_some() {
+            seen = true;
+            break;
+        }
+    }
+    assert!(seen, "the surviving handle must still receive");
+
+    drop(b);
+    let after: Topic<u64> = Topic::new(name).expect("observer");
+    assert_eq!(
+        after.pub_count(),
+        0,
+        "the last handle to go gives both roles back"
+    );
+}

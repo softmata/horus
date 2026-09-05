@@ -1727,15 +1727,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
 
         let header = self.header();
-        // A handle that has no participant entry yet is a NEW sharer of
-        // whichever entry it lands on; one that already has a slot is only
-        // adding a second role to the entry it owns, and must not be counted
-        // twice — see `ParticipantEntry::handles`.
-        let new_handle = local.slot_index < 0;
+        // Reaching here means this handle does NOT yet hold the role — the
+        // early return above covers the case where it does — so the entry's
+        // per-role handle count is incremented for it unconditionally.
         let (slot, generation) = if is_producer {
-            header.register_producer(new_handle)?
+            header.register_producer()?
         } else {
-            header.register_consumer(new_handle)?
+            header.register_consumer()?
         };
 
         local.slot_index = slot as i32;

@@ -510,8 +510,8 @@ mod tests {
     #[test]
     fn migrate_to_optimal_with_same_thread_pod_producer_consumer() {
         let h = make_header(true);
-        h.register_producer(true).unwrap();
-        h.register_consumer(true).unwrap();
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
         let m = BackendMigrator::new(&h);
         // POD, 1P:1C → SpscShm (every topic is SHM-backed)
         let result = m.migrate_to_optimal();
@@ -522,8 +522,8 @@ mod tests {
     #[test]
     fn migrate_to_optimal_with_same_thread_non_pod() {
         let h = make_header(false);
-        h.register_producer(true).unwrap();
-        h.register_consumer(true).unwrap();
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
         let m = BackendMigrator::new(&h);
         // Same thread, non-POD, 1P:1C → SpscShm (real topics are shm_backed
         // regardless of pod-ness; SHM supports serde via send_shm_sp_serde).
@@ -545,8 +545,8 @@ mod tests {
     #[test]
     fn is_optimal_false_after_topology_change() {
         let h = make_header(true);
-        h.register_producer(true).unwrap();
-        h.register_consumer(true).unwrap();
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
         // Optimal is SpscShm but current is still Unknown
         let m = BackendMigrator::new(&h);
         assert!(!m.is_optimal());
@@ -555,8 +555,8 @@ mod tests {
     #[test]
     fn is_optimal_true_after_migration() {
         let h = make_header(true);
-        h.register_producer(true).unwrap();
-        h.register_consumer(true).unwrap();
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
         let m = BackendMigrator::new(&h);
         m.migrate_to_optimal();
         assert!(m.is_optimal());

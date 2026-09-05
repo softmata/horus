@@ -4176,7 +4176,7 @@ fn detect_backend_cross_process_multi_p_0c_mpsc_shm() {
 fn register_producer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot = h.register_producer(true).expect("should succeed").0;
+    let slot = h.register_producer().expect("should succeed").0;
     assert!(slot < 16, "Slot index must be < MAX_PARTICIPANTS");
     assert_eq!(h.pub_count(), 1);
     assert_eq!(h.sub_count(), 0);
@@ -4186,7 +4186,7 @@ fn register_producer_returns_slot_index() {
 fn register_consumer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot = h.register_consumer(true).expect("should succeed").0;
+    let slot = h.register_consumer().expect("should succeed").0;
     assert!(slot < 16);
     assert_eq!(h.sub_count(), 1);
     assert_eq!(h.pub_count(), 0);
@@ -4196,8 +4196,8 @@ fn register_consumer_returns_slot_index() {
 fn register_both_roles_same_thread_reuses_slot() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot_pub = h.register_producer(true).expect("producer").0;
-    let slot_sub = h.register_consumer(true).expect("consumer").0;
+    let slot_pub = h.register_producer().expect("producer").0;
+    let slot_sub = h.register_consumer().expect("consumer").0;
     // Same thread should reuse the same participant entry
     assert_eq!(
         slot_pub, slot_sub,
@@ -4229,9 +4229,7 @@ fn register_16_producers_fills_all_slots() {
     // Now try registering from our actual thread — should fail since all slots taken
     // (our thread hash won't match any of the fake ones)
     // But our PID matches so it may find us by PID... let's use a distinct thread
-    let result = test_spawn(move || h.register_producer(true))
-        .join()
-        .unwrap();
+    let result = test_spawn(move || h.register_producer()).join().unwrap();
 
     assert!(
         result.is_err(),
@@ -4340,7 +4338,7 @@ fn expired_slot_reclaimed_by_new_registration() {
     // expired, and evicting it silently deregistered working publishers and
     // subscribers. A new registration must take a free slot while one exists.
     let slot = h
-        .register_producer(true)
+        .register_producer()
         .expect("a free slot is available, so registration must succeed")
         .0;
     assert_ne!(slot, 0, "must not evict slot 0 while free slots remain");
@@ -4401,7 +4399,7 @@ fn concurrent_reclaim_exactly_one_winner() {
                 // shared read-access from multiple threads is sound.
                 let h = unsafe { &*(hptr as *const TopicHeader) };
                 b.wait();
-                if h.register_producer(true).is_ok() {
+                if h.register_producer().is_ok() {
                     sc.fetch_add(1, Ordering::Relaxed);
                 }
             })

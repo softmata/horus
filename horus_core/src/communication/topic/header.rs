@@ -754,13 +754,13 @@ impl TopicHeader {
     }
 
     /// Register as a publisher (returns slot index or error)
-    pub fn register_producer(&self, new_handle: bool) -> HorusResult<(usize, u16)> {
-        self.register_role(1, &self.publisher_count, new_handle)
+    pub fn register_producer(&self) -> HorusResult<(usize, u16)> {
+        self.register_role(1, &self.publisher_count)
     }
 
     /// Register as a subscriber (returns slot index or error)
-    pub fn register_consumer(&self, new_handle: bool) -> HorusResult<(usize, u16)> {
-        self.register_role(2, &self.subscriber_count, new_handle)
+    pub fn register_consumer(&self) -> HorusResult<(usize, u16)> {
+        self.register_role(2, &self.subscriber_count)
     }
 
     /// Claim the first slot that is genuinely free (`active == 0`), if any.
@@ -842,18 +842,7 @@ impl TopicHeader {
     }
 
     /// Shared registration logic for producer (role_bit=1) and consumer (role_bit=2).
-    ///
-    /// `new_handle` says whether the CALLER is a handle that does not already
-    /// own this entry. An entry is keyed on (pid, thread), not on the handle,
-    /// so several `Topic`s on one thread deliberately share one slot; the
-    /// handle count decides when it may be released, and adding a second role
-    /// to a handle that already owns the entry must not bump it.
-    fn register_role(
-        &self,
-        role_bit: u8,
-        counter: &AtomicU32,
-        new_handle: bool,
-    ) -> HorusResult<(usize, u16)> {
+    fn register_role(&self, role_bit: u8, counter: &AtomicU32) -> HorusResult<(usize, u16)> {
         let now_ms = current_time_ms();
         let pid = std::process::id();
         let thread_hash = hash_thread_id(std::thread::current().id()) as u32;
@@ -872,16 +861,25 @@ impl TopicHeader {
                         .store(now_ms, Ordering::Release);
                 }
                 p.refresh_lease(now_ms, timeout_ms);
-                // Count this handle against the role it is registering, but
-                // only if it did not already hold that role here.
-                if old_role & role_bit == 0 || new_handle {
-                    let counter = if role_bit & 1 != 0 {
-                        &p.pub_handles
-                    } else {
-                        &p.sub_handles
-                    };
-                    counter.fetch_add(1, Ordering::AcqRel);
-                }
+                // Count this handle against the role it is registering —
+                // unconditionally.
+                //
+                // `ensure_role` returns early when the CALLING HANDLE already
+                // holds the role, so reaching here means this handle is newly
+                // taking it. The entry's role bits say nothing about that: they
+                // are shared by every handle on this (pid, thread), so a
+                // sibling may have set the bit already. Gating on
+                // `old_role & role_bit == 0` therefore skipped the second
+                // handle to take a role, and the first `Drop` then handed back
+                // a role another live handle was still using — the under-count
+                // direction, where `nothing_is_draining` retires slots beneath
+                // a subscriber that is still reading.
+                let counter = if role_bit & 1 != 0 {
+                    &p.pub_handles
+                } else {
+                    &p.sub_handles
+                };
+                counter.fetch_add(1, Ordering::AcqRel);
                 return Ok((i, p.generation.load(Ordering::Acquire)));
             }
         }
@@ -2755,7 +2753,7 @@ mod tests {
     #[test]
     fn register_producer_increments_pub_count() {
         let h = make_header(8, 8, true, 16);
-        let slot = h.register_producer(true).unwrap().0;
+        let slot = h.register_producer().unwrap().0;
         assert!(slot < MAX_PARTICIPANTS);
         assert_eq!(h.pub_count(), 1);
         assert_eq!(h.sub_count(), 0);
@@ -2765,7 +2763,7 @@ mod tests {
     #[test]
     fn register_consumer_increments_sub_count() {
         let h = make_header(8, 8, true, 16);
-        let slot = h.register_consumer(true).unwrap().0;
+        let slot = h.register_consumer().unwrap().0;
         assert!(slot < MAX_PARTICIPANTS);
         assert_eq!(h.sub_count(), 1);
         assert_eq!(h.pub_count(), 0);
@@ -3064,7 +3062,7 @@ mod tests {
         assert_eq!(h.sub_count(), MAX_PARTICIPANTS as u32);
 
         let slot = h
-            .register_producer(true)
+            .register_producer()
             .expect(
                 "registration must sweep unconditionally: every slot is held by a \
              process that no longer exists, and refusing the node's start \
@@ -3209,8 +3207,8 @@ mod tests {
     #[test]
     fn register_same_thread_reuses_slot() {
         let h = make_header(8, 8, true, 16);
-        let slot1 = h.register_producer(true).unwrap().0;
-        let slot2 = h.register_consumer(true).unwrap().0;
+        let slot1 = h.register_producer().unwrap().0;
+        let slot2 = h.register_consumer().unwrap().0;
         assert_eq!(
             slot1, slot2,
             "Same thread should reuse same participant slot"
@@ -3225,8 +3223,8 @@ mod tests {
     #[test]
     fn register_producer_twice_same_thread_no_double_count() {
         let h = make_header(8, 8, true, 16);
-        let s1 = h.register_producer(true).unwrap().0;
-        let s2 = h.register_producer(true).unwrap().0;
+        let s1 = h.register_producer().unwrap().0;
+        let s2 = h.register_producer().unwrap().0;
         assert_eq!(s1, s2);
         assert_eq!(
             h.pub_count(),
@@ -3238,14 +3236,14 @@ mod tests {
     #[test]
     fn register_from_different_threads_uses_different_slots() {
         let h = make_header(8, 8, true, 16);
-        let slot1 = h.register_producer(true).unwrap().0;
+        let slot1 = h.register_producer().unwrap().0;
 
         let header_ptr = &h as *const TopicHeader as usize;
         let slot2 = std::thread::spawn(move || {
             // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
             // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
-            h.register_producer(true).unwrap().0
+            h.register_producer().unwrap().0
         })
         .join()
         .unwrap();
@@ -3267,7 +3265,7 @@ mod tests {
                     // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
                     // outlives all spawned threads (main thread joins before h is dropped).
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
-                    h.register_producer(true).unwrap().0
+                    h.register_producer().unwrap().0
                 })
             })
             .collect();
@@ -3295,7 +3293,7 @@ mod tests {
                     // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
                     // outlives all spawned threads (main thread joins before h is dropped).
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
-                    h.register_producer(true).unwrap().0
+                    h.register_producer().unwrap().0
                 })
             })
             .collect();
@@ -3308,7 +3306,7 @@ mod tests {
             // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
             // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
-            h.register_producer(true)
+            h.register_producer()
         })
         .join()
         .unwrap();
@@ -3347,10 +3345,7 @@ mod tests {
             // is no doubt it is still there.
             let header = &h;
             s.spawn(move || {
-                let slot = header
-                    .register_consumer(true)
-                    .expect("subscriber registers")
-                    .0;
+                let slot = header.register_consumer().expect("subscriber registers").0;
                 let hash = hash_thread_id(std::thread::current().id()) as u32;
                 registered_tx.send((slot, hash)).unwrap();
                 release_rx.recv().ok();
@@ -3373,7 +3368,7 @@ mod tests {
                 }
             }
 
-            let result = h.register_producer(true);
+            let result = h.register_producer();
 
             assert!(
                 result.is_err(),
@@ -3452,7 +3447,7 @@ mod tests {
     #[test]
     fn is_same_process_true_with_local_participants() {
         let h = make_header(8, 8, true, 16);
-        h.register_producer(true).unwrap();
+        h.register_producer().unwrap();
         assert!(h.is_same_process());
     }
 
@@ -3509,8 +3504,8 @@ mod tests {
     #[test]
     fn detect_optimal_backend_1p1c_pod_is_spsc_shm() {
         let h = make_inmem_header(8, 8, true, 16);
-        h.register_producer(true).unwrap();
-        h.register_consumer(true).unwrap();
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
         // Every topic is SHM-backed: 1P:1C → SpscShm.
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
@@ -3518,15 +3513,15 @@ mod tests {
     #[test]
     fn detect_optimal_backend_1p1c_non_pod_is_spsc_shm() {
         let h = make_inmem_header(8, 8, false, 16);
-        h.register_producer(true).unwrap();
-        h.register_consumer(true).unwrap();
+        h.register_producer().unwrap();
+        h.register_consumer().unwrap();
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
     fn detect_optimal_backend_single_producer_only() {
         let h = make_inmem_header(8, 8, true, 16);
-        h.register_producer(true).unwrap();
+        h.register_producer().unwrap();
         // 1P, 0C → SpscShm (anticipating single consumer)
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
@@ -3534,20 +3529,20 @@ mod tests {
     #[test]
     fn detect_optimal_backend_single_consumer_only() {
         let h = make_inmem_header(8, 8, true, 16);
-        h.register_consumer(true).unwrap();
+        h.register_consumer().unwrap();
         assert_eq!(h.detect_optimal_backend(), BackendMode::SpscShm);
     }
 
     #[test]
     fn detect_optimal_backend_cross_thread_spsc_shm() {
         let h = make_inmem_header(8, 8, true, 16);
-        h.register_producer(true).unwrap();
+        h.register_producer().unwrap();
         let header_ptr = &h as *const TopicHeader as usize;
         std::thread::spawn(move || {
             // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
             // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
-            h.register_consumer(true).unwrap();
+            h.register_consumer().unwrap();
         })
         .join()
         .unwrap();
@@ -3558,7 +3553,7 @@ mod tests {
     #[test]
     fn detect_optimal_backend_1p_multi_c_pod_is_pod_shm() {
         let h = make_inmem_header(8, 8, true, 16);
-        h.register_producer(true).unwrap();
+        h.register_producer().unwrap();
 
         let header_ptr = &h as *const TopicHeader as usize;
         // Register 2 consumers from different threads
@@ -3567,7 +3562,7 @@ mod tests {
                 // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
                 // outlives this thread (main thread joins before h is dropped).
                 let h = unsafe { &*(header_ptr as *const TopicHeader) };
-                h.register_consumer(true).unwrap();
+                h.register_consumer().unwrap();
             })
             .join()
             .unwrap();
@@ -3582,7 +3577,7 @@ mod tests {
     #[test]
     fn detect_optimal_backend_multi_p_1c_is_mpsc_shm() {
         let h = make_inmem_header(8, 8, true, 16);
-        h.register_consumer(true).unwrap();
+        h.register_consumer().unwrap();
 
         let header_ptr = &h as *const TopicHeader as usize;
         // Register 2 producers from different threads
@@ -3591,7 +3586,7 @@ mod tests {
                 // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
                 // outlives this thread (main thread joins before h is dropped).
                 let h = unsafe { &*(header_ptr as *const TopicHeader) };
-                h.register_producer(true).unwrap();
+                h.register_producer().unwrap();
             })
             .join()
             .unwrap();
@@ -3803,7 +3798,7 @@ mod tests {
         // subscriber. Registration now takes a genuinely FREE slot first and
         // leaves the expired entry alone; an expired slot is considered only
         // when no free one remains, and then only if its owner is really gone.
-        let slot = h.register_producer(true).unwrap().0;
+        let slot = h.register_producer().unwrap().0;
         assert_ne!(
             slot, 0,
             "must not evict an expired slot while others are free"
