@@ -29,7 +29,12 @@ impl ShmRegion {
     /// Open an existing region without creating it.
     pub fn open_existing(name: &str, minimum_size: usize) -> Result<Self> {
         super::validate_region_name(name)?;
-        let path = PathBuf::from("/tmp/horus/topics").join(format!("horus_{}", name));
+        // The module's single definition of the mapping, not a second copy.
+        // This line was `/tmp/horus/topics/horus_<name>`: the `horus_` prefix
+        // was dropped on 2026-03-29 and the namespace never added, so this
+        // backend addressed a path no other part of the system writes — the
+        // same divergence that left the replication seam dead for four months.
+        let path = super::topic_shm_path(name);
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
         let size = file.metadata()?.len() as usize;
         anyhow::ensure!(size >= minimum_size, "existing SHM region is too small");
@@ -69,15 +74,19 @@ impl ShmRegion {
     pub fn new(name: &str, size: usize) -> Result<Self> {
         super::validate_region_name(name)?;
         // NOTE: this backend is only compiled for platforms that are neither
-        // Linux, macOS nor Windows. It stores regions in a fixed, world-writable
-        // /tmp path with no namespace and opens them via exists()-then-open,
-        // which is a symlink/TOCTOU hazard. It is not hardened here because it
+        // Linux, macOS nor Windows. It opens regions via exists()-then-open,
+        // which is a symlink/TOCTOU hazard, and is not hardened here because it
         // is unreachable on every supported target; see the audit notes.
-        let horus_shm_dir = PathBuf::from("/tmp/horus/topics");
-        std::fs::create_dir_all(&horus_shm_dir)
+        //
+        // The path is no longer fixed or namespace-less: it comes from
+        // `topic_shm_path`, and the directory is created with
+        // `create_shm_dir_all` (mode 0o700) like the Linux arm, rather than a
+        // bare `create_dir_all` into a world-writable /tmp.
+        let horus_shm_dir = super::shm_topics_dir();
+        super::create_shm_dir_all(&horus_shm_dir)
             .with_context(|| format!("Failed to create SHM dir: {}", horus_shm_dir.display()))?;
 
-        let path = horus_shm_dir.join(format!("horus_{}", name));
+        let path = super::topic_shm_path(name);
 
         let (file, is_owner) = if path.exists() {
             let file = OpenOptions::new()
