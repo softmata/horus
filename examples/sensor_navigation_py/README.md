@@ -50,6 +50,12 @@ offsets in `build_frames()` are read from it.
 
 **Terminal 1 — start the simulator (it is what publishes `lidar.scan` and `imu.data`):**
 
+> **sim3d is not public yet** — it lives in a private repository, so this
+> command will not work for you (#49). This example subscribes to
+> `lidar.scan` and `imu.data`, and the simulator is what publishes them:
+> without it the node starts and ticks but receives no data. See
+> [../README.md](../README.md#prerequisites).
+
 ```bash
 sim3d --mode visual --robot robots/sensor_bot.urdf --world worlds/obstacle_course.yaml --robot-name sensor_bot
 ```
