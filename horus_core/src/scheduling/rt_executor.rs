@@ -1223,6 +1223,7 @@ impl RtExecutor {
         release_late_ns: u64,
         registry_slot: Option<usize>,
         name_hash: u64,
+        timing: Option<&super::safety_monitor::NodeTimingState>,
     ) {
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
@@ -1322,7 +1323,14 @@ impl RtExecutor {
             // deadline path below: this node is not in `Scheduler::nodes`, so
             // the main loop's budget accounting never sees it.
             if let Some(ref monitor) = monitors.safety {
-                let _ = monitor.check_tick_budget(&node.name, tr.duration);
+                match timing {
+                    Some(state) => {
+                        let _ = monitor.check_tick_budget_of(&node.name, state, tr.duration);
+                    }
+                    None => {
+                        let _ = monitor.check_tick_budget(&node.name, tr.duration);
+                    }
+                }
             }
             if let Some(budget_result) =
                 TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
@@ -1456,8 +1464,26 @@ impl RtExecutor {
                 // the ceiling only ever worked in deterministic/replay mode,
                 // where the partition does not happen.
                 if let Some(ref monitor) = monitors.safety {
-                    monitor.record_deadline_miss(&node.name);
-                    let consecutive = monitor.consecutive_misses(&node.name);
+                    // Through the resolved handle when we have one: the by-name
+                    // pair below is two more map lookups, taken at the exact
+                    // moment the node is already late.
+                    //
+                    // Both arms only RECORD; the monitor-level bookkeeping (the
+                    // process-wide counter and the `max_deadline_misses` e-stop
+                    // check) happens exactly once below, so routing through the
+                    // handle cannot skip an escalation.
+                    let consecutive = match timing {
+                        Some(state) => {
+                            state.record_miss(0);
+                            state.consecutive_misses()
+                        }
+                        None => {
+                            let state = monitor.tick_budget_handle(&node.name);
+                            state.record_miss(0);
+                            state.consecutive_misses()
+                        }
+                    };
+                    monitor.note_deadline_miss_recorded(&node.name, consecutive);
                     let action =
                         monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
                     if !matches!(action, super::safety_monitor::DegradationAction::None) {
@@ -1940,6 +1966,19 @@ impl RtExecutor {
             .map(|n| crate::core::tick_context::hash_node_name(n.name.as_ref()))
             .collect();
 
+        // Per-node budget/deadline accounting, resolved once. This one took a
+        // process-wide `Mutex<BudgetEnforcer>` shared by every RT chain, so its
+        // cost grew with the number of chains rather than staying flat.
+        let timings: Vec<Option<Arc<super::safety_monitor::NodeTimingState>>> = nodes
+            .iter()
+            .map(|n| {
+                monitors
+                    .safety
+                    .as_ref()
+                    .map(|m| m.tick_budget_handle(n.name.as_ref()))
+            })
+            .collect();
+
         // Cyclic cadence on an absolute phase grid. Constructed here, after all
         // the one-time setup above, so the phase anchor is not polluted by
         // affinity/governor/IRQ work that only happens once.
@@ -2027,6 +2066,7 @@ impl RtExecutor {
                         release_late_ns,
                         registry_slots[idx],
                         name_hashes[idx],
+                        timings[idx].as_deref(),
                     )
                 }));
                 warmed[idx] = true;
@@ -2215,7 +2255,7 @@ mod tests {
 
         // The RT loop wraps `tick_node` exactly like this.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0, None, 0)
+            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0, None, 0, None)
         }));
 
         assert!(
@@ -2390,6 +2430,7 @@ mod tests {
             0,
             None,
             0,
+            None,
         );
 
         assert_eq!(
