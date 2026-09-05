@@ -245,27 +245,19 @@ pub fn shm_namespace() -> String {
 /// - macOS: `/tmp/horus_<namespace>/`
 /// - Windows: `%TEMP%\horus_<namespace>\`
 pub fn shm_base_dir() -> PathBuf {
-    let dir_name = format!("horus_{}", shm_namespace());
+    shm_base_dir_for(&shm_namespace())
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        PathBuf::from("/dev/shm").join(&dir_name)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        PathBuf::from("/tmp").join(&dir_name)
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        std::env::temp_dir().join(&dir_name)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        PathBuf::from("/tmp").join(&dir_name)
-    }
+/// Base directory for a NAMED namespace, which need not be this process's.
+///
+/// The namespace a process uses is fixed at startup from `HORUS_NAMESPACE`, so
+/// `shm_base_dir()` can only ever name its own. A caller that knows another
+/// namespace by name — a parent that spawned a child under a private one, or
+/// `horus clean` sweeping the machine — had no way to name its directory except
+/// by restating the platform mapping, which is how two copies of one path drift
+/// apart.
+pub fn shm_base_dir_for(namespace: &str) -> PathBuf {
+    shm_parent_dir().join(format!("horus_{namespace}"))
 }
 
 /// Topics directory for shared memory message passing.
