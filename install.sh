@@ -941,10 +941,17 @@ if [ -n "${HORUS_PREFIX:-}" ] && [ -n "$SHELL_RC" ] && [ -z "$TARGET_USER" ]; th
         *)
             # Value-aware: a stale line naming a DIFFERENT prefix must be
             # replaced, not treated as "already configured".
-            if grep -q "^\(export \)\?HORUS_PREFIX=" "$SHELL_RC" 2>/dev/null; then
+            #
+            # `grep -E` / `sed -E`, not a BRE with `\?`. That quantifier is a GNU
+            # extension: on the BSD tools macOS ships it matches nothing, so the
+            # stale line was never found and the installer appended a second
+            # HORUS_PREFIX line beneath it. The first one wins when the rc is
+            # sourced, so a moved prefix kept pointing at the old tree. CI's
+            # macOS parity job caught exactly that.
+            if grep -qE "^(export )?HORUS_PREFIX=" "$SHELL_RC" 2>/dev/null; then
                 grep -qF "HORUS_PREFIX=\"${HORUS_PREFIX}\"" "$SHELL_RC" 2>/dev/null || {
-                    sed -i.horusbak "\\|^\\(export \\)\\?HORUS_PREFIX=|d" "$SHELL_RC" 2>/dev/null || \
-                        sed -i '' "\\|^\\(export \\)\\?HORUS_PREFIX=|d" "$SHELL_RC" 2>/dev/null
+                    sed -E -i.horusbak "/^(export )?HORUS_PREFIX=/d" "$SHELL_RC" 2>/dev/null || \
+                        sed -E -i '' "/^(export )?HORUS_PREFIX=/d" "$SHELL_RC" 2>/dev/null
                     rm -f "${SHELL_RC}.horusbak" 2>/dev/null
                     echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
                 }
