@@ -55,15 +55,7 @@ yarn-error.log*
 .horus/
 /dev/shm/horus/
 *.horus
-# A bare `docs/` matches a directory of that name at ANY depth. It was ignoring
-# nothing — no path in this tree matched it, and the docs site is checked out as
-# `horus-docs/` (docs-contract.yml:183) or `../horus-docs`, never as `docs/`.
-# What it did do was silently swallow in-repo documentation: a file written to
-# docs/ never appeared in `git status`. The pattern is kept for a stray local
-# checkout, with the documentation directories re-included.
 docs/
-!/docs/
-!/horus_net/docs/
 .ouroboros-state.json
 sync-all.sh
 

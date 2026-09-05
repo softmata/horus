@@ -3512,7 +3512,12 @@ fn run_command(command: Commands) -> HorusResult<()> {
             watch,
             extra_args,
         } => {
-            if extract || json || md || html || coverage || diff.is_some() {
+            // `watch` belongs in this guard. `--watch` is declared as "Watch
+            // for file changes and regenerate", and `run_extract` honours it
+            // first thing — but a bare `horus doc --watch` fell to the `else`
+            // arm, which opens rustdoc once and returns, so the flag did
+            // nothing unless an extract flag happened to be passed with it.
+            if extract || json || md || html || coverage || watch || diff.is_some() {
                 let config = commands::doc_extract::ExtractConfig {
                     json,
                     md,

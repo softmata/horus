@@ -51,8 +51,20 @@ pub struct MockTopic<T> {
     name: String,
     buffer: Mutex<VecDeque<T>>,
     config: MockTopicConfig,
+    /// Send ATTEMPTS. Drives the fault-injection schedules, and matches what
+    /// the real transport reports as `messages_sent` — which counts every
+    /// `send()` before dispatch, so a message dropped on a full ring counts.
     send_count: AtomicU64,
+    /// Receive ATTEMPTS. Drives `recv_fail_after` / `recv_fail_every_n`.
     recv_count: AtomicU64,
+    /// Messages actually handed back by `recv`/`try_recv`.
+    ///
+    /// This is what `messages_received` reports, because that is what the real
+    /// transport counts: it increments only when `recv()` returns `Some`. The
+    /// mock used to report its ATTEMPT count there, so a double whose whole
+    /// purpose is to behave like the transport disagreed with it the moment a
+    /// recv came back empty — which is most polls on an idle topic.
+    recv_delivered: AtomicU64,
     send_failures: AtomicU64,
     recv_failures: AtomicU64,
 }
@@ -66,6 +78,7 @@ impl<T: Clone> MockTopic<T> {
             config,
             send_count: AtomicU64::new(0),
             recv_count: AtomicU64::new(0),
+            recv_delivered: AtomicU64::new(0),
             send_failures: AtomicU64::new(0),
             recv_failures: AtomicU64::new(0),
         }
@@ -161,7 +174,11 @@ impl<T: Clone> MockTopic<T> {
         }
 
         let mut buf = self.buffer.lock().unwrap();
-        buf.pop_front()
+        let got = buf.pop_front();
+        if got.is_some() {
+            self.recv_delivered.fetch_add(1, Ordering::Relaxed);
+        }
+        got
     }
 
     /// Read the most recent message without consuming it.
@@ -186,7 +203,7 @@ impl<T: Clone> MockTopic<T> {
     pub fn metrics(&self) -> TopicMetrics {
         TopicMetrics::new(
             self.send_count.load(Ordering::Relaxed),
-            self.recv_count.load(Ordering::Relaxed),
+            self.recv_delivered.load(Ordering::Relaxed),
             self.send_failures.load(Ordering::Relaxed),
             self.recv_failures.load(Ordering::Relaxed),
         )
@@ -226,6 +243,37 @@ mod tests {
     use crate::core::DurationExt;
 
     // ── Basic operations ──
+
+    /// The double must report the same quantities the transport does.
+    ///
+    /// `messages_received` used to be the mock's recv ATTEMPT count, while the
+    /// real transport increments only when `recv()` hands a message back. So a
+    /// test written against the mock and then run against a real topic
+    /// disagreed the moment a poll came back empty — which is most polls on an
+    /// idle topic. A double that reports what the real thing does not is the
+    /// one defect a double cannot have.
+    #[test]
+    fn metrics_count_deliveries_not_poll_attempts() {
+        let t = MockTopic::simple("parity");
+        t.send(1u64);
+        t.send(2u64);
+
+        // Two deliveries, then three empty polls.
+        assert_eq!(t.try_recv(), Some(1));
+        assert_eq!(t.try_recv(), Some(2));
+        for _ in 0..3 {
+            assert_eq!(t.try_recv(), None);
+        }
+
+        let m = t.metrics();
+        assert_eq!(m.messages_sent(), 2, "sends are counted as attempts");
+        assert_eq!(
+            m.messages_received(),
+            2,
+            "only the two DELIVERED messages count — the three empty polls are \
+             not receipts, and the real transport does not count them"
+        );
+    }
 
     #[test]
     fn mock_topic_send_recv_roundtrip() {
