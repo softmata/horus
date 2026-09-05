@@ -1224,6 +1224,7 @@ impl RtExecutor {
         registry_slot: Option<usize>,
         name_hash: u64,
         timing: Option<&super::safety_monitor::NodeTimingState>,
+        watchdog: Option<&super::safety_monitor::Watchdog>,
     ) {
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
@@ -1574,8 +1575,15 @@ impl RtExecutor {
                 // still trips expiry. Feeding the wrong (non-critical) node is a
                 // harmless no-op (no watchdog registered for it).
                 if node.is_rt_node || node.node_watchdog.is_some() {
-                    if let Some(ref feeder) = monitors.watchdog {
-                        feeder.feed(&node.name);
+                    match watchdog {
+                        // Resolved at thread start: two atomic stores, no map,
+                        // no lock, no hash of the node name.
+                        Some(w) => w.feed(),
+                        None => {
+                            if let Some(ref feeder) = monitors.watchdog {
+                                feeder.feed(&node.name);
+                            }
+                        }
                     }
                 }
 
@@ -1969,6 +1977,18 @@ impl RtExecutor {
         // Per-node budget/deadline accounting, resolved once. This one took a
         // process-wide `Mutex<BudgetEnforcer>` shared by every RT chain, so its
         // cost grew with the number of chains rather than staying flat.
+        // Watchdogs, resolved once. The feed itself is two atomic stores; it
+        // was reached through an `RwLock<HashMap<String, _>>` every tick.
+        let watchdogs: Vec<Option<Arc<super::safety_monitor::Watchdog>>> = nodes
+            .iter()
+            .map(|n| {
+                monitors
+                    .watchdog
+                    .as_ref()
+                    .and_then(|f| f.handle(n.name.as_ref()))
+            })
+            .collect();
+
         let timings: Vec<Option<Arc<super::safety_monitor::NodeTimingState>>> = nodes
             .iter()
             .map(|n| {
@@ -2067,6 +2087,7 @@ impl RtExecutor {
                         registry_slots[idx],
                         name_hashes[idx],
                         timings[idx].as_deref(),
+                        watchdogs[idx].as_deref(),
                     )
                 }));
                 warmed[idx] = true;
@@ -2255,7 +2276,7 @@ mod tests {
 
         // The RT loop wraps `tick_node` exactly like this.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0, None, 0, None)
+            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0, None, 0, None, None)
         }));
 
         assert!(
@@ -2430,6 +2451,7 @@ mod tests {
             0,
             None,
             0,
+            None,
             None,
         );
 

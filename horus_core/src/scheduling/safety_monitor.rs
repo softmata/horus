@@ -2,7 +2,7 @@
 use crate::core::rt_node::BudgetViolation;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -288,8 +288,14 @@ pub(crate) enum WatchdogSeverity {
 /// no lock acquisition delay during which a heartbeat could slip in.
 #[derive(Debug)]
 pub(crate) struct Watchdog {
-    /// Timeout duration
-    timeout: Duration,
+    /// Timeout in nanoseconds.
+    ///
+    /// Atomic, and `set_scale` is `&self`, so a `Watchdog` can live behind an
+    /// `Arc` and be fed without going back through the map. The RT tick loop
+    /// fed its node by NAME every tick — an `RwLock` read guard plus a SipHash
+    /// plus a probe, per node per period — and the feed is a two-atomic-store
+    /// operation on the other side of all that.
+    timeout_ns: AtomicU64,
     /// The timeout as configured, before any rate-change scaling. `set_scale`
     /// is always applied to this, so scaling never compounds.
     base_timeout: Duration,
@@ -303,7 +309,7 @@ pub(crate) struct Watchdog {
 impl Watchdog {
     pub(crate) fn new(timeout: Duration) -> Self {
         Self {
-            timeout,
+            timeout_ns: AtomicU64::new(timeout.as_nanos() as u64),
             base_timeout: timeout,
             last_heartbeat_ns: AtomicU64::new(now_ns()),
             expired: AtomicBool::new(false),
@@ -315,9 +321,18 @@ impl Watchdog {
     ///
     /// Always relative to the configured value, never compounding, so
     /// repeated calls are idempotent and `scale = 1.0` restores exactly.
-    pub(crate) fn set_scale(&mut self, scale: f64) {
+    pub(crate) fn set_scale(&self, scale: f64) {
         let scaled = self.base_timeout.as_secs_f64() * scale.max(1.0);
-        self.timeout = Duration::from_secs_f64(scaled);
+        self.timeout_ns.store(
+            Duration::from_secs_f64(scaled).as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// The current (possibly scaled) timeout.
+    #[cfg(test)]
+    pub(crate) fn timeout(&self) -> Duration {
+        Duration::from_nanos(self.timeout_ns.load(Ordering::Relaxed))
     }
 
     /// Feed the watchdog (reset timer)
@@ -331,7 +346,7 @@ impl Watchdog {
     pub(crate) fn check(&self) -> bool {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns().saturating_sub(last_ns);
-        let expired = elapsed_ns >= self.timeout.as_nanos() as u64;
+        let expired = elapsed_ns >= self.timeout_ns.load(Ordering::Relaxed);
         if expired {
             self.expired.store(true, Ordering::SeqCst);
         }
@@ -361,7 +376,7 @@ impl Watchdog {
     pub(crate) fn check_graduated_at(&self, now_ns: u64) -> WatchdogSeverity {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns.saturating_sub(last_ns);
-        let timeout_ns = self.timeout.as_nanos() as u64;
+        let timeout_ns = self.timeout_ns.load(Ordering::Relaxed);
 
         if elapsed_ns <= timeout_ns {
             WatchdogSeverity::Ok
@@ -865,7 +880,7 @@ pub(crate) struct SafetyMonitor {
     /// only READ the map (individual watchdog state is in `AtomicU64`/`AtomicBool`),
     /// so multiple scheduler ticks can iterate concurrently.  Only
     /// `add_critical_node()` needs a write lock (infrequent setup-time call).
-    watchdogs: Arc<RwLock<HashMap<String, Watchdog>>>,
+    watchdogs: Arc<RwLock<HashMap<String, Arc<Watchdog>>>>,
     /// budget enforcer
     budget_enforcer: Arc<BudgetEnforcer>,
     /// Critical nodes that must never fail — protected by RwLock for interior mutability.
@@ -881,6 +896,22 @@ pub(crate) struct SafetyMonitor {
     degradation_policy: DegradationPolicy,
     /// Per-node degradation state
     degradation_states: Mutex<HashMap<String, NodeDegradationState>>,
+    /// How many nodes are currently in a non-`Normal` degradation stage.
+    ///
+    /// Exists so `record_successful_tick` — which runs on the RT thread after
+    /// EVERY successful tick — does not have to take `degradation_states` to
+    /// discover that there is nothing to do. That mutex is process-global and
+    /// blocking, and on a healthy robot the answer is always "nothing to do":
+    /// with no node degraded, the function provably returns
+    /// `DegradationAction::None` for every node, so skipping it is exact rather
+    /// than approximate.
+    ///
+    /// Maintained under the `degradation_states` lock by `refresh_degraded_count`,
+    /// which recomputes it from the map after any stage change. Recomputing is
+    /// O(nodes) but only happens when a stage actually moves, which is rare;
+    /// incrementing and decrementing at each transition would be cheaper and
+    /// far easier to get wrong.
+    degraded_nodes: AtomicUsize,
     /// A NEW external safe-state request the tick loop has not acted on yet.
     ///
     /// Separate from `state`, which latches `SafetyState::SafeState` as an
@@ -905,7 +936,7 @@ pub(crate) struct SafetyMonitor {
 /// fleet-halting emergency stop (FIX #2).
 #[derive(Clone, Debug)]
 pub(crate) struct WatchdogFeeder {
-    watchdogs: Arc<RwLock<HashMap<String, Watchdog>>>,
+    watchdogs: Arc<RwLock<HashMap<String, Arc<Watchdog>>>>,
 }
 
 impl WatchdogFeeder {
@@ -915,6 +946,14 @@ impl WatchdogFeeder {
         if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.feed();
         }
+    }
+
+    /// Resolve a node's watchdog ONCE, so a tick loop never looks it up again.
+    ///
+    /// `None` for a node with no registered watchdog, which `feed` treats as a
+    /// no-op — so a caller holding `None` simply never feeds, exactly as before.
+    pub(crate) fn handle(&self, node_name: &str) -> Option<Arc<Watchdog>> {
+        self.watchdogs.read().get(node_name).cloned()
     }
 }
 
@@ -960,6 +999,7 @@ impl SafetyMonitor {
             degrade_activations: AtomicU64::new(0),
             degradation_policy: DegradationPolicy::default(),
             degradation_states: Mutex::new(HashMap::new()),
+            degraded_nodes: AtomicUsize::new(0),
             external_safe_state_pending: AtomicBool::new(false),
         }
     }
@@ -989,7 +1029,7 @@ impl SafetyMonitor {
         self.critical_nodes.write().push(node_name.clone());
         self.watchdogs
             .write()
-            .insert(node_name, Watchdog::new(watchdog_timeout));
+            .insert(node_name, Arc::new(Watchdog::new(watchdog_timeout)));
     }
 
     /// Returns true if `node_name` was registered as a critical node.
@@ -1019,7 +1059,7 @@ impl SafetyMonitor {
     /// The current watchdog timeout for a node, after any rate scaling.
     #[cfg(test)]
     pub(crate) fn watchdog_timeout(&self, node_name: &str) -> Option<Duration> {
-        self.watchdogs.read().get(node_name).map(|w| w.timeout)
+        self.watchdogs.read().get(node_name).map(|w| w.timeout())
     }
 
     /// Scale a node's watchdog timeout to match a deliberate change in its
@@ -1037,7 +1077,7 @@ impl SafetyMonitor {
     /// values below 1.0 are clamped away — this may only ever widen the window,
     /// never tighten it below what the operator asked for.
     pub(crate) fn scale_watchdog(&self, node_name: &str, scale: f64) {
-        if let Some(watchdog) = self.watchdogs.write().get_mut(node_name) {
+        if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.set_scale(scale);
             watchdog.feed();
         }
@@ -1325,6 +1365,16 @@ impl SafetyMonitor {
     ///
     /// Returns a `DegradationAction` that the scheduler should execute.
     /// Call this after recording a deadline miss or budget violation.
+    /// Recompute [`SafetyMonitor::degraded_nodes`] from the map. Call while
+    /// holding the `degradation_states` lock, after any stage change.
+    fn refresh_degraded_count(&self, states: &HashMap<String, NodeDegradationState>) {
+        let n = states
+            .values()
+            .filter(|s| s.stage != DegradationStage::Normal)
+            .count();
+        self.degraded_nodes.store(n, Ordering::Release);
+    }
+
     pub(crate) fn evaluate_degradation(
         &self,
         node_name: &str,
@@ -1342,7 +1392,9 @@ impl SafetyMonitor {
             .get_mut(node_name)
             .expect("inserted immediately above");
 
-        if consecutive_misses >= policy.kill_after && state.stage != DegradationStage::Killed {
+        let action = if consecutive_misses >= policy.kill_after
+            && state.stage != DegradationStage::Killed
+        {
             state.stage = DegradationStage::Killed;
             state.recovery_counter = 0;
             DegradationAction::Kill(node_name.to_string())
@@ -1374,7 +1426,13 @@ impl SafetyMonitor {
             DegradationAction::Warn(node_name.to_string())
         } else {
             DegradationAction::None
-        }
+        };
+
+        // Single exit, so a stage change cannot escape without updating the
+        // lock-free counter `record_successful_tick` reads. This is the only
+        // function that moves a node OUT of `Normal`.
+        self.refresh_degraded_count(&states);
+        action
     }
 
     /// Record a successful tick for recovery tracking.
@@ -1383,6 +1441,14 @@ impl SafetyMonitor {
     /// consecutive times, it returns `RestoreRate` to signal the scheduler should
     /// restore the original rate.
     pub(crate) fn record_successful_tick(&self, node_name: &str) -> DegradationAction {
+        // Nothing degraded anywhere: every branch below would return
+        // `DegradationAction::None`, so do not take a process-global blocking
+        // mutex on the RT thread to find that out. This is the steady state of
+        // a healthy robot — i.e. essentially every tick.
+        if self.degraded_nodes.load(Ordering::Acquire) == 0 {
+            return DegradationAction::None;
+        }
+
         let recovery_ticks = self.degradation_policy.recovery_ticks;
 
         let mut states = self.degradation_states.lock();
@@ -1390,7 +1456,7 @@ impl SafetyMonitor {
             return DegradationAction::None;
         };
 
-        match state.stage {
+        let action = match state.stage {
             DegradationStage::RateReduced => {
                 state.recovery_counter += 1;
                 if state.recovery_counter >= recovery_ticks {
@@ -1399,17 +1465,21 @@ impl SafetyMonitor {
                     state.recovery_counter = 0;
                     state.original_rate_hz = None;
                     if let Some(rate) = original {
-                        return DegradationAction::RestoreRate {
+                        // An early `return` here would leave `degraded_nodes`
+                        // stale-high on the very transition that clears the last
+                        // degraded node, so this arm yields a value like the rest.
+                        DegradationAction::RestoreRate {
                             node: node_name.to_string(),
                             original_rate_hz: rate,
-                        };
+                        }
+                    } else {
+                        // No original rate saved — rate cannot be restored
+                        log::warn!(
+                            "Node '{}': recovered from RateReduced but original_rate_hz was None — rate not restored",
+                            node_name
+                        );
+                        DegradationAction::None
                     }
-                    // No original rate saved — rate cannot be restored
-                    log::warn!(
-                        "Node '{}': recovered from RateReduced but original_rate_hz was None — rate not restored",
-                        node_name
-                    );
-                    DegradationAction::None
                 } else {
                     DegradationAction::None
                 }
@@ -1437,7 +1507,13 @@ impl SafetyMonitor {
                 }
             }
             _ => DegradationAction::None,
-        }
+        };
+
+        // Single exit, as in `evaluate_degradation`: this is the only function
+        // that moves a node back INTO `Normal`, so it must refresh the counter
+        // or a recovered robot would keep paying for the mutex forever.
+        self.refresh_degraded_count(&states);
+        action
     }
 
     /// Get the current degradation stage for a node.
@@ -2127,10 +2203,10 @@ mod tests {
 
         let monitor = SafetyMonitor::new(100);
         // Register a watchdog but NOT as critical
-        monitor
-            .watchdogs
-            .write()
-            .insert("noncritical".to_string(), Watchdog::new(10_u64.ms()));
+        monitor.watchdogs.write().insert(
+            "noncritical".to_string(),
+            Arc::new(Watchdog::new(10_u64.ms())),
+        );
 
         thread::sleep(35_u64.ms());
 
@@ -3711,15 +3787,15 @@ mod tests {
         monitor
             .watchdogs
             .write()
-            .insert("short_a".to_string(), Watchdog::new(1_u64.ms()));
+            .insert("short_a".to_string(), Arc::new(Watchdog::new(1_u64.ms())));
         monitor
             .watchdogs
             .write()
-            .insert("short_b".to_string(), Watchdog::new(1_u64.ms()));
+            .insert("short_b".to_string(), Arc::new(Watchdog::new(1_u64.ms())));
         monitor
             .watchdogs
             .write()
-            .insert("long_c".to_string(), Watchdog::new(1_u64.secs()));
+            .insert("long_c".to_string(), Arc::new(Watchdog::new(1_u64.secs())));
 
         // Let the short ones expire
         thread::sleep(5_u64.ms());
@@ -3935,6 +4011,171 @@ mod estop_trigger_tests {
 /// this moved into atomics are the ones `trigger_emergency_stop` and the
 /// degradation ladder read, so a lost or mis-ordered update here is a robot
 /// that either stops for no reason or fails to stop when it should.
+/// Guards for the two lock-free fast paths added to the RT tick loop:
+/// the degraded-node counter and the resolved watchdog handle.
+#[cfg(test)]
+mod tick_fast_path_correctness {
+    use super::*;
+
+    /// The `degraded_nodes` shortcut must not swallow a real recovery.
+    ///
+    /// `record_successful_tick` returns early without taking
+    /// `degradation_states` when the counter is zero. That is exact only if the
+    /// counter is refreshed on EVERY stage change — so drive a node all the way
+    /// down the ladder and back up, and require the recovery actions to still
+    /// come out. If a refresh were missed on the way down, the counter would
+    /// read zero, the early return would fire, and the node would stay degraded
+    /// for the life of the process with `recovery_ticks` silently dead.
+    #[test]
+    fn a_degraded_node_still_recovers_through_the_lock_free_fast_path() {
+        let mut m = SafetyMonitor::new(u64::MAX);
+        m.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 100,
+            kill_after: 200,
+            recovery_ticks: 3,
+        });
+
+        // Healthy: nothing degraded, so the fast path is what runs.
+        assert_eq!(m.degraded_nodes.load(Ordering::Acquire), 0);
+        assert_eq!(
+            m.record_successful_tick("servo"),
+            DegradationAction::None,
+            "a healthy node must be a no-op"
+        );
+
+        // Degrade it to RateReduced.
+        let _ = m.evaluate_degradation("servo", 1, Some(1000.0));
+        let action = m.evaluate_degradation("servo", 2, Some(1000.0));
+        assert!(
+            matches!(action, DegradationAction::ReduceRate { .. }),
+            "expected ReduceRate, got {action:?}"
+        );
+        assert_eq!(
+            m.degraded_nodes.load(Ordering::Acquire),
+            1,
+            "the counter must see the node leave Normal, or recovery is unreachable"
+        );
+
+        // Recover: recovery_ticks successes must produce RestoreRate.
+        assert_eq!(m.record_successful_tick("servo"), DegradationAction::None);
+        assert_eq!(m.record_successful_tick("servo"), DegradationAction::None);
+        let restored = m.record_successful_tick("servo");
+        assert!(
+            matches!(
+                restored,
+                DegradationAction::RestoreRate { ref node, original_rate_hz }
+                    if node == "servo" && original_rate_hz == 1000.0
+            ),
+            "expected RestoreRate(1000Hz), got {restored:?}"
+        );
+
+        // ...and the counter must fall back to zero, or a recovered robot pays
+        // for the mutex forever.
+        assert_eq!(
+            m.degraded_nodes.load(Ordering::Acquire),
+            0,
+            "the counter must clear when the last node returns to Normal"
+        );
+    }
+
+    /// One degraded node must not let another node's ticks skip the check.
+    #[test]
+    fn the_counter_is_process_wide_so_a_second_node_is_still_evaluated() {
+        let mut m = SafetyMonitor::new(u64::MAX);
+        m.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 100,
+            kill_after: 200,
+            recovery_ticks: 2,
+        });
+
+        let _ = m.evaluate_degradation("a", 1, Some(1000.0));
+        let _ = m.evaluate_degradation("a", 2, Some(1000.0));
+        let _ = m.evaluate_degradation("b", 1, Some(500.0));
+        let _ = m.evaluate_degradation("b", 2, Some(500.0));
+        assert_eq!(m.degraded_nodes.load(Ordering::Acquire), 2);
+
+        // Recover only 'a'. 'b' must still be degraded and still recoverable.
+        assert_eq!(m.record_successful_tick("a"), DegradationAction::None);
+        assert!(matches!(
+            m.record_successful_tick("a"),
+            DegradationAction::RestoreRate { .. }
+        ));
+        assert_eq!(
+            m.degraded_nodes.load(Ordering::Acquire),
+            1,
+            "'b' is still degraded"
+        );
+
+        assert_eq!(m.record_successful_tick("b"), DegradationAction::None);
+        assert!(
+            matches!(
+                m.record_successful_tick("b"),
+                DegradationAction::RestoreRate { .. }
+            ),
+            "'b' must still recover after 'a' did"
+        );
+        assert_eq!(m.degraded_nodes.load(Ordering::Acquire), 0);
+    }
+
+    /// A watchdog fed through a resolved handle is the same watchdog the
+    /// main-thread expiry check reads.
+    ///
+    /// The RT loop now feeds `Arc<Watchdog>` resolved at thread start instead of
+    /// calling `WatchdogFeeder::feed(name)`. If the handle ever pointed at a
+    /// different object than the map holds — a clone of the value rather than a
+    /// shared `Arc` — feeding would appear to work and `check_watchdogs` would
+    /// expire the node anyway, e-stopping a perfectly healthy robot.
+    #[test]
+    fn a_watchdog_fed_through_its_handle_is_the_one_the_monitor_checks() {
+        let m = SafetyMonitor::new(u64::MAX);
+        m.add_critical_node("servo".to_string(), Duration::from_millis(50));
+        let feeder = m.watchdog_feeder();
+        let handle = feeder.handle("servo").expect("servo has a watchdog");
+
+        // Let it go stale, confirm the monitor sees that.
+        std::thread::sleep(Duration::from_millis(80));
+        let mut expired = Vec::new();
+        m.check_watchdogs(&mut expired);
+        assert_eq!(expired, vec!["servo".to_string()], "should have expired");
+
+        // Feed through the HANDLE, then re-check: the monitor must agree.
+        handle.feed();
+        let mut expired = Vec::new();
+        m.check_watchdogs(&mut expired);
+        assert!(
+            expired.is_empty(),
+            "feeding through the resolved handle did not reach the watchdog the \
+             monitor checks — got {expired:?}"
+        );
+
+        // An unregistered node has no handle, which is the documented no-op.
+        assert!(feeder.handle("not_registered").is_none());
+    }
+
+    /// `scale_watchdog` must still reach a watchdog held by `Arc`.
+    #[test]
+    fn scaling_still_widens_the_timeout_behind_the_arc() {
+        let m = SafetyMonitor::new(u64::MAX);
+        m.add_critical_node("servo".to_string(), Duration::from_millis(10));
+        assert_eq!(m.watchdog_timeout("servo"), Some(Duration::from_millis(10)));
+
+        m.scale_watchdog("servo", 3.0);
+        assert_eq!(
+            m.watchdog_timeout("servo"),
+            Some(Duration::from_millis(30)),
+            "scaling did not reach the shared watchdog"
+        );
+
+        // Never tightens below the configured value.
+        m.scale_watchdog("servo", 0.5);
+        assert_eq!(m.watchdog_timeout("servo"), Some(Duration::from_millis(10)));
+    }
+}
+
 #[cfg(test)]
 mod budget_atomics_correctness {
     use super::*;
@@ -4164,6 +4405,70 @@ mod budget_hot_path_perf {
             h.join().unwrap();
         }
         (by_name, by_handle)
+    }
+
+    /// The other two per-tick safety calls: the watchdog feed and the
+    /// degradation-recovery check.
+    ///
+    /// Both ran by NAME on every successful tick — the feed through an
+    /// `RwLock<HashMap<String, Watchdog>>`, the recovery check through a
+    /// process-global blocking `Mutex<HashMap<String, _>>` that a healthy robot
+    /// never needed to take at all.
+    #[test]
+    #[ignore = "stopwatch, not an assertion — run manually with --ignored"]
+    fn watchdog_and_recovery_cost() {
+        let names: Vec<String> = (0..NODES)
+            .map(|i| format!("perception_stage_{i}"))
+            .collect();
+        let m = Arc::new(SafetyMonitor::new(u64::MAX));
+        for n in &names {
+            m.add_critical_node(n.clone(), Duration::from_millis(50));
+        }
+        let feeder = m.watchdog_feeder();
+        let handles: Vec<_> = names.iter().map(|n| feeder.handle(n).unwrap()).collect();
+
+        let by_name = {
+            let start = Instant::now();
+            for _ in 0..TICKS {
+                for n in &names {
+                    feeder.feed(black_box(n));
+                }
+            }
+            start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+        };
+        let by_handle = {
+            let start = Instant::now();
+            for _ in 0..TICKS {
+                for h in &handles {
+                    black_box(h).feed();
+                }
+            }
+            start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+        };
+
+        // Recovery check on a HEALTHY robot: nothing degraded, which is the
+        // steady state and the case the counter short-circuits.
+        let recovery = {
+            let start = Instant::now();
+            for _ in 0..TICKS {
+                for n in &names {
+                    black_box(m.record_successful_tick(black_box(n)));
+                }
+            }
+            start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+        };
+
+        println!("\n  remaining per-tick safety calls, per node per tick:");
+        println!("    watchdog feed by name  : {by_name:8.1} ns");
+        println!(
+            "    watchdog feed by handle: {by_handle:8.1} ns  ({:.1}x)",
+            by_name / by_handle
+        );
+        println!("    recovery check (healthy, counter==0): {recovery:8.1} ns");
+        println!(
+            "    => saved per tick for {NODES} nodes: {:8.1} ns on the feed alone\n",
+            (by_name - by_handle) * NODES as f64
+        );
     }
 
     #[test]
