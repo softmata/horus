@@ -1453,6 +1453,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         unsafe { &*(self.storage.as_ptr() as *const TopicHeader) }
     }
 
+    /// Bump the "new data exists" counter the staleness watchdog reads.
+    ///
+    /// `RingTopic::send` does this inline. It lives here as well so the public
+    /// `Topic::try_send` / `Topic::send_blocking` can do it exactly once per
+    /// call: it must NOT move into `RingTopic::try_send`, which
+    /// `send_lossy_retry` calls up to ~70 times for a single message.
+    #[inline(always)]
+    fn bump_messages_total(&self) {
+        self.header().messages_total.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Check if verbose content logging is enabled via the SHM header flag.
     /// Uses the stable `header_ptr` (not `LocalState::cached_header_ptr`, which
     /// is repurposed by the role=Both same-instance fast path).
@@ -4458,6 +4469,19 @@ where
         // A backpressure-aware publisher is still a publisher; this had no
         // registration block, so `try_send`-only nodes were unattributed.
         self.register_pub_lazy();
+        // `messages_total` is not a metric — `SubscriptionFreshness` watches it
+        // as the "new data exists" signal behind `.subscribe_with_timeout()`,
+        // and that drives `StalePolicy::SafeState` and `Stop`. Only `send()`
+        // used to bump it, so a topic driven entirely by `try_send` read as 0
+        // messages and 0 Hz while carrying full traffic, and could safe-state
+        // or halt a subscriber node whose data was arriving normally. That is
+        // the exact failure the counter was introduced to prevent, and these
+        // are the APIs the docs send users to on critical topics.
+        //
+        // Counted before the call, like `send()`: this is an attempt count, and
+        // a publisher hammering a full ring is alive — a ring nobody drains is
+        // a different fault, and one the subscriber's own staleness sees.
+        self.ring.bump_messages_total();
         self.ring.try_send(msg)
     }
 
@@ -4520,7 +4544,17 @@ where
         timeout: std::time::Duration,
     ) -> Result<(), SendBlockingError> {
         self.register_pub_lazy();
-        self.ring.send_blocking(msg, timeout)
+        let result = self.ring.send_blocking(msg, timeout);
+        // Same "new data exists" signal as `try_send` above — but NOT for
+        // `NoBackpressure`. That refusal is returned before the send is even
+        // attempted, so nothing reached the ring; counting it would report a
+        // healthy flow on a topic delivering nothing, which is worse than the
+        // silence it replaced. A `Timeout` did engage the ring, so it counts as
+        // an attempt like `send()`'s dropped message does.
+        if !matches!(result, Err(SendBlockingError::NoBackpressure)) {
+            self.ring.bump_messages_total();
+        }
+        result
     }
 
     /// Low-level receive without logging/recording hooks.
@@ -5082,6 +5116,91 @@ mod untrusted_ring_geometry_tests {
         );
         topic.send(7);
         assert_eq!(topic.recv(), Some(7));
+        drop(topic);
+        cleanup(&name);
+    }
+}
+
+#[cfg(test)]
+mod staleness_signal_tests {
+    use super::{SendBlockingError, Topic};
+    use std::time::Duration;
+
+    fn cleanup(name: &str) {
+        if let Some(path) = horus_sys::shm::topic_shm_path_checked(name) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// `messages_total` is the staleness watchdog's "new data exists" signal.
+    ///
+    /// `SubscriptionFreshness::refresh` watches it behind
+    /// `.subscribe_with_timeout()`, and its answer drives
+    /// `StalePolicy::SafeState` and `StalePolicy::Stop`. Only `RingTopic::send`
+    /// bumped it, so a topic published entirely through `try_send` read as 0
+    /// messages and 0 Hz while carrying every message — and could safe-state or
+    /// halt a subscriber whose data was arriving normally. That is precisely
+    /// the failure the counter exists to prevent, and `try_send` /
+    /// `send_blocking` are the two APIs the docs point users to on critical
+    /// topics.
+    #[test]
+    fn try_send_moves_the_staleness_counter() {
+        let name = format!("staleness_try_send_{}", std::process::id());
+        cleanup(&name);
+        let Ok(topic) = Topic::<u64>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        assert_eq!(topic.ring.header().messages_total(), 0);
+        for i in 0..10u64 {
+            let _ = topic.try_send(i);
+        }
+
+        assert_eq!(
+            topic.ring.header().messages_total(),
+            10,
+            "ten try_send calls delivered ten messages; a watchdog reading this \
+             counter must not conclude the topic is dead"
+        );
+
+        drop(topic);
+        cleanup(&name);
+    }
+
+    /// The same for `send_blocking`, on a topic that has backpressure.
+    #[test]
+    fn send_blocking_moves_the_staleness_counter() {
+        let name = format!("staleness_send_blocking_{}", std::process::id());
+        cleanup(&name);
+        let Ok(topic) = Topic::<u64>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        let mut delivered = 0u64;
+        for i in 0..10u64 {
+            match topic.send_blocking(i, Duration::from_millis(50)) {
+                Ok(()) => delivered += 1,
+                // A broadcast backend refuses before it ever touches the ring.
+                Err(SendBlockingError::NoBackpressure) => {}
+                Err(SendBlockingError::Timeout) => delivered += 1,
+            }
+        }
+
+        assert_eq!(
+            topic.ring.header().messages_total(),
+            delivered,
+            "every send_blocking that engaged the ring must move the counter, \
+             and a NoBackpressure refusal — which never reaches the ring — must \
+             not, or a topic delivering nothing would read as healthy"
+        );
+        assert!(
+            delivered > 0,
+            "precondition: a single-subscriber topic has backpressure, so these \
+             sends must have engaged the ring"
+        );
+
         drop(topic);
         cleanup(&name);
     }
