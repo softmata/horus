@@ -148,6 +148,20 @@ fn send_timeout_err(
     crate::errors::to_py_err(send_timeout_error(topic, elapsed, deadline))
 }
 
+/// The message type an existing topic's ring already holds, or `None`.
+///
+/// Reads the SHM header only; it never constructs a `Topic`. That is the whole
+/// point. Asking "what type is this ring?" by opening it is circular — opening
+/// requires choosing a type, and choosing the wrong one is refused by the size
+/// check in `RingTopic::new`. The previous auto-detection did exactly that:
+/// `probe = Topic(name, 64)` builds a `Topic<GenericMessage>`, which the header
+/// check is guaranteed to refuse on any typed ring, so the probe always raised
+/// into a bare `except Exception` and the step could never succeed.
+#[pyfunction]
+pub fn peek_topic_type(name: &str) -> Option<String> {
+    horus_core::communication::peek_topic_type_name(name)
+}
+
 /// `SendBlockingError::NoBackpressure` as a Python exception.
 ///
 /// NOT `HorusTimeoutError`. The core writes this variant specifically to be
@@ -2088,6 +2102,57 @@ mod tests {
             matches!(err, horus_core::error::HorusError::Timeout(_)),
             "must be the Timeout variant so to_py_err maps it to HorusTimeoutError"
         );
+    }
+
+    /// Auto-detecting a subscription's type must not require attaching to it.
+    ///
+    /// `_setup_topics` documents a three-step resolution whose middle step is
+    /// "auto-detect from SHM header". It was implemented as `probe =
+    /// Topic(name, 64)` followed by `getattr(probe, "type_name", None)`, and
+    /// both halves were dead: `Topic` exposes no `type_name`, and the probe
+    /// builds a `GenericMessage` topic, which the runtime refuses to attach to
+    /// a typed ring. So the step could never succeed for any topic that has
+    /// ever existed, and the ~70-entry `_TYPE_NAME_MAP` built for it had no
+    /// reachable reader.
+    ///
+    /// The first assertion below is that refusal — it is correct and must
+    /// stay, since a name-based exemption once let a generic handle write
+    /// megabytes past the end of a typed mapping. The question just cannot be
+    /// answered by attaching, which is what `peek_topic_type` is for.
+    #[test]
+    fn the_ring_type_is_readable_without_attaching_to_it() {
+        use horus::communication::Topic as CoreTopic;
+
+        let name = format!("peek_probe_{}", std::process::id());
+
+        let Ok(typed) = CoreTopic::<CmdVel>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+        typed.send(CmdVel::new(1.0, 0.0));
+
+        // The old probe. It cannot open the ring, so it could never report
+        // anything about it.
+        assert!(
+            CoreTopic::<GenericMessage>::new(&name).is_err(),
+            "a generic handle must still be refused on a typed ring"
+        );
+
+        // The peek reads the header instead of attaching, and answers.
+        let seen = peek_topic_type(&name);
+        assert_eq!(
+            seen.as_deref(),
+            Some("CmdVel"),
+            "the header records the ring's type and it must be readable"
+        );
+
+        assert_eq!(
+            peek_topic_type("peek_probe_no_such_topic_anywhere"),
+            None,
+            "a topic that does not exist has no type"
+        );
+
+        drop(typed);
     }
 
     /// A refusal for want of backpressure must NOT arrive as a timeout.

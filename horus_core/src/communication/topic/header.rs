@@ -1868,6 +1868,24 @@ pub(crate) fn type_name_as_stored(name: &str) -> &str {
     &name[..end]
 }
 
+/// The message type an existing topic's ring already holds, by topic NAME.
+///
+/// Reads only the header — it never constructs a `Topic`, which is the point.
+/// Asking "what type is this ring?" by opening it is circular: opening requires
+/// choosing a type, and choosing the wrong one is refused by the size check in
+/// `RingTopic::new` (correctly — a name-based exemption once let a
+/// `Topic<GenericMessage>` join a `Topic<CmdVel>` ring and write megabytes past
+/// the end of the mapping). So a caller that wants to pick the type from the
+/// ring has to read the header without attaching, and this is that.
+///
+/// `None` if the topic does not exist, the name is not a legal region name, the
+/// region has no valid header, or the header records no type.
+pub fn peek_topic_type_name(name: &str) -> Option<String> {
+    let path = horus_sys::shm::topic_shm_path_checked(name)?;
+    let info = read_topic_header_info(&path)?;
+    (!info.type_name.is_empty()).then_some(info.type_name)
+}
+
 pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo> {
     let mmap = map_topic_region(path)?;
     let base = mmap.as_ptr();
