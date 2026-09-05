@@ -964,7 +964,7 @@ fi
 # In a function, with markers, for the same reason as the completion
 # removal above: the regression test runs this exact text.
 clean_shell_profiles() {
-    local profile
+    local profile fish_config
     # Shell profiles: remove horus completion eval lines and shell integration
     for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
         # The block install.sh's add_zsh_fpath_block() writes. It is delimited by
@@ -1000,7 +1000,38 @@ clean_shell_profiles() {
             echo -e "  ${GREEN}[+]${NC} Cleaned horus shell integration from $(basename $profile)"
             REMOVED=$((REMOVED + 1))
         fi
+        # The `export HORUS_PREFIX=` line install.sh writes for a --prefix
+        # install. Leaving it is not untidiness: install.sh:245 reads the
+        # variable to pick INSTALL_DIR, so a line that survives the uninstall is
+        # still exported by every new shell and the NEXT install silently lands
+        # in the prefix this run just deleted.
+        #
+        # ERE via -E, not a `\?` BRE: that quantifier is a GNU extension and
+        # matches nothing on the sed macOS ships, which would leave the line in
+        # place on exactly the platform this cleanup is hardest to notice on.
+        if [ -f "$profile" ] && grep -qE "^(export )?HORUS_PREFIX=" "$profile" 2>/dev/null; then
+            cp "$profile" "${profile}.horus-backup" 2>/dev/null
+            sed -E -i.bak "/^(export )?HORUS_PREFIX=/d" "$profile" 2>/dev/null || \
+                sed -E -i '' "/^(export )?HORUS_PREFIX=/d" "$profile" 2>/dev/null
+            rm -f "${profile}.bak" 2>/dev/null
+            echo -e "  ${GREEN}[+]${NC} Cleaned HORUS_PREFIX export from $(basename $profile)"
+            REMOVED=$((REMOVED + 1))
+        fi
     done
+
+    # fish keeps its own syntax in its own file, and the loop above does not
+    # walk it. install.sh writes `set -gx HORUS_PREFIX "..."` into config.fish;
+    # the conf.d/horus.fish removed below is a different file entirely, so for
+    # fish users the export survived no matter what the POSIX side did.
+    fish_config="$HOME/.config/fish/config.fish"
+    if [ -f "$fish_config" ] && grep -q "HORUS_PREFIX" "$fish_config" 2>/dev/null; then
+        cp "$fish_config" "${fish_config}.horus-backup" 2>/dev/null
+        sed -E -i.bak "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)/d" "$fish_config" 2>/dev/null || \
+            sed -E -i '' "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)/d" "$fish_config" 2>/dev/null
+        rm -f "${fish_config}.bak" 2>/dev/null
+        echo -e "  ${GREEN}[+]${NC} Cleaned HORUS_PREFIX from config.fish"
+        REMOVED=$((REMOVED + 1))
+    fi
 
     # Remove fish shell integration
     if [ -f "$HOME/.config/fish/conf.d/horus.fish" ]; then

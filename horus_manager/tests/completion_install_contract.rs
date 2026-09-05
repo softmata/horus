@@ -824,3 +824,140 @@ fn the_rust_version_gate_compares_numerically_not_lexically() {
          every toolchain once the minor version passes 9:\n{out}"
     );
 }
+
+/// Drive the installer's tail with `HORUS_PREFIX` set, the way `--prefix` does.
+fn install_with_prefix(sb: &Sandbox, prefix: &Path, shell: &str) -> String {
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, shell, false, &[])
+}
+
+/// Uninstalling must take the `HORUS_PREFIX` export back out of the rc file.
+///
+/// It is not merely untidy to leave it. `install.sh:245` reads the variable:
+///
+///     if [ -n "${HORUS_PREFIX:-}" ]; then INSTALL_DIR="${HORUS_PREFIX}/bin"
+///
+/// so the line the uninstaller leaves behind is still exported by every new
+/// shell, and the *next* install silently lands in the deleted prefix instead
+/// of the default location — with nothing on screen to say so. Uninstall,
+/// open a terminal, reinstall, and horus is back in /opt/horus.
+#[test]
+fn uninstalling_removes_the_horus_prefix_export_from_the_rc() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    fs::write(sb.path().join(".bashrc"), "# bashrc\n").unwrap();
+    install_with_prefix(&sb, &prefix, "/bin/bash");
+    let before = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        before.contains("HORUS_PREFIX="),
+        "precondition: the installer should have written the export:\n{before}"
+    );
+
+    sb.uninstall(&[]);
+
+    let after = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !after.contains("HORUS_PREFIX="),
+        "the uninstaller left the HORUS_PREFIX export behind, pointing at a \
+         prefix it just deleted. Every later shell exports it, and the next \
+         install reads it and reinstalls into the removed directory:\n{after}"
+    );
+}
+
+/// The same line, in fish's syntax, in the file fish actually reads.
+///
+/// `clean_shell_profiles` walks `.bashrc`/`.zshrc`/`.profile`/`.bash_profile`;
+/// `config.fish` is not among them, and the `conf.d/horus.fish` it does delete
+/// is a different file. The installer writes `set -gx HORUS_PREFIX` into
+/// `config.fish`, so for fish users the export survived the uninstall
+/// regardless of how the POSIX side behaved.
+#[test]
+fn uninstalling_removes_the_fish_horus_prefix_export() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let fish_dir = sb.path().join(".config/fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(fish_dir.join("config.fish"), "# config.fish\n").unwrap();
+    install_with_prefix(&sb, &prefix, "/usr/bin/fish");
+    let before = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        before.contains("HORUS_PREFIX"),
+        "precondition: the installer should have written the fish export:\n{before}"
+    );
+
+    sb.uninstall(&[]);
+
+    let after = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        !after.contains("HORUS_PREFIX"),
+        "the uninstaller left the fish HORUS_PREFIX line behind:\n{after}"
+    );
+}
+
+/// The cleanup deletes horus's line and nothing that merely looks like it.
+///
+/// A line-deleting uninstaller is one missing anchor away from eating a
+/// stranger's config. `HORUS_PREFIX=` is anchored by the `=`; the fish form has
+/// no `=`, so without an explicit end-of-name boundary
+/// `set -gx HORUS_PREFIX_OTHER` matches the same pattern and is silently
+/// removed from a file the user has to notice is wrong on their own.
+#[test]
+fn the_prefix_cleanup_leaves_similarly_named_variables_alone() {
+    let sb = Sandbox::new();
+    fs::write(
+        sb.path().join(".bashrc"),
+        "# bashrc\n\
+         export HORUS_PREFIX=\"/opt/horus\"\n\
+         export HORUS_PREFIX_EXTRA=\"keep me\"\n\
+         export MY_HORUS_PREFIX=\"keep me too\"\n",
+    )
+    .unwrap();
+    let fish_dir = sb.path().join(".config/fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(
+        fish_dir.join("config.fish"),
+        "# config.fish\n\
+         set -gx HORUS_PREFIX \"/opt/horus\"\n\
+         set -gx HORUS_PREFIX_OTHER \"keep me\"\n",
+    )
+    .unwrap();
+
+    sb.uninstall(&[]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !rc.contains("export HORUS_PREFIX=\""),
+        "horus's own line survived:\n{rc}"
+    );
+    assert!(
+        rc.contains("HORUS_PREFIX_EXTRA") && rc.contains("MY_HORUS_PREFIX"),
+        "the uninstaller deleted a variable that only shares a prefix with \
+         horus's, out of a file it does not own:\n{rc}"
+    );
+
+    let fish = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        !fish.contains("set -gx HORUS_PREFIX \""),
+        "horus's own fish line survived:\n{fish}"
+    );
+    assert!(
+        fish.contains("HORUS_PREFIX_OTHER"),
+        "the fish cleanup has no end-of-name boundary and ate a neighbouring \
+         variable:\n{fish}"
+    );
+}
