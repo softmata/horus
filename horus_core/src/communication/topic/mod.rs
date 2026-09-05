@@ -2774,7 +2774,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             self.metrics.messages_sent.load(Ordering::Relaxed),
             self.metrics.messages_received.load(Ordering::Relaxed),
             self.metrics.send_failures.load(Ordering::Relaxed),
-            self.metrics.recv_failures.load(Ordering::Relaxed),
+            // The real transport has no recv-failure notion: a `recv()` that
+            // returns `None` is an empty ring. Only `MockTopic` reports one,
+            // from its fault injection. See `TopicMetrics::recv_failures`.
+            0,
         )
     }
 
@@ -2848,6 +2851,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // ~28ns of ~95ns, and it should be done on purpose rather than by
         // flipping this line.
         self.header().messages_total.fetch_add(1, Ordering::Relaxed);
+        // The per-handle counter behind `TopicMetrics::messages_sent`, which was
+        // incremented ONLY inside `send_with_content_logging` — a `#[cold]` path
+        // reached only while the `horus monitor` TUI has set the topic's verbose
+        // flag. So the public accessor read 0 in every normal run, however much
+        // traffic the topic carried, while `MockTopic` (the stand-in users write
+        // their tests against) maintained it faithfully. A test double that
+        // reports what the real thing does not is the one defect a double
+        // cannot have.
+        //
+        // This is a process-local, uncontended relaxed increment on a counter
+        // only this handle writes — not the contended shared-memory RMW the
+        // comment above prices at ~28 ns.
+        self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
             // Notify event nodes watching this topic. Gated inside
@@ -2993,7 +3009,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.send_lossy(msg);
         let ipc_ns = start.elapsed().as_nanos() as u64;
 
-        self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
+        // NOT counted here: `send()` counts every send before dispatching to
+        // this cold path, so incrementing again would double-count while the
+        // monitor's verbose flag is set.
         self.state
             .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
         use crate::core::hlog::{current_node_name, current_tick_number};
@@ -3336,6 +3354,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if unlikely(self.is_verbose()) {
             return self.recv_with_content_logging();
         }
+        let received = self.recv_uncounted();
+        if received.is_some() {
+            // Counts DELIVERED messages, the mirror of `messages_sent`. As
+            // there, this used to move only on the `#[cold]` verbose path, so
+            // the public accessor read 0 in every normal run.
+            self.metrics
+                .messages_received
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        received
+    }
+
+    /// `recv()` without the metrics bookkeeping.
+    #[inline(always)]
+    fn recv_uncounted(&self) -> Option<T> {
         // Fast path: role=Both (same-instance, same-thread pub+sub) and POD.
         //
         // Gated on `is_pod` in lockstep with `send`: this reads back through

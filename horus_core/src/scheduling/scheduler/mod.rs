@@ -801,18 +801,27 @@ impl Scheduler {
         // feature, and no watchdog is not. Say so, because silently changing a
         // safety timeout is its own problem — the operator needs to know the
         // value actually in force.
-        let ms = timeout.as_millis() as u64;
+        //
+        // That rule held for the sub-1ms case and was inverted for every other
+        // one: `as_millis()` truncates, so `.watchdog(1500_u64.us())` stored 1ms
+        // and its 3x critical rung latched a fleet-wide e-stop at 3ms instead of
+        // the 4.5ms asked for, with no diagnostic. Tightening is the direction
+        // that produces spurious halts on a healthy node. Round the whole range
+        // up, and report any value that had to change.
+        let ms = timeout.as_nanos().div_ceil(1_000_000) as u64;
         self.pending_config.realtime.watchdog_timeout_ms = if timeout.is_zero() {
             0 // explicit disable — honour it
-        } else if ms == 0 {
+        } else if !timeout.subsec_nanos().is_multiple_of(1_000_000) || ms == 0 {
+            let effective = Duration::from_millis(ms.max(1));
             crate::hlog!(
                 warn,
-                "watchdog({:?}) is below the 1ms resolution the scheduler config stores; \
-                 using 1ms. Sub-millisecond watchdogs are not supported — previously this \
-                 truncated to 0, which DISABLED the watchdog entirely.",
-                timeout
+                "watchdog({:?}) is not a whole number of milliseconds, which is all the \
+                 scheduler config stores; using {:?}. Rounded UP on purpose: a looser \
+                 watchdog is a safety feature, a tighter one halts a healthy robot.",
+                timeout,
+                effective
             );
-            1
+            ms.max(1)
         } else {
             ms
         };

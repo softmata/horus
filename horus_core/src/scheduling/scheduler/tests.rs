@@ -3075,6 +3075,53 @@ fn test_builder_order_independence() {
     );
 }
 
+/// A watchdog timeout is rounded UP, never tightened.
+///
+/// The config stores whole milliseconds. `as_millis()` truncates, so
+/// `.watchdog(1500_u64.us())` used to store 1 ms — and the graduated ladder
+/// latches a system-wide emergency stop past 3x the window, so it fired at 3 ms
+/// instead of the 4.5 ms the operator asked for, with no diagnostic.
+///
+/// Tightening is the dangerous direction: it halts a healthy robot. The builder
+/// already argued exactly this for the sub-1 ms case — "a slightly-looser
+/// watchdog is a safety feature, and no watchdog is not" — and then truncated
+/// every other value.
+#[test]
+fn a_watchdog_timeout_is_never_silently_tightened() {
+    let _guard = lock_scheduler();
+
+    // The case the old code got right.
+    let sub_ms = Scheduler::new().watchdog(500_u64.us());
+    assert_eq!(
+        sub_ms.pending_config.realtime.watchdog_timeout_ms, 1,
+        "a sub-millisecond watchdog must not round to 0, which disables it"
+    );
+
+    // The case it got backwards.
+    let fractional = Scheduler::new().watchdog(1500_u64.us());
+    assert_eq!(
+        fractional.pending_config.realtime.watchdog_timeout_ms, 2,
+        "1.5 ms must round UP to 2 ms; truncating to 1 ms makes the 3x \
+         emergency-stop rung fire at 3 ms instead of 4.5 ms"
+    );
+
+    let just_over = Scheduler::new().watchdog(Duration::from_micros(2_001));
+    assert_eq!(
+        just_over.pending_config.realtime.watchdog_timeout_ms, 3,
+        "any remainder rounds up — the stored window must never be shorter \
+         than the one that was asked for"
+    );
+
+    // Whole milliseconds are untouched, and an explicit zero still disables.
+    let whole = Scheduler::new().watchdog(500_u64.ms());
+    assert_eq!(whole.pending_config.realtime.watchdog_timeout_ms, 500);
+    let disabled = Scheduler::new().watchdog(Duration::ZERO);
+    assert_eq!(
+        disabled.pending_config.realtime.watchdog_timeout_ms, 0,
+        "an explicit zero is a disable and must be honoured"
+    );
+}
+
 // ============================================================================
 // Phase 6: Graduated Safety Monitor Response
 // ============================================================================
