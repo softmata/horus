@@ -1467,8 +1467,10 @@ impl PyTopic {
     /// first send — the backend is unresolved until a handle moves a message,
     /// and an unresolved backend answers False.
     ///
-    ///     estop.send(EmergencyStop(True))   # resolves the backend
-    ///     assert estop.provides_backpressure, estop.backend_type
+    /// ```python
+    /// estop.send(EmergencyStop(True))   # resolves the backend
+    /// assert estop.provides_backpressure, estop.backend_type
+    /// ```
     ///
     /// Answered from `backend_type` through the runtime's own
     /// `backend_provides_backpressure`, so this cannot drift from what
