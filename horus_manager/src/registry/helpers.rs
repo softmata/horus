@@ -1052,7 +1052,11 @@ pub(crate) fn extract_package_dependencies(dir: &Path) -> Result<Vec<DependencyS
     Ok(dependencies)
 }
 
-/// Check if a Cargo.toml has dependencies on horus crates (horus_core, horus_library, horus_macros)
+/// Whether a Cargo.toml depends on any crate HORUS ships.
+///
+/// The set is `error_wrapper::FIRST_PARTY_CRATES`. The doc here used to name
+/// three of them — and so did the code — which left out the one a real package
+/// is most likely to use.
 fn cargo_toml_has_horus_deps(package_dir: &Path) -> bool {
     let cargo_toml_path = package_dir.join(CARGO_TOML);
     let content = match fs::read_to_string(&cargo_toml_path) {
@@ -1067,9 +1071,15 @@ fn cargo_toml_has_horus_deps(package_dir: &Path) -> bool {
         Some(d) => d,
         None => return false,
     };
-    deps.contains_key("horus_core")
-        || deps.contains_key("horus_library")
-        || deps.contains_key("horus_macros")
+    // The shared list, not a third copy of it. This used to name exactly
+    // horus_core, horus_library and horus_macros - omitting `horus`, the
+    // facade crate every `horus new` scaffold writes and every documented
+    // example imports (`use horus::prelude::*`). So a published package
+    // depending on `horus` was not recognised as depending on HORUS at all,
+    // and the path overrides that point cargo at the local source tree were
+    // never injected for it.
+    deps.keys()
+        .any(|k| crate::error_wrapper::is_first_party_crate(k))
 }
 
 /// The command HORUS prints when it cannot find its own source tree — the "I
@@ -2156,7 +2166,7 @@ pub fn generate_signing_keypair() -> Result<()> {
 
 #[cfg(test)]
 mod system_package_name_tests {
-    use super::is_safe_system_package_name;
+    use super::{cargo_toml_has_horus_deps, is_safe_system_package_name};
 
     #[test]
     fn accepts_real_package_names() {
@@ -2223,5 +2233,50 @@ mod system_package_name_tests {
         assert!(!is_safe_system_package_name(".hidden"));
         assert!(!is_safe_system_package_name(&"a".repeat(129)));
         assert!(is_safe_system_package_name(&"a".repeat(128)));
+    }
+
+    /// A package depending on the `horus` facade must be recognised.
+    ///
+    /// `cargo_toml_has_horus_deps` gates whether `horus install` injects the
+    /// path overrides that point cargo at the local HORUS source tree. It used
+    /// to name horus_core, horus_library and horus_macros explicitly — leaving
+    /// out `horus`, which is what `horus new` writes and what every documented
+    /// example imports. So the most ordinary package shape there is went
+    /// unrecognised, and the check that was supposed to catch HORUS packages
+    /// caught only the ones nobody writes by hand.
+    #[test]
+    fn a_package_depending_on_the_facade_is_recognised() {
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        for (name, dep) in [
+            ("facade", "horus = \"0.4.1\""),
+            ("core", "horus_core = \"0.4.1\""),
+            ("macros", "horus_macros = \"0.4.1\""),
+        ] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"p\"\n\n[dependencies]\n{dep}\n"),
+            )
+            .unwrap();
+            assert!(
+                cargo_toml_has_horus_deps(&dir),
+                "a package depending on `{dep}` must be recognised as a HORUS package"
+            );
+        }
+
+        // And a package that depends on none of ours still is not one.
+        let other = tmp.path().join("unrelated");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(
+            other.join("Cargo.toml"),
+            "[package]\nname = \"p\"\n\n[dependencies]\nserde = \"1\"\n",
+        )
+        .unwrap();
+        assert!(
+            !cargo_toml_has_horus_deps(&other),
+            "the check must still discriminate, or it is not a check"
+        );
     }
 }
