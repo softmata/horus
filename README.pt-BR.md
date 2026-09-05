@@ -60,7 +60,7 @@ O HORUS substitui DDS por buffers circulares em memória compartilhada e sincron
 | Agendamento | Determinístico, com cinco classes de execução |
 | Tempo real | Orçamentos, deadlines, afinidade de CPU e watchdog integrados |
 | Segurança | Watchdog progressivo, estado seguro e gravador BlackBox |
-| Tensores em GPU | Intercâmbio sem cópia com PyTorch/JAX via DLPack |
+| Tensores | Baseados em pool, sem cópia para NumPy (memória do host) |
 | Linguagens | Rust, Python e C++ sobre o mesmo transporte compartilhado |
 | Configuração | Um único arquivo `horus.toml` |
 

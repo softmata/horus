@@ -60,7 +60,7 @@ HORUS ersetzt DDS durch Shared-Memory-Ringpuffer und lockfreie Synchronisierung.
 | Scheduling | Deterministisch mit fünf Ausführungsklassen |
 | Echtzeit | Budgets, Deadlines, CPU-Affinität und Watchdog integriert |
 | Sicherheit | Abgestufter Watchdog, sicherer Zustand und BlackBox-Rekorder |
-| GPU-Tensoren | Kopierfreier Austausch mit PyTorch/JAX über DLPack |
+| Tensoren | Pool-basiert, kopierfrei nach NumPy (Host-Speicher) |
 | Sprachen | Rust, Python und C++ nutzen denselben Shared-Memory-Transport |
 | Konfiguration | Eine zentrale `horus.toml` |
 

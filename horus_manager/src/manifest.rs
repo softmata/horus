@@ -4602,4 +4602,25 @@ test = "cargo test"
         }
         .is_empty());
     }
+
+    /// A scaffolded project must be detected as Python.
+    ///
+    /// `horus new --python` writes `.horus/pyproject.toml`, not a root one.
+    /// `dispatch` carried its own copy of this detector that checked only the
+    /// root path, so a generated project was Python here and language-less
+    /// there. The copy is gone; this pins the clause that distinguished them.
+    #[test]
+    fn the_generated_python_layout_is_detected() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".horus")).unwrap();
+        std::fs::write(tmp.path().join(".horus/pyproject.toml"), "[project]\n").unwrap();
+
+        let langs = detect_languages(tmp.path());
+        assert!(
+            langs.contains(&Language::Python),
+            "`.horus/pyproject.toml` is what `horus new` generates; a project \
+             built by our own scaffolder must not be invisible to language \
+             detection. Got {langs:?}"
+        );
+    }
 }
