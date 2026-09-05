@@ -287,6 +287,10 @@ pub use record_replay::{
 };
 #[doc(hidden)]
 pub use registry::SchedulerRegistry;
+/// The best-effort thread class. Re-exported here so `horus_net`, `horus_cpp`
+/// and anything else that spawns a thread inside a scheduler process can reach
+/// it without depending on the `scheduling::rt` module path.
+pub use rt::{enter_best_effort, spawn_best_effort};
 #[doc(hidden)]
 pub use safety_monitor::{
     set_emergency_stop_hook, set_safe_state_hook, take_pending_local_estop,

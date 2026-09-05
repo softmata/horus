@@ -567,6 +567,12 @@ impl Scheduler {
     /// Configuration is deferred until `run()` via builder methods.
     /// Use `.prefer_rt()`, `.require_rt()`, `.watchdog()`, `.blackbox()` to configure.
     pub fn new() -> Self {
+        // The earliest honest point to record what CPUs this process was given,
+        // which is the set helper threads get restored to. Idempotent and
+        // first-call-wins, so the later capture points in `RtConfig::apply` and
+        // `set_thread_affinity` are harmless duplicates rather than a race.
+        horus_sys::rt::capture_helper_baseline_cpus();
+
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
 
@@ -2947,6 +2953,17 @@ impl Scheduler {
         node_filter: Option<&[&str]>,
         duration: Option<Duration>,
     ) -> HorusResult<()> {
+        // Before `finalize_and_init`, which is where `apply_rt_optimizations`
+        // puts THIS thread on SCHED_FIFO and pins it to the reserved cores.
+        //
+        // `ctrlc::set_handler` spawns its own signal thread and offers no hook
+        // to configure it, so the only way to keep that thread off the RT class
+        // and off the RT cores is to create it before there is anything to
+        // inherit. Registering the panic hook earlier is a free improvement on
+        // the same move: a panic during node `init()` is now reported too.
+        self.install_panic_hook();
+        self.setup_signal_handlers();
+
         self.finalize_and_init();
         if let Some(ref dup) = self.duplicate_node_name {
             return Err(crate::error::Error::InvalidInput(
@@ -2978,6 +2995,10 @@ impl Scheduler {
         // nodes run on their own dedicated runtime (see AsyncExecutor).
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            // See the same hook in `AsyncExecutor`: the blocking pool is grown
+            // lazily from the calling thread, which by this point is the one
+            // `apply_rt_optimizations` just put on SCHED_FIFO.
+            .on_thread_start(|| super::rt::enter_best_effort("tokio-blocking", 5))
             .build()
             .horus_context("creating scheduler tokio runtime")?;
 
@@ -2996,9 +3017,6 @@ impl Scheduler {
             // `rt.degradations`, which has no clear. The doc comment on
             // `finalize_config` says "Called once from run_with_filter()" —
             // which this call contradicted.
-            self.install_panic_hook();
-            self.setup_signal_handlers();
-
             // Auto-wire network replication if enabled and no manual hook was registered.
             // The `horus` umbrella crate registers the auto-wire function via
             // `set_network_auto_wire()` at import time. This call is a no-op if:
@@ -3609,7 +3627,7 @@ impl Scheduler {
             // class with headroom; a graph that stalls several RT threads at
             // once can still exceed it, and is force-exited as before.
             let grace = super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD * 2;
-            std::thread::spawn(move || {
+            let _ = super::rt::spawn_best_effort("horus-force-exit", 0, move || {
                 std::thread::sleep(grace);
                 print_line("Force terminating - cleaning up session...");
                 // Clean up session before forced exit to prevent stale files
@@ -6164,6 +6182,18 @@ impl Scheduler {
                 let clock_ptr = &clock_ptr;
 
                 s.spawn(move |_| {
+                    // These workers are spawned from the scheduler thread,
+                    // which `apply_rt_optimizations` may already have put on
+                    // SCHED_FIFO and pinned to the reserved cores — so without
+                    // this they tick best-effort nodes at real-time priority on
+                    // the control loop's own CPU.
+                    //
+                    // TODO(defect-03): this is two syscalls per worker per
+                    // tick, on top of the `clone(2)` this function already pays
+                    // per worker per tick. The persistent pool replaces both
+                    // with one demotion at pool construction; until then,
+                    // correct beats cheap.
+                    crate::scheduling::rt::enter_best_effort("ready-dispatch", 0);
                     loop {
                         if completed.load(std::sync::atomic::Ordering::Acquire) >= total_to_tick {
                             break;

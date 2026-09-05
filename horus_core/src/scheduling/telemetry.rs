@@ -130,9 +130,8 @@ impl TelemetryManager {
         let (http_tx, http_thread) = if let TelemetryEndpoint::Http(url) = &endpoint {
             let (tx, rx) = mpsc::sync_channel::<TelemetrySnapshot>(4);
             let url = url.clone();
-            let handle = std::thread::Builder::new()
-                .name("horus-telemetry-http".to_string())
-                .spawn(move || {
+            let handle =
+                crate::scheduling::rt::spawn_best_effort("horus-telemetry-http", 5, move || {
                     // Run until the sender is dropped (scheduler shuts down).
                     while let Ok(snapshot) = rx.recv() {
                         if let Err(e) = http_post_blocking(&url, &snapshot) {

@@ -346,12 +346,10 @@ fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
 /// matter.
 fn start_rt_diag_drain() {
     RT_DIAG_DRAIN_STARTED.call_once(|| {
-        let spawned = std::thread::Builder::new()
-            .name("horus-rt-diag".to_string())
-            .spawn(|| loop {
-                rt_diag_drain(print_line);
-                std::thread::sleep(RT_DIAG_POLL);
-            });
+        let spawned = super::rt::spawn_best_effort("horus-rt-diag", 5, || loop {
+            rt_diag_drain(print_line);
+            std::thread::sleep(RT_DIAG_POLL);
+        });
         if spawned.is_err() {
             // Out of threads. Say so on the caller's thread — RT diagnostics
             // will now only appear at `stop()`, which is worth knowing.
@@ -1104,6 +1102,16 @@ impl RtExecutor {
         // half-started executor.
         let chain_cores = resolve_chain_cores(&chains, &rt_cpus);
         check_core_collisions(&chains, &chain_cores)?;
+
+        // Declare the resolved cores off-limits to helper threads before the
+        // first one is spawned — `start_rt_diag_drain` below is itself a helper
+        // and must already see the reservation.
+        horus_sys::rt::reserve_rt_cpus(
+            &chain_cores
+                .iter()
+                .filter_map(|c| c.cpu)
+                .collect::<Vec<usize>>(),
+        );
 
         // The blocking half of RT diagnostics lives on its own thread, started
         // here — on the caller's thread, never on an RT thread.

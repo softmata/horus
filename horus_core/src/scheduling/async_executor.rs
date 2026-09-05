@@ -54,10 +54,10 @@ impl AsyncExecutor {
     ) -> Self {
         nodes.sort_by_key(|n| n.priority);
 
-        let handle = std::thread::Builder::new()
-            .name("horus-async-io".to_string())
-            .spawn(move || Self::async_thread_main(nodes, running, tick_period, monitors))
-            .expect("Failed to spawn async I/O thread");
+        let handle = crate::scheduling::rt::spawn_best_effort("horus-async-io", 0, move || {
+            Self::async_thread_main(nodes, running, tick_period, monitors)
+        })
+        .expect("Failed to spawn async I/O thread");
 
         Self {
             handle: Some(handle),
@@ -106,6 +106,14 @@ impl AsyncExecutor {
     ) -> Vec<RegisteredNode> {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            // `spawn_blocking` grows its pool lazily, at runtime, from whichever
+            // thread is executing the runtime — so without this hook the first
+            // slow async node materialises a pool thread at SCHED_FIFO on the
+            // reserved core, minutes into a run, with nothing in the logs.
+            // `on_thread_start` is copied by the blocking pool even for a
+            // current-thread runtime, and would cover worker threads too if
+            // `rt-multi-thread` were ever enabled for this crate.
+            .on_thread_start(|| crate::scheduling::rt::enter_best_effort("tokio-blocking", 5))
             .build()
         {
             Ok(rt) => rt,

@@ -1,6 +1,6 @@
 // Linux RT: SCHED_FIFO + mlockall + sched_setaffinity + /proc detection
 
-use super::RtCapabilities;
+use super::{BestEffortReport, RtCapabilities};
 use std::time::Duration;
 
 /// Build a `sched_param` carrying just a priority.
@@ -134,11 +134,66 @@ pub(super) fn timer_slack_ns() -> Option<u64> {
     }
 }
 
+// ── The reset-on-fork flag, and the masking it forces on every readback ──
+//
+// A thread's scheduling policy is inherited. `copy_process()` duplicates
+// `policy` and `rt_priority` into every `clone(2)` child, and glibc's
+// `pthread_create` defaults to `PTHREAD_INHERIT_SCHED`, so nothing at the libc
+// layer undoes it either. RT setup runs before the lifecycle hooks, on the
+// thread that builds the scheduler — so the net replicator, the telemetry HTTP
+// thread, the log drain and every per-goal action thread came up at real-time
+// priority without asking for it.
+//
+// `SCHED_RESET_ON_FORK` is the kernel's opt-out: a child of a thread carrying
+// it starts at SCHED_OTHER, nice 0. It is a backstop, not the fix — it does
+// nothing for CPU affinity, which is inherited through a separate channel with
+// no equivalent flag (measured: a `SCHED_BATCH|SCHED_RESET_ON_FORK` parent
+// pinned to one CPU produces a child with `policy=SCHED_OTHER` and a
+// one-CPU mask). The real guarantee is the explicit demotion in
+// `set_best_effort_class`, which resets both.
+
+/// `SCHED_RESET_ON_FORK` from the kernel's `include/uapi/linux/sched.h`.
+///
+/// Spelled out rather than reached for through `libc::`: in libc 0.2.189 the
+/// constant exists only under `linux_like/android` and `linux_l4re_shared`,
+/// neither of which is compiled for `*-linux-gnu` or `*-linux-musl`.
+pub(super) const SCHED_RESET_ON_FORK: libc::c_int = 0x4000_0000;
+
+/// Strip the reset-on-fork bit from a `sched_getscheduler` return value.
+///
+/// The kernel ORs the flag INTO the readback — a thread set to
+/// `SCHED_FIFO|SCHED_RESET_ON_FORK` reads back `0x40000001`, not `1`. Every
+/// `== SCHED_FIFO`-shaped comparison in this workspace therefore has to go
+/// through here, or setting the flag silently stops that comparison
+/// recognising the very threads it exists to recognise: `can_set_rt_priority`
+/// would stop short-circuiting on an already-RT thread and start probing it,
+/// `has_deadline_capability` would re-probe a live SCHED_DEADLINE reservation,
+/// and `RtConfig::get_current_scheduler` would report `Normal` for a
+/// SCHED_FIFO thread.
+pub(super) fn policy_of(raw: libc::c_int) -> libc::c_int {
+    raw & !SCHED_RESET_ON_FORK
+}
+
+/// This thread's scheduling policy with the reset-on-fork bit removed.
+pub(super) fn current_policy() -> libc::c_int {
+    // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+    policy_of(unsafe { libc::sched_getscheduler(0) })
+}
+
 /// Set SCHED_FIFO priority for the current thread.
 pub(super) fn set_realtime_priority(priority: i32) -> anyhow::Result<()> {
     // SAFETY: pid 0 = current thread; sched_param is properly initialized
     let param = sched_param_with_priority(priority);
-    let result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+    // `|SCHED_RESET_ON_FORK` so a thread spawned from this one does not silently
+    // start at real-time priority. Kernels before 2.6.32, and some seccomp
+    // filters, reject the unknown policy bit with EINVAL — fall back rather
+    // than lose the RT policy entirely, since the explicit demotion in
+    // `set_best_effort_class` is the real guarantee and this is the backstop.
+    let mut result =
+        unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO | SCHED_RESET_ON_FORK, &param) };
+    if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+    }
 
     if result == 0 {
         Ok(())
@@ -208,7 +263,11 @@ pub(super) fn set_deadline_scheduling(
     let attr = SchedAttr {
         size: std::mem::size_of::<SchedAttr>() as u32,
         sched_policy: SCHED_DEADLINE_POLICY,
-        sched_flags: 0,
+        // Same reasoning as the `SCHED_RESET_ON_FORK` on the SCHED_FIFO path: a
+        // child of a SCHED_DEADLINE thread would otherwise inherit the
+        // reservation. `SCHED_FLAG_RESET_ON_FORK` is the `sched_attr` spelling
+        // of the same request, and libc does export this one.
+        sched_flags: libc::SCHED_FLAG_RESET_ON_FORK as u64,
         sched_nice: 0,
         sched_priority: 0, // must be 0 for SCHED_DEADLINE
         sched_runtime: runtime_ns,
@@ -263,6 +322,10 @@ struct SchedSnapshot {
 /// Returns `None` when either query fails, which is the signal to decline the
 /// probe rather than guess at a restore target.
 fn snapshot_scheduling() -> Option<SchedSnapshot> {
+    // Deliberately NOT run through `policy_of`: this value is a restore target,
+    // and `restore_scheduling` must put the reset-on-fork bit back exactly as
+    // it found it. Masking here would quietly strip the flag off every thread a
+    // capability probe touched.
     // SAFETY: pid 0 = current thread; both calls only read, and `param` is a
     // local POD struct for which all-zero is a valid bit pattern.
     unsafe {
@@ -297,8 +360,7 @@ fn restore_scheduling(snapshot: &SchedSnapshot) {
 pub(super) fn has_deadline_capability() -> bool {
     // A thread already running SCHED_DEADLINE proves the kernel supports it,
     // and probing would clobber its reservation.
-    // SAFETY: pid 0 = current thread; sched_getscheduler only reads.
-    if unsafe { libc::sched_getscheduler(0) } == SCHED_DEADLINE_POLICY as i32 {
+    if current_policy() == SCHED_DEADLINE_POLICY as i32 {
         return true;
     }
 
@@ -361,8 +423,7 @@ pub(super) fn lock_memory() -> anyhow::Result<()> {
 pub(super) fn can_set_rt_priority() -> bool {
     // A thread already on an RT policy demonstrably holds the privilege, so
     // there is nothing to probe — and probing is exactly what used to break it.
-    // SAFETY: pid 0 = current thread; sched_getscheduler only reads.
-    let current_policy = unsafe { libc::sched_getscheduler(0) };
+    let current_policy = current_policy();
     if current_policy == libc::SCHED_FIFO
         || current_policy == libc::SCHED_RR
         || current_policy == SCHED_DEADLINE_POLICY as i32
@@ -407,6 +468,75 @@ pub(super) fn can_set_rt_priority() -> bool {
     } else {
         false
     }
+}
+
+/// Put the calling thread on the ordinary time-shared class and give it back
+/// the helper CPU set.
+///
+/// Both halves are conditional on the thread actually being somewhere else, so
+/// the common case — a helper spawned in a process where no RT setup ever ran —
+/// issues ZERO syscalls beyond the two reads. That is what makes the
+/// syscall-count test meaningful.
+pub(super) fn set_best_effort_class(nice_increment: i32, target: &[usize]) -> BestEffortReport {
+    let mut report = BestEffortReport {
+        // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+        prior_policy: policy_of(unsafe { libc::sched_getscheduler(0) }),
+        ..BestEffortReport::default()
+    };
+
+    if report.prior_policy != libc::SCHED_OTHER {
+        // SAFETY: `sched_param` is a POD struct of integer fields for which
+        // all-zero is a valid bit pattern. It is zeroed rather than
+        // literal-constructed because musl carries four extra sporadic-server
+        // members that glibc does not (the same portability trap documented on
+        // `sched_param_with_priority`); SCHED_OTHER ignores every member but
+        // `sched_priority`, which must be 0.
+        let rc = unsafe {
+            let mut param: libc::sched_param = std::mem::zeroed();
+            param.sched_priority = 0;
+            libc::sched_setscheduler(0, libc::SCHED_OTHER, &param)
+        };
+        if rc == 0 {
+            report.policy_changed = true;
+        } else {
+            report.refusal = std::io::Error::last_os_error().raw_os_error();
+        }
+    }
+
+    if nice_increment > 0 {
+        // SAFETY: `nice` adjusts only the calling thread's CFS weight (the nice
+        // value is a per-thread attribute on Linux/NPTL). Raising it never
+        // requires privilege. The return value is deliberately ignored: it
+        // cannot be distinguished from a legitimate -1 result without errno
+        // handling, and the failure mode — the helper keeps its inherited
+        // weight — is not worth a diagnostic on a path that cannot fail.
+        let _ = unsafe { libc::nice(nice_increment) };
+    }
+
+    // The affinity half. There is no kernel flag for this: `cpus_allowed` is
+    // copied by `dup_task_struct` and `SCHED_RESET_ON_FORK` explicitly does not
+    // reset it, so a helper spawned after `apply_rt_optimizations` stays pinned
+    // to the reserved RT core no matter what its scheduling class is.
+    if !target.is_empty() {
+        match current_affinity() {
+            Ok(now) if now == target => {}
+            Ok(_) => match set_affinity(target) {
+                Ok(_) => report.affinity_changed = true,
+                Err(_) => {
+                    report.refusal = report
+                        .refusal
+                        .or(std::io::Error::last_os_error().raw_os_error());
+                }
+            },
+            Err(_) => {
+                report.refusal = report
+                    .refusal
+                    .or(std::io::Error::last_os_error().raw_os_error());
+            }
+        }
+    }
+
+    report
 }
 
 // ── CPU affinity, addressed by kernel CPU id ────────────────────────────
@@ -809,6 +939,63 @@ fn check_mlockall_permitted() -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The reset-on-fork bit must not break policy readback.
+    ///
+    /// The kernel ORs `SCHED_RESET_ON_FORK` INTO the value `sched_getscheduler`
+    /// returns. Setting the flag without masking every readback would have
+    /// silently stopped `can_set_rt_priority` short-circuiting on an already-RT
+    /// thread (sending it to the live probe that used to strip a deployed
+    /// thread of its policy), made `has_deadline_capability` re-probe a live
+    /// SCHED_DEADLINE reservation, and made `RtConfig::get_current_scheduler`
+    /// report `Normal` for a SCHED_FIFO thread.
+    ///
+    /// SCHED_BATCH stands in for SCHED_FIFO: same inheritance mechanism, and
+    /// settable without CAP_SYS_NICE.
+    #[test]
+    fn reset_on_fork_bit_does_not_break_policy_readback() {
+        std::thread::spawn(|| {
+            // SAFETY: `sched_param` is a POD struct of integer fields for which
+            // all-zero is a valid bit pattern; SCHED_BATCH requires priority 0.
+            let rc = unsafe {
+                let mut param: libc::sched_param = std::mem::zeroed();
+                param.sched_priority = 0;
+                libc::sched_setscheduler(0, libc::SCHED_BATCH | SCHED_RESET_ON_FORK, &param)
+            };
+            assert_eq!(
+                rc,
+                0,
+                "SCHED_BATCH|SCHED_RESET_ON_FORK must be settable unprivileged: {}",
+                std::io::Error::last_os_error()
+            );
+
+            // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+            let raw = unsafe { libc::sched_getscheduler(0) };
+            assert_eq!(
+                raw,
+                libc::SCHED_BATCH | SCHED_RESET_ON_FORK,
+                "the kernel reports the flag OR'd into the policy — that is the whole \
+                 reason `policy_of` exists"
+            );
+            assert_eq!(policy_of(raw), libc::SCHED_BATCH);
+            assert_eq!(current_policy(), libc::SCHED_BATCH);
+
+            // The snapshot is a restore target and must keep the raw value, or
+            // a capability probe would quietly strip the flag off every thread
+            // it touched.
+            let snapshot = snapshot_scheduling().expect("snapshot");
+            assert_eq!(snapshot.policy, raw, "snapshot_scheduling must not mask");
+            restore_scheduling(&snapshot);
+            // SAFETY: as above.
+            assert_eq!(
+                unsafe { libc::sched_getscheduler(0) },
+                raw,
+                "restore must put the reset-on-fork bit back"
+            );
+        })
+        .join()
+        .expect("the probe thread must not panic");
+    }
+
     use super::*;
 
     /// The property the whole pair exists for. `timer_slack_ns` used to read

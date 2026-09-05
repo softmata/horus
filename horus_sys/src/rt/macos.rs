@@ -79,3 +79,31 @@ fn get_macos_version() -> String {
         .map(|s| format!("macOS {}", s.trim()))
         .unwrap_or_else(|| "macOS (unknown version)".to_string())
 }
+
+/// Put the calling thread on the ordinary time-shared class — an honest no-op
+/// on macOS.
+///
+/// Nothing here is left undone by omission:
+///
+/// * There is no policy to demote from. [`set_realtime_priority`] on this
+///   backend returns `Err` on every call — `THREAD_TIME_CONSTRAINT_POLICY` is
+///   not wired up — so no thread in a HORUS process is ever promoted, and a
+///   child has nothing to inherit.
+/// * There is no placement to undo. Mach offers `THREAD_AFFINITY_POLICY`, an
+///   advisory *cache affinity tag* rather than a placement constraint, and it
+///   is unimplemented on Apple Silicon. `core_affinity` sets that tag; it does
+///   not confine a thread to a CPU, so a helper is not crowding an RT core the
+///   way it would on Linux.
+/// * `nice(2)` on Darwin adjusts the **process**, not the calling thread.
+///   Applying the increment here would slow the RT thread down along with the
+///   helper — the opposite of the intent.
+///
+/// [`crate::rt::helper_thread_cpus`] and
+/// [`crate::rt::capture_helper_baseline_cpus`] still work on this platform, so
+/// the cross-platform tests have something to assert on.
+pub(super) fn set_best_effort_class(
+    _nice_increment: i32,
+    _target: &[usize],
+) -> super::BestEffortReport {
+    super::BestEffortReport::default()
+}

@@ -762,9 +762,10 @@ where
 
             let callback = execute_callback.clone();
             let events = self.events.clone();
-            let spawn = std::thread::Builder::new()
-                .name(format!("horus-action-{}", A::name()))
-                .spawn(move || {
+            let spawn = crate::scheduling::rt::spawn_best_effort(
+                format!("horus-action-{}", A::name()),
+                0,
+                move || {
                     // The execute callback is user code, and the `Completed`
                     // push below is what finalises the goal. If a panic skips
                     // it, the goal stays `Active` forever: it keeps its
@@ -783,7 +784,8 @@ where
                         // already been reported by the panic hook.
                         Err(_) => events.lock().push(ServerEvent::Panicked(goal_id)),
                     }
-                });
+                },
+            );
 
             match spawn {
                 Ok(join) => {

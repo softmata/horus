@@ -206,6 +206,153 @@ pub fn timer_slack_ns() -> Option<u64> {
     }
 }
 
+// ── The best-effort class, and what a helper thread inherits ────────────
+//
+// A thread inherits BOTH its creator's scheduling policy and its creator's CPU
+// mask, through two channels with different remedies. RT setup runs before the
+// lifecycle hooks and on the same thread, so by the time the net replicator,
+// the telemetry HTTP server, the log drain, the diagnostic drain and every
+// per-goal action thread are spawned, the spawning thread is already
+// SCHED_FIFO and already pinned to the reserved cores — and all of them came up
+// that way without asking.
+//
+// The policy channel has a kernel opt-out (`SCHED_RESET_ON_FORK`, set on the
+// RT path). The affinity channel has none: `cpus_allowed` is copied by
+// `dup_task_struct` and no flag resets it. So the guarantee has to be an
+// explicit demotion in each helper's own thread body, which is what
+// [`set_best_effort_class`] is, and [`crate::rt`]'s callers reach it through
+// `horus_core::scheduling::rt::spawn_best_effort`.
+
+/// What a demotion actually did. All-false is the good, common case: a helper
+/// spawned in a process where no RT setup ever ran had nothing to undo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BestEffortReport {
+    /// The scheduling policy the thread inherited, reset-on-fork bit stripped.
+    /// `libc::SCHED_OTHER` (0) on the good path; a Linux-only detail reported
+    /// as 0 on other platforms.
+    pub prior_policy: i32,
+    /// Whether a `sched_setscheduler` was actually issued.
+    pub policy_changed: bool,
+    /// Whether a `sched_setaffinity` was actually issued.
+    pub affinity_changed: bool,
+    /// `errno` from whichever half was refused, when one was.
+    ///
+    /// A refusal is reported rather than propagated: the alternative is a
+    /// helper thread that does not start, and a helper on the wrong scheduling
+    /// class is strictly better than no helper.
+    pub refusal: Option<i32>,
+}
+
+/// The CPU set this process held before HORUS narrowed anything.
+///
+/// Snapshotted rather than reconstructed. A deployment under `taskset` or a
+/// cpuset cgroup has a mask HORUS did not choose, and handing helpers CPUs the
+/// cgroup forbids fails with EINVAL — so the restore target must be what the
+/// process was actually given.
+static HELPER_BASELINE: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
+
+/// CPUs dedicated to RT tick threads, accumulated across every pin site.
+static RESERVED_RT_CPUS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+/// Demotions that actually issued a syscall. A test hook, and the number that
+/// tells an operator whether the inheritance was real on their machine.
+static BEST_EFFORT_DEMOTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Record the CPU set this process holds, as the target helper threads are
+/// restored to.
+///
+/// Idempotent, and the FIRST call wins — so it must run before anything
+/// narrows the mask. Called from `Scheduler::new`, from `RtConfig::apply` and
+/// from `set_thread_affinity`, all of which are cheap and any of which may be
+/// the earliest in a given process.
+pub fn capture_helper_baseline_cpus() {
+    let _ = HELPER_BASELINE.get_or_init(current_affinity);
+}
+
+/// Record CPUs dedicated to RT tick threads. Additive and idempotent.
+pub fn reserve_rt_cpus(cpus: &[usize]) {
+    if cpus.is_empty() {
+        return;
+    }
+    let mut reserved = RESERVED_RT_CPUS.lock().unwrap_or_else(|e| e.into_inner());
+    for &cpu in cpus {
+        if !reserved.contains(&cpu) {
+            reserved.push(cpu);
+        }
+    }
+    reserved.sort_unstable();
+}
+
+/// The CPU set helper threads belong on: the captured baseline minus the
+/// reserved RT CPUs.
+///
+/// Falls back to the whole baseline when that subtraction would be empty —
+/// `sched_setaffinity` rejects an empty mask with EINVAL, and an operator who
+/// gave the entire machine to RT still needs the helpers to run somewhere.
+/// Empty only when no baseline was ever captured, which means "do not touch
+/// this thread's affinity".
+pub fn helper_thread_cpus() -> Vec<usize> {
+    let Some(baseline) = HELPER_BASELINE.get() else {
+        return Vec::new();
+    };
+    let reserved = RESERVED_RT_CPUS.lock().unwrap_or_else(|e| e.into_inner());
+    let helpers: Vec<usize> = baseline
+        .iter()
+        .copied()
+        .filter(|c| !reserved.contains(c))
+        .collect();
+    if helpers.is_empty() {
+        baseline.clone()
+    } else {
+        helpers
+    }
+}
+
+/// Process-wide count of demotions that actually issued a syscall.
+pub fn best_effort_demotions() -> u64 {
+    BEST_EFFORT_DEMOTIONS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Put the CALLING thread on the OS's ordinary time-shared class and give it
+/// back [`helper_thread_cpus`].
+///
+/// Call it as the first statement of every non-RT thread body. It never fails
+/// hard; see [`BestEffortReport::refusal`].
+pub fn set_best_effort_class(nice_increment: i32) -> BestEffortReport {
+    let target = helper_thread_cpus();
+
+    #[cfg(target_os = "linux")]
+    let report = linux::set_best_effort_class(nice_increment, &target);
+
+    #[cfg(target_os = "macos")]
+    let report = macos::set_best_effort_class(nice_increment, &target);
+
+    #[cfg(target_os = "windows")]
+    let report = windows::set_best_effort_class(nice_increment, &target);
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    let report = {
+        let _ = (nice_increment, &target);
+        BestEffortReport::default()
+    };
+
+    if report.policy_changed || report.affinity_changed {
+        BEST_EFFORT_DEMOTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    report
+}
+
+/// A `sched_getscheduler` return value with the reset-on-fork bit stripped.
+///
+/// Exported for `horus_core`, which compares the raw policy in
+/// `RtConfig::get_current_scheduler`. The kernel ORs the flag into the
+/// readback, so an unmasked comparison reports a SCHED_FIFO thread as
+/// `Normal`.
+#[cfg(target_os = "linux")]
+pub fn policy_without_reset_flag(raw: i32) -> i32 {
+    linux::policy_of(raw)
+}
+
 /// Pin the current thread to one CPU, addressed by kernel CPU id.
 ///
 /// "Id", not "index into a list of the CPUs this process may use" — see
@@ -258,6 +405,13 @@ pub fn pin_to_cores(cores: &[usize]) -> anyhow::Result<Vec<usize>> {
     if cores.is_empty() {
         return Ok(Vec::new());
     }
+
+    // Snapshot the pre-narrowing mask here rather than relying on every caller
+    // to remember. A pin path added later cannot bypass the capture, which is
+    // the difference between "helpers are restored to what the operator gave
+    // this process" and "helpers are restored to whatever mask happened to be
+    // in force". Idempotent; the first call wins.
+    capture_helper_baseline_cpus();
 
     #[cfg(target_os = "linux")]
     {
@@ -641,6 +795,50 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    /// The best-effort contract, asserted on every platform.
+    ///
+    /// This is the test that has to run in the Multi-Platform gate: the macOS
+    /// and Windows arms of `set_best_effort_class` are honest no-ops and a
+    /// near-no-op respectively, and "compiles" is not the same claim as
+    /// "behaves sanely".
+    #[test]
+    fn best_effort_contract_holds_on_every_platform() {
+        capture_helper_baseline_cpus();
+        let first = helper_thread_cpus();
+        capture_helper_baseline_cpus();
+        assert_eq!(
+            first,
+            helper_thread_cpus(),
+            "capture_helper_baseline_cpus must be idempotent — the first call wins"
+        );
+        assert!(
+            !first.is_empty(),
+            "every platform must offer helper threads somewhere to run"
+        );
+
+        // Reserve the entire baseline. `sched_setaffinity` rejects an empty
+        // mask with EINVAL, and an operator who gave the whole machine to RT
+        // still needs the helpers to run somewhere — so the subtraction has to
+        // fall back to the full baseline rather than to nothing.
+        reserve_rt_cpus(&first);
+        assert_eq!(
+            helper_thread_cpus(),
+            first,
+            "reserving every CPU must fall back to the whole baseline, not to an \
+             empty mask that sched_setaffinity would refuse"
+        );
+
+        let report = set_best_effort_class(0);
+        assert!(
+            report.refusal.is_none(),
+            "entering the best-effort class must not be refused on a thread that is \
+             already in it: {report:?}"
+        );
+        assert_eq!(BestEffortReport::default().refusal, None);
+        assert!(!BestEffortReport::default().policy_changed);
+        assert!(!BestEffortReport::default().affinity_changed);
     }
 
     #[test]

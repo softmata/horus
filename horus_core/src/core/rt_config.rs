@@ -209,6 +209,12 @@ impl RtConfig {
     ///
     /// Delegates platform-specific operations to horus_sys::rt.
     pub fn apply(&self) -> Result<RtApplyResult, io::Error> {
+        // Before anything narrows the mask: this is what helper threads are
+        // restored to, and it has to be the set the process was actually given
+        // (a `taskset`ed or cpuset-cgroup'd deployment has a mask HORUS did not
+        // choose). Idempotent, first call wins.
+        horus_sys::rt::capture_helper_baseline_cpus();
+
         let mut degradations = Vec::new();
         let kernel_info = RtKernelInfo::detect();
 
@@ -327,6 +333,10 @@ impl RtConfig {
 
         // Apply CPU affinity via horus_sys
         if let Some(ref cpus) = self.cpu_affinity {
+            // These cores are being taken for real-time work, so helper threads
+            // must actively avoid them rather than merely un-narrow to the
+            // whole baseline.
+            horus_sys::rt::reserve_rt_cpus(cpus);
             if let Err(e) = horus_sys::rt::pin_to_cores(cpus) {
                 let msg = format!("CPU affinity failed: {}", e);
                 degradations.push(RtDegradation::AffinityUnavailable(msg.clone()));
@@ -384,7 +394,11 @@ impl RtConfig {
                 return Err(io::Error::last_os_error());
             }
 
-            let scheduler = match policy {
+            // The kernel ORs `SCHED_RESET_ON_FORK` into the readback, so a
+            // thread set to `SCHED_FIFO|SCHED_RESET_ON_FORK` reads back
+            // 0x40000001 and an unmasked comparison reports it as `Normal` —
+            // exactly the thread this function exists to identify.
+            let scheduler = match horus_sys::rt::policy_without_reset_flag(policy) {
                 libc::SCHED_FIFO => RtScheduler::Fifo,
                 _ => RtScheduler::Normal,
             };

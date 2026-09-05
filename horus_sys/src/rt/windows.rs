@@ -31,9 +31,34 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
     }
 }
 
-/// Set real-time priority using Windows API.
+/// Environment variable that opts a deployment back into the process-wide
+/// `REALTIME_PRIORITY_CLASS`.
+pub(super) const REALTIME_CLASS_ENV: &str = "HORUS_WIN_REALTIME_CLASS";
+
+/// Whether the process-wide realtime class has already been raised, so that N
+/// RT tick threads raise it once rather than N times.
+static REALTIME_CLASS_RAISED: std::sync::Once = std::sync::Once::new();
+
+/// Give the calling thread real-time priority.
 ///
-/// Sets process priority to REALTIME_PRIORITY_CLASS and thread to TIME_CRITICAL.
+/// # Why this no longer raises `REALTIME_PRIORITY_CLASS` by default
+///
+/// It is a **process** attribute. Raising it moved every thread in the process
+/// — the helpers, the log drain, the tokio blocking pool, and threads that
+/// already existed — into the 16-31 band, above most driver threads, and no
+/// per-thread `SetThreadPriority` brings one back out: even
+/// `THREAD_PRIORITY_IDLE` inside that class is base 16. So the Windows arm of
+/// this backend reproduced defect 02's Linux shape by a different mechanism,
+/// and unlike the Linux one it could not be undone per thread.
+///
+/// `THREAD_PRIORITY_TIME_CRITICAL` inside the inherited class gives base 15
+/// under `NORMAL_PRIORITY_CLASS`, which preempts every ordinary thread on the
+/// box while leaving the kernel's own alone — the same *relative* guarantee the
+/// Linux `SCHED_FIFO` path gives, and the guarantee
+/// [`set_best_effort_class`] can actually restore a helper out of.
+///
+/// Set `HORUS_WIN_REALTIME_CLASS=1` on a machine genuinely dedicated to the
+/// robot to get the old behaviour.
 pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentThread, SetPriorityClass, SetThreadPriority,
@@ -41,16 +66,21 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     };
 
     // SAFETY: GetCurrentProcess/Thread always return valid pseudo-handles
-    let process = unsafe { GetCurrentProcess() };
     let thread = unsafe { GetCurrentThread() };
 
-    // SAFETY: process is a valid handle, REALTIME_PRIORITY_CLASS is a valid priority class
-    let result = unsafe { SetPriorityClass(process, REALTIME_PRIORITY_CLASS) };
-    if result == 0 {
-        anyhow::bail!(
-            "SetPriorityClass(REALTIME) failed: {}",
-            std::io::Error::last_os_error()
-        );
+    if std::env::var(REALTIME_CLASS_ENV).as_deref() == Ok("1") {
+        let mut failure: Option<std::io::Error> = None;
+        REALTIME_CLASS_RAISED.call_once(|| {
+            // SAFETY: pseudo-handle as above; REALTIME_PRIORITY_CLASS is a
+            // valid priority class.
+            let process = unsafe { GetCurrentProcess() };
+            if unsafe { SetPriorityClass(process, REALTIME_PRIORITY_CLASS) } == 0 {
+                failure = Some(std::io::Error::last_os_error());
+            }
+        });
+        if let Some(e) = failure {
+            anyhow::bail!("SetPriorityClass(REALTIME) failed: {}", e);
+        }
     }
 
     // SAFETY: thread is a valid handle, THREAD_PRIORITY_TIME_CRITICAL is valid
@@ -62,7 +92,7 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
         );
     }
 
-    log::debug!("Windows: Set REALTIME_PRIORITY_CLASS + THREAD_PRIORITY_TIME_CRITICAL");
+    log::debug!("Windows: Set THREAD_PRIORITY_TIME_CRITICAL");
     Ok(())
 }
 
@@ -133,4 +163,62 @@ fn get_windows_version() -> String {
     } else {
         "Windows".to_string()
     }
+}
+
+/// Put the calling thread back on the ordinary priority band and give it back
+/// the helper CPU set.
+///
+/// # What this can and cannot undo
+///
+/// `SetThreadPriority(THREAD_PRIORITY_NORMAL)` restores the *relative*
+/// ordering: an RT tick thread at `THREAD_PRIORITY_TIME_CRITICAL` preempts
+/// this one again. That is the same relative guarantee the Linux path gives.
+///
+/// What it cannot undo is `REALTIME_PRIORITY_CLASS`, which is a **process**
+/// attribute: once raised, every thread in the process sits in the 16-31 band
+/// and no per-thread call brings one back out (even `THREAD_PRIORITY_IDLE`
+/// inside that class is base 16). That is why [`set_realtime_priority`] no
+/// longer raises the class unless the operator opts in.
+pub(super) fn set_best_effort_class(
+    _nice_increment: i32,
+    target: &[usize],
+) -> super::BestEffortReport {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_NORMAL,
+    };
+
+    let mut report = super::BestEffortReport::default();
+
+    // SAFETY: `GetCurrentThread` returns a pseudo-handle that needs no close,
+    // and `SetThreadPriority` only writes the calling thread's priority.
+    let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL) };
+    if ok != 0 {
+        report.policy_changed = true;
+    } else {
+        report.refusal = Some(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 });
+    }
+
+    // `SetThreadAffinityMask` takes a bitmask over the process's processor
+    // group, so CPUs at or beyond `usize::BITS` cannot be expressed and are
+    // dropped rather than silently aliased onto a lower bit.
+    if !target.is_empty() {
+        let mut mask: usize = 0;
+        for &cpu in target {
+            if cpu < usize::BITS as usize {
+                mask |= 1 << cpu;
+            }
+        }
+        if mask != 0 {
+            // SAFETY: pseudo-handle as above; the mask is a plain integer.
+            let prev = unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) };
+            if prev != 0 {
+                report.affinity_changed = true;
+            } else if report.refusal.is_none() {
+                report.refusal =
+                    Some(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 });
+            }
+        }
+    }
+
+    report
 }

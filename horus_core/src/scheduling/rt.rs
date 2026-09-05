@@ -98,6 +98,12 @@ pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<Vec<usize>> {
         return Ok(Vec::new());
     }
 
+    // Capture before narrowing, then declare these cores off-limits to helper
+    // threads. Both are idempotent; this is simply the earliest point some
+    // processes reach.
+    horus_sys::rt::capture_helper_baseline_cpus();
+    horus_sys::rt::reserve_rt_cpus(cores);
+
     let installed = horus_sys::rt::pin_to_cores(cores)
         .map_err(|e| RuntimeError::AffinityError(e.to_string()))?;
 
@@ -115,6 +121,60 @@ pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<Vec<usize>> {
 
     crate::terminal::print_line(&format!("[RT] Pinned thread to CPU(s) {:?}", installed));
     Ok(installed)
+}
+
+// ============================================================================
+// Helper threads: the best-effort class
+// ============================================================================
+
+/// Put the calling thread on the OS's ordinary time-shared class and give it
+/// back the CPUs helper threads belong on.
+///
+/// **Call this as the first statement of every non-RT thread body in the
+/// workspace.** A thread inherits both its creator's scheduling policy and its
+/// creator's CPU mask, and RT setup runs before the lifecycle hooks on the
+/// thread that builds the scheduler — so without this the net replicator, the
+/// telemetry HTTP server, the log drain, the diagnostic drain and every
+/// per-goal action thread come up at real-time priority, pinned to the cores
+/// reserved for the control loop.
+///
+/// Prefer [`spawn_best_effort`], which cannot be forgotten.
+pub fn enter_best_effort(label: &str, nice_increment: i32) {
+    let report = horus_sys::rt::set_best_effort_class(nice_increment);
+    if let Some(errno) = report.refusal {
+        // Never silent: the thread keeps a scheduling class or a CPU mask that
+        // can preempt or crowd the RT thread, and that is a latency fact the
+        // operator needs rather than an implementation detail.
+        crate::terminal::print_line(&format!(
+            "[RT] {label}: could not enter the best-effort class ({}) — the thread keeps \
+             its inherited scheduling class and/or CPU mask and may preempt the RT thread",
+            std::io::Error::from_raw_os_error(errno)
+        ));
+    }
+}
+
+/// Spawn a named thread that enters the best-effort class before running `f`.
+///
+/// A drop-in replacement for `std::thread::Builder::new().name(n).spawn(f)`,
+/// with the same `io::Result<JoinHandle<T>>`, so a call site keeps whatever
+/// error handling it already had. The point is that the safe thing is now the
+/// short thing: a bare `std::thread::Builder` in a crate that also runs a
+/// scheduler is the shape this defect was made of.
+pub fn spawn_best_effort<F, T>(
+    name: impl Into<String>,
+    nice_increment: i32,
+    f: F,
+) -> std::io::Result<std::thread::JoinHandle<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let name = name.into();
+    let label = name.clone();
+    std::thread::Builder::new().name(name).spawn(move || {
+        enter_best_effort(&label, nice_increment);
+        f()
+    })
 }
 
 // ============================================================================

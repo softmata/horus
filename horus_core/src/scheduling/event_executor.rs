@@ -189,11 +189,11 @@ impl EventExecutor {
             let notifier = Arc::new(EventNotifier::new());
             let watcher_notifier = Arc::clone(&notifier);
 
-            let handle = match std::thread::Builder::new()
-                .name(format!("horus-event-{}", node_name))
-                .spawn(move || {
-                    Self::watcher_thread(node, topic_name, watcher_notifier, running, monitors)
-                }) {
+            let handle = match crate::scheduling::rt::spawn_best_effort(
+                format!("horus-event-{}", node_name),
+                0,
+                move || Self::watcher_thread(node, topic_name, watcher_notifier, running, monitors),
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     print_line(&format!(
