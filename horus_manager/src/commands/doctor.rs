@@ -1914,7 +1914,7 @@ fn probe_registry(base_url: &str) -> RegistryProbe {
         Err(e) => return RegistryProbe::Unreachable(e.to_string()),
     };
 
-    let url = format!("{}/api/packages/search", base_url.trim_end_matches('/'));
+    let url = format!("{}/api/packages/search", base_url);
     match client.get(url).query(&[("q", "horus")]).send() {
         Ok(response) => RegistryProbe::Status(response.status().as_u16()),
         Err(e) => RegistryProbe::Unreachable(e.to_string()),

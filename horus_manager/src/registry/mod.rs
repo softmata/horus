@@ -489,10 +489,41 @@ mod dispatch_tests {
     fn a_trailing_slash_does_not_become_a_double_slash() {
         // Guards the self-hosted path: HORUS_REGISTRY_URL is typed by a human,
         // and "https://reg.example/" is at least as likely as the bare form.
-        let client = RegistryClient::with_base_url("https://reg.example/".to_string());
+        //
+        // This test used to trim inside its own assertion:
+        //
+        //     assert!(!format!("{}/api/packages",
+        //         client.base_url().trim_end_matches('/')).contains("//api"))
+        //
+        // which cannot fail whatever the code does — it asserted on a locally
+        // trimmed copy, not on anything production builds. Meanwhile roughly
+        // two dozen call sites joined the raw base_url and two trimmed it, so
+        // the bug it was named for was live the whole time it was green.
+        //
+        // Assert on the resolver instead, which is the layer that now
+        // normalises, and join the way callers actually join.
+        let _guard = crate::CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("HORUS_REGISTRY_URL").ok();
+        // SAFETY: the process-wide lock above serialises env access in tests.
+        unsafe { std::env::set_var("HORUS_REGISTRY_URL", "https://reg.example/") };
+
+        let resolved = crate::config::registry_url().expect("a URL was set");
+        let joined = format!("{resolved}/api/packages");
+
+        match prev {
+            Some(v) => unsafe { std::env::set_var("HORUS_REGISTRY_URL", v) },
+            None => unsafe { std::env::remove_var("HORUS_REGISTRY_URL") },
+        }
+
         assert!(
-            !format!("{}/api/packages", client.base_url().trim_end_matches('/')).contains("//api"),
-            "callers must trim the trailing slash before joining a path"
+            !resolved.ends_with('/'),
+            "registry_url() must normalise the trailing slash so no caller has \
+             to remember: got {resolved:?}"
+        );
+        assert!(
+            !joined.contains("//api"),
+            "joining the resolved URL the way every call site joins it must not \
+             produce a double slash: got {joined:?}"
         );
     }
 

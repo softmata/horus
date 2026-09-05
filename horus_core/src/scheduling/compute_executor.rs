@@ -167,7 +167,7 @@ impl TickContextGuard {
         clock: &dyn crate::core::clock::Clock,
         tick_period: Duration,
     ) -> Self {
-        super::primitives::set_node_tick_context(node, clock, tick_period);
+        super::primitives::set_node_tick_context(node, clock, tick_period, None);
         Self
     }
 }

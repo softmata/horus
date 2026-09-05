@@ -132,14 +132,53 @@ pub(crate) fn honor_restart_request(
     node: &mut RegisteredNode,
     monitors: &super::types::SharedMonitors,
 ) {
-    if !monitors
+    let requested = monitors
         .node_controls
-        .take_restart_request(node.name.as_ref())
-    {
+        .take_restart_request(node.name.as_ref());
+    if requested {
+        monitors.node_controls.set_paused(node.name.as_ref(), false);
+    }
+    honor_restart_request_with(node, requested, monitors);
+}
+
+/// The same, for a caller that already holds the node's control block.
+///
+/// The by-name form above takes an `RwLock` read guard and hashes the node name
+/// on EVERY call. That is fine for the executors that poll it once per loop
+/// iteration, but the RT executor calls it per node per tick, from the top of
+/// `tick_node` -- so at 1 kHz with 8 nodes the by-name form would put 8000
+/// lock acquisitions a second back into the hot path that
+/// `NodeControlMap::handle` exists to keep out. `safe_state_requested`,
+/// `stopped` and `paused` are already read through the cached handle there;
+/// this is the fourth flag and had no reason to be the exception.
+pub(crate) fn honor_restart_request_via(
+    node: &mut RegisteredNode,
+    control: Option<&super::types::NodeControl>,
+    monitors: &super::types::SharedMonitors,
+) {
+    let requested = control.is_some_and(|c| {
+        c.restart_requested
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    });
+    if requested {
+        if let Some(c) = control {
+            // A restart lifts an operator pause; see the note above.
+            c.paused.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    honor_restart_request_with(node, requested, monitors);
+}
+
+fn honor_restart_request_with(
+    node: &mut RegisteredNode,
+    requested: bool,
+    monitors: &super::types::SharedMonitors,
+) {
+    let _ = monitors;
+    if !requested {
         return;
     }
 
-    monitors.node_controls.set_paused(node.name.as_ref(), false);
     node.is_paused = false;
 
     let target = &mut node.node;
@@ -178,10 +217,42 @@ pub(crate) fn honor_safe_state_request(
     node: &mut RegisteredNode,
     monitors: &super::types::SharedMonitors,
 ) {
-    if !monitors
+    let requested = monitors
         .node_controls
-        .take_safe_state_request(node.name.as_ref())
-    {
+        .take_safe_state_request(node.name.as_ref());
+    honor_safe_state_request_with(node, requested, monitors);
+}
+
+/// `honor_safe_state_request` for a caller that already holds the node's
+/// control block.
+///
+/// The by-name form above takes an `RwLock` read guard and hashes the node
+/// name to find a pair of atomics. An RT tick loop calling it once per node
+/// per tick pays that on every period for a flag that changes at most once in
+/// the life of a fault — and pays it holding a lock with no priority
+/// inheritance. A caller that resolved `NodeControlMap::handle` at startup
+/// passes the block straight in and the check costs one atomic swap.
+///
+/// `None` means the node was never registered, which the by-name form reports
+/// as "no request pending"; this keeps that exactly.
+pub(crate) fn honor_safe_state_request_via(
+    node: &mut RegisteredNode,
+    control: Option<&super::types::NodeControl>,
+    monitors: &super::types::SharedMonitors,
+) {
+    let requested = control.is_some_and(|c| {
+        c.safe_state_requested
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    });
+    honor_safe_state_request_with(node, requested, monitors);
+}
+
+fn honor_safe_state_request_with(
+    node: &mut RegisteredNode,
+    requested: bool,
+    monitors: &super::types::SharedMonitors,
+) {
+    if !requested {
         return;
     }
 
@@ -375,6 +446,7 @@ pub(crate) fn set_node_tick_context(
     node: &RegisteredNode,
     clock: &dyn crate::core::clock::Clock,
     tick_period: Duration,
+    name_hash: Option<u64>,
 ) {
     // Read the tick number the same way run_node_tick does: after start_tick()
     // (already called by the executor) and before record_tick().
@@ -411,8 +483,14 @@ pub(crate) fn set_node_tick_context(
     // process start, which needs 584 years of uptime to exceed `u64::MAX` ns.
     let sim_time = clock.elapsed();
     let tick_start_ci = crate::core::clock::ClockInstant::from_nanos(sim_time.as_nanos() as u64);
-    crate::core::tick_context::set_tick_context(
+    // `name_hash` is the node-name hash the caller resolved once, if it did.
+    // The RT executor does; the other executors and the main loop pass `None`
+    // and pay the hash here, exactly as before.
+    let name_hash =
+        name_hash.unwrap_or_else(|| crate::core::tick_context::hash_node_name(&node.name));
+    crate::core::tick_context::set_tick_context_with_hash(
         &node.name,
+        name_hash,
         tick_number,
         clock,
         node_dt,

@@ -1227,12 +1227,17 @@ impl RtExecutor {
         running: &Arc<AtomicBool>,
         is_first_tick: bool,
         release_late_ns: u64,
+        registry_slot: Option<usize>,
+        name_hash: u64,
+        timing: Option<&super::safety_monitor::NodeTimingState>,
+        watchdog: Option<&super::safety_monitor::Watchdog>,
+        control: Option<&super::types::NodeControl>,
     ) {
         // A pending `horus node restart` for a node this executor owns. At the
         // top of the single per-node entry point, so every caller honours it
         // and a suppressed node is still restartable — the whole point of
         // restarting one is that it is not currently running well.
-        super::primitives::honor_restart_request(node, monitors);
+        super::primitives::honor_restart_request_via(node, control, monitors);
 
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
@@ -1287,7 +1292,12 @@ impl RtExecutor {
         // run_node_tick. Set BEFORE entering the alloc-free guard — the first
         // set_tick_context allocates its RNG + node-name string, which must not
         // trip `.no_alloc()`.
-        super::primitives::set_node_tick_context(node, &*monitors.clock, monitors.tick_period);
+        super::primitives::set_node_tick_context(
+            node,
+            &*monitors.clock,
+            monitors.tick_period,
+            Some(name_hash),
+        );
 
         if enforce_no_alloc {
             crate::memory::rt_allocator::enter_rt_context(&node.name);
@@ -1327,7 +1337,14 @@ impl RtExecutor {
             // deadline path below: this node is not in `Scheduler::nodes`, so
             // the main loop's budget accounting never sees it.
             if let Some(ref monitor) = monitors.safety {
-                let _ = monitor.check_tick_budget(&node.name, tr.duration);
+                match timing {
+                    Some(state) => {
+                        let _ = monitor.check_tick_budget_of(&node.name, state, tr.duration);
+                    }
+                    None => {
+                        let _ = monitor.check_tick_budget(&node.name, tr.duration);
+                    }
+                }
             }
             if let Some(budget_result) =
                 TimingEnforcer::check_tick_budget(&node.name, tr.duration, tick_budget)
@@ -1491,8 +1508,26 @@ impl RtExecutor {
                 // the ceiling only ever worked in deterministic/replay mode,
                 // where the partition does not happen.
                 if let Some(ref monitor) = monitors.safety {
-                    monitor.record_deadline_miss(&node.name);
-                    let consecutive = monitor.consecutive_misses(&node.name);
+                    // Through the resolved handle when we have one: the by-name
+                    // pair below is two more map lookups, taken at the exact
+                    // moment the node is already late.
+                    //
+                    // Both arms only RECORD; the monitor-level bookkeeping (the
+                    // process-wide counter and the `max_deadline_misses` e-stop
+                    // check) happens exactly once below, so routing through the
+                    // handle cannot skip an escalation.
+                    let consecutive = match timing {
+                        Some(state) => {
+                            state.record_miss(0);
+                            state.consecutive_misses()
+                        }
+                        None => {
+                            let state = monitor.tick_budget_handle(&node.name);
+                            state.record_miss(0);
+                            state.consecutive_misses()
+                        }
+                    };
+                    monitor.note_deadline_miss_recorded(&node.name, consecutive);
                     let action =
                         monitor.evaluate_degradation(&node.name, consecutive, node.rate_hz);
                     if !matches!(action, super::safety_monitor::DegradationAction::None) {
@@ -1594,8 +1629,15 @@ impl RtExecutor {
                 // still trips expiry. Feeding the wrong (non-critical) node is a
                 // harmless no-op (no watchdog registered for it).
                 if node.is_rt_node || node.node_watchdog.is_some() {
-                    if let Some(ref feeder) = monitors.watchdog {
-                        feeder.feed(&node.name);
+                    match watchdog {
+                        // Resolved at thread start: two atomic stores, no map,
+                        // no lock, no hash of the node name.
+                        Some(w) => w.feed(),
+                        None => {
+                            if let Some(ref feeder) = monitors.watchdog {
+                                feeder.feed(&node.name);
+                            }
+                        }
                     }
                 }
 
@@ -1711,7 +1753,7 @@ impl RtExecutor {
         }
 
         // Update live SHM registry AFTER record_tick() so tick_count is current
-        monitors.update_registry(node, tr.duration.as_nanos() as u64);
+        monitors.update_registry_slot_of(node, registry_slot, tr.duration.as_nanos() as u64);
     }
 
     /// Main function for the RT thread.
@@ -1956,6 +1998,61 @@ impl RtExecutor {
         // first recv/send) may allocate; steady-state ticks are then enforced.
         let mut warmed = vec![false; nodes.len()];
 
+        // Per-node control blocks, resolved ONCE, aligned with `nodes`.
+        //
+        // The three flag checks below (safe-state, stopped, paused) used to be
+        // `monitors.node_controls.<x>(node.name)` — each an `RwLock` read guard
+        // plus a SipHash of the name plus a `HashMap` probe, three times per
+        // node per tick. Resolving the `Arc` here turns the steady state into
+        // three relaxed atomic loads and, more importantly, takes a lock with
+        // no priority inheritance out of the tick path entirely.
+        //
+        // `None` for a node that was never registered; every check below then
+        // reads the same "not set" the by-name accessors returned for a miss.
+        let controls: Vec<Option<Arc<super::types::NodeControl>>> = nodes
+            .iter()
+            .map(|n| monitors.node_controls.handle(n.name.as_ref()))
+            .collect();
+
+        // Registry slots, likewise resolved once. Together with `controls` this
+        // leaves the steady-state tick path with no hash of a node name in it.
+        let registry_slots: Vec<Option<usize>> = nodes
+            .iter()
+            .map(|n| monitors.registry_slots.get(n.name.as_ref()).copied())
+            .collect();
+
+        // And the node-name hash the per-tick RNG reseed needs, which is a
+        // per-node constant that used to be recomputed every period.
+        let name_hashes: Vec<u64> = nodes
+            .iter()
+            .map(|n| crate::core::tick_context::hash_node_name(n.name.as_ref()))
+            .collect();
+
+        // Per-node budget/deadline accounting, resolved once. This one took a
+        // process-wide `Mutex<BudgetEnforcer>` shared by every RT chain, so its
+        // cost grew with the number of chains rather than staying flat.
+        // Watchdogs, resolved once. The feed itself is two atomic stores; it
+        // was reached through an `RwLock<HashMap<String, _>>` every tick.
+        let watchdogs: Vec<Option<Arc<super::safety_monitor::Watchdog>>> = nodes
+            .iter()
+            .map(|n| {
+                monitors
+                    .watchdog
+                    .as_ref()
+                    .and_then(|f| f.handle(n.name.as_ref()))
+            })
+            .collect();
+
+        let timings: Vec<Option<Arc<super::safety_monitor::NodeTimingState>>> = nodes
+            .iter()
+            .map(|n| {
+                monitors
+                    .safety
+                    .as_ref()
+                    .map(|m| m.tick_budget_handle(n.name.as_ref()))
+            })
+            .collect();
+
         // Cyclic cadence on an absolute phase grid. Constructed here, after all
         // the one-time setup above, so the phase anchor is not polluted by
         // affinity/governor/IRQ work that only happens once.
@@ -1977,31 +2074,38 @@ impl RtExecutor {
                     continue;
                 }
 
+                let control = controls[idx].as_deref();
+
                 // Safing requested by the main thread's watchdog ladder. Runs
                 // before the pause/stop gates: an Isolated node must reach its
                 // safe state even if it is also about to be stopped.
                 //
-                // `is_stopped` used to be part of the guard above, which made
-                // that sentence false for the case it was written for: a node
-                // already stopped — by `BudgetPolicy::Enforce`, by the kill
-                // rung, by `horus node kill` — was skipped before ever reaching
-                // this call, so it kept holding whatever setpoint it last
-                // commanded. Stopping a node halts its ticks; it does not put
-                // its actuator anywhere. The sibling executors safe every node
-                // they own regardless of stop state, and so does the main loop.
-                super::primitives::honor_safe_state_request(node, &monitors);
+                // `is_stopped` used to be part of the guard at the top of this
+                // loop, which made that sentence false for the case it was
+                // written for: a node already stopped — by `BudgetPolicy::
+                // Enforce`, by the kill rung, by `horus node kill` — was
+                // skipped before ever reaching this call, so it kept holding
+                // whatever setpoint it last commanded. Stopping a node halts
+                // its ticks; it does not put its actuator anywhere. The sibling
+                // executors safe every node they own regardless of stop state,
+                // and so does the main loop.
+                super::primitives::honor_safe_state_request_via(node, control, &monitors);
 
                 if node.is_stopped {
                     continue;
                 }
 
-                // Check shared control flags (set by CLI: horus node pause/kill)
-                if monitors.node_controls.is_stopped(node.name.as_ref()) {
-                    node.is_stopped = true;
-                    continue;
-                }
-                if monitors.node_controls.is_paused(node.name.as_ref()) {
-                    continue; // Skip tick but don't auto-unpause
+                // Check shared control flags (set by CLI: horus node pause/kill).
+                // Unregistered node (`None`) reads as neither stopped nor
+                // paused, matching what the by-name accessors returned on a miss.
+                if let Some(c) = control {
+                    if c.stopped.load(Ordering::Relaxed) {
+                        node.is_stopped = true;
+                        continue;
+                    }
+                    if c.paused.load(Ordering::Relaxed) {
+                        continue; // Skip tick but don't auto-unpause
+                    }
                 }
 
                 // Auto-unpause (Miss::Skip skips one tick)
@@ -2044,7 +2148,18 @@ impl RtExecutor {
                 // continues ticking remaining nodes.
                 let is_first_tick = !warmed[idx];
                 let infra_result = catch_unwind(AssertUnwindSafe(|| {
-                    Self::tick_node(node, &monitors, &running, is_first_tick, release_late_ns)
+                    Self::tick_node(
+                        node,
+                        &monitors,
+                        &running,
+                        is_first_tick,
+                        release_late_ns,
+                        registry_slots[idx],
+                        name_hashes[idx],
+                        timings[idx].as_deref(),
+                        watchdogs[idx].as_deref(),
+                        control,
+                    )
                 }));
                 warmed[idx] = true;
 
@@ -2183,9 +2298,24 @@ mod tests {
         let monitors = test_monitors();
         monitors.node_controls.register("executor_node");
         let running = Arc::new(AtomicBool::new(true));
+        // The cached control block, the way the executor loop resolves it.
+        // Passing `None` here would leave the restart flag unread and the
+        // assertions below trivially satisfied.
+        let control = monitors.node_controls.handle("executor_node");
 
         // No request pending: ticking must not re-initialise anything.
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
         assert_eq!(
             inits.load(AOrd::Relaxed),
             0,
@@ -2197,7 +2327,18 @@ mod tests {
             monitors.node_controls.request_restart("executor_node"),
             "the control map is registered for all five groups, so the node is known"
         );
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
         assert_eq!(
             inits.load(AOrd::Relaxed),
             1,
@@ -2206,7 +2347,18 @@ mod tests {
         );
 
         // Honoured exactly once per raise.
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
         assert_eq!(
             inits.load(AOrd::Relaxed),
             1,
@@ -2235,9 +2387,24 @@ mod tests {
         monitors.node_controls.register("paused_node");
         monitors.node_controls.set_paused("paused_node", true);
         let running = Arc::new(AtomicBool::new(true));
+        // The cached control block, the way the executor loop resolves it.
+        // Passing `None` here would leave the restart flag unread and the
+        // assertions below trivially satisfied.
+        let control = monitors.node_controls.handle("paused_node");
 
         monitors.node_controls.request_restart("paused_node");
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
 
         assert!(!node.is_paused, "the restart must lift the pause");
         assert!(
@@ -2341,7 +2508,9 @@ mod tests {
 
         // The RT loop wraps `tick_node` exactly like this.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0)
+            RtExecutor::tick_node(
+                &mut node, &monitors, &running, true, 0, None, 0, None, None, None,
+            )
         }));
 
         assert!(
@@ -2514,6 +2683,11 @@ mod tests {
             &Arc::new(AtomicBool::new(true)),
             true,
             0,
+            None,
+            0,
+            None,
+            None,
+            None,
         );
 
         assert_eq!(
@@ -2553,7 +2727,9 @@ mod tests {
         // Released 5 ms late, five times over. Every tick is inside its budget
         // and every tick has missed its 1 ms deadline before it even began.
         for _ in 0..5 {
-            RtExecutor::tick_node(&mut node, &monitors, &running, false, 5_000_000);
+            RtExecutor::tick_node(
+                &mut node, &monitors, &running, false, 5_000_000, None, 0, None, None, None,
+            );
         }
         assert_eq!(
             monitor.consecutive_misses("arm_controller"),
@@ -2563,7 +2739,9 @@ mod tests {
         );
 
         // Released on time: the deadline is met, and the run ends.
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        RtExecutor::tick_node(
+            &mut node, &monitors, &running, false, 0, None, 0, None, None, None,
+        );
         assert_eq!(
             monitor.consecutive_misses("arm_controller"),
             0,
@@ -2623,7 +2801,9 @@ mod tests {
         monitors.safety = Some(monitor.clone());
         let running = Arc::new(AtomicBool::new(true));
 
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 0);
+        RtExecutor::tick_node(
+            &mut node, &monitors, &running, false, 0, None, 0, None, None, None,
+        );
 
         assert!(
             monitor.is_emergency_stop(),
@@ -2663,7 +2843,9 @@ mod tests {
 
         // Released 5 ms late against a 1 ms deadline: a miss, so SafeMode
         // dispatches `enter_safe_state()` — which panics.
-        RtExecutor::tick_node(&mut node, &monitors, &running, false, 5_000_000);
+        RtExecutor::tick_node(
+            &mut node, &monitors, &running, false, 5_000_000, None, 0, None, None, None,
+        );
 
         assert!(
             monitor.is_emergency_stop(),
@@ -2725,6 +2907,93 @@ mod tests {
             use_sched_deadline: false,
             no_alloc: false,
         }
+    }
+
+    /// `horus node pause` / `kill` must still reach a node the RT executor is
+    /// already running.
+    ///
+    /// The tick loop resolves each node's control block ONCE, at thread start,
+    /// instead of looking it up by name every tick. That is only correct
+    /// because `Scheduler::run` registers every node in the control map before
+    /// it calls `start_pool` — an ordering the two sites do not state and
+    /// nothing else enforces. If a later change registers after the pool
+    /// starts, every handle resolves to `None` and the operator's pause and
+    /// kill commands go nowhere: the flags would still be set, and read by
+    /// nobody. Nothing would panic, and no test of the control map itself would
+    /// notice, because the map would be perfectly correct — just unobserved.
+    ///
+    /// So assert the end-to-end behaviour rather than the ordering: set the
+    /// flag from outside on a pool that is already ticking, and require the
+    /// ticks to stop.
+    #[test]
+    fn cli_pause_reaches_a_running_rt_node_through_its_cached_handle() {
+        use std::sync::atomic::{AtomicU64, Ordering as AOrd};
+
+        let count = Arc::new(AtomicU64::new(0));
+        let node = make_rt_registered("pause_target", count.clone());
+
+        let mut monitors = test_monitors();
+        monitors.verbose = false;
+        monitors.node_controls.register("pause_target");
+
+        let running = Arc::new(AtomicBool::new(true));
+        let exec = start_pool_for_test(
+            vec![vec![node]],
+            running.clone(),
+            Duration::from_millis(1),
+            monitors.clone(),
+            vec![],
+        )
+        .expect("pool should start");
+
+        // It must actually be ticking before pausing proves anything.
+        let mut waited = Duration::ZERO;
+        while count.load(AOrd::Relaxed) == 0 && waited < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+            waited += Duration::from_millis(5);
+        }
+        assert!(
+            count.load(AOrd::Relaxed) > 0,
+            "node never ticked, so this test cannot say anything about pausing"
+        );
+
+        monitors.node_controls.set_paused("pause_target", true);
+
+        // Let any tick already in flight finish before sampling.
+        std::thread::sleep(Duration::from_millis(50));
+        let after_pause = count.load(AOrd::Relaxed);
+        std::thread::sleep(Duration::from_millis(150));
+        let settled = count.load(AOrd::Relaxed);
+
+        // Resuming must bring it back, so the test cannot pass by the node
+        // having simply died.
+        monitors.node_controls.set_paused("pause_target", false);
+        std::thread::sleep(Duration::from_millis(150));
+        let resumed = count.load(AOrd::Relaxed);
+
+        // Stop the pool BEFORE asserting, and do it unconditionally.
+        //
+        // `RtExecutor::drop` joins its threads, and those threads only leave
+        // the tick loop when `running` goes false. An assertion that fires
+        // before this line therefore unwinds into a `join` that never returns:
+        // the test HANGS instead of failing. That is not hypothetical — it is
+        // what the first version of this test did when the regression it
+        // guards was deliberately introduced, and a hang costs a CI job its
+        // whole timeout while reporting nothing about the cause.
+        running.store(false, AOrd::Relaxed);
+        drop(exec);
+
+        assert_eq!(
+            settled,
+            after_pause,
+            "the node kept ticking {} times after `pause` — the executor is not \
+             observing the control flag it cached at startup",
+            settled - after_pause
+        );
+        assert!(
+            resumed > settled,
+            "the node never resumed after `pause` was cleared"
+        );
     }
 
     #[test]
@@ -4446,6 +4715,87 @@ mod tests {
             *self.observed_dt.lock().unwrap() = Some(dt);
             *self.observed_budget.lock().unwrap() = Some(budget);
             self.ticked.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// An RT node's `horus::rng()` must draw the same stream it would draw
+    /// anywhere else.
+    ///
+    /// The executor resolves each node's name hash ONCE at thread start and
+    /// passes it to `set_tick_context_with_hash`, rather than re-hashing the
+    /// name every tick. Nothing about that is visible in a tick's timing or its
+    /// result, so if the executor ever resolved the hash from the wrong thing —
+    /// a chain label, a stale index, the previous node — RT nodes would simply
+    /// draw a DIFFERENT random stream than the same node draws on the main
+    /// loop, and no existing test would notice. `dt` and `budget` are checked
+    /// above; the seed was not.
+    ///
+    /// `horus::rng()` is documented as deterministic in (tick, node), so pin it
+    /// to that formula from inside a real executor tick.
+    #[test]
+    fn an_rt_node_draws_the_documented_rng_stream_for_its_name_and_tick() {
+        use rand::{RngCore, SeedableRng};
+
+        struct RngProbe {
+            name: String,
+            seen: Arc<Mutex<Vec<(u64, u64)>>>,
+        }
+        impl Node for RngProbe {
+            fn name(&self) -> &str {
+                &self.name
+            }
+            fn tick(&mut self) {
+                let tick = crate::core::tick_context::ctx_tick();
+                let drawn = crate::core::tick_context::ctx_with_rng(|r| r.next_u64());
+                self.seen.lock().unwrap().push((tick, drawn));
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut reg =
+            make_rt_registered("rng_probe", Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        reg.node = super::super::types::NodeKind::new(Box::new(RngProbe {
+            name: "rng_probe".to_string(),
+            seen: seen.clone(),
+        }));
+
+        let running = Arc::new(AtomicBool::new(true));
+        let mut monitors = test_monitors();
+        monitors.verbose = false;
+        let executor = start_pool_for_test(
+            vec![vec![reg]],
+            running.clone(),
+            1_u64.ms(),
+            monitors,
+            Vec::new(),
+        )
+        .unwrap();
+
+        for _ in 0..100 {
+            if seen.lock().unwrap().len() >= 3 {
+                break;
+            }
+            std::thread::sleep(5_u64.ms());
+        }
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+
+        let seen = seen.lock().unwrap();
+        assert!(
+            seen.len() >= 3,
+            "probe must have ticked at least 3 times, got {}",
+            seen.len()
+        );
+        for &(tick, drawn) in seen.iter() {
+            let expected = rand::rngs::SmallRng::seed_from_u64(
+                crate::core::tick_context::deterministic_seed(tick, "rng_probe"),
+            )
+            .next_u64();
+            assert_eq!(
+                drawn, expected,
+                "RT node 'rng_probe' drew the wrong stream at tick {tick} — the \
+                 executor is passing a name hash that is not hash(\"rng_probe\")"
+            );
         }
     }
 

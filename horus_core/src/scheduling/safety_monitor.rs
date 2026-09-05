@@ -2,7 +2,7 @@
 use crate::core::rt_node::BudgetViolation;
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -288,8 +288,14 @@ pub(crate) enum WatchdogSeverity {
 /// no lock acquisition delay during which a heartbeat could slip in.
 #[derive(Debug)]
 pub(crate) struct Watchdog {
-    /// Timeout duration
-    timeout: Duration,
+    /// Timeout in nanoseconds.
+    ///
+    /// Atomic, and `set_scale` is `&self`, so a `Watchdog` can live behind an
+    /// `Arc` and be fed without going back through the map. The RT tick loop
+    /// fed its node by NAME every tick — an `RwLock` read guard plus a SipHash
+    /// plus a probe, per node per period — and the feed is a two-atomic-store
+    /// operation on the other side of all that.
+    timeout_ns: AtomicU64,
     /// The timeout as configured, before any rate-change scaling. `set_scale`
     /// is always applied to this, so scaling never compounds.
     base_timeout: Duration,
@@ -303,7 +309,7 @@ pub(crate) struct Watchdog {
 impl Watchdog {
     pub(crate) fn new(timeout: Duration) -> Self {
         Self {
-            timeout,
+            timeout_ns: AtomicU64::new(timeout.as_nanos() as u64),
             base_timeout: timeout,
             last_heartbeat_ns: AtomicU64::new(now_ns()),
             expired: AtomicBool::new(false),
@@ -315,9 +321,18 @@ impl Watchdog {
     ///
     /// Always relative to the configured value, never compounding, so
     /// repeated calls are idempotent and `scale = 1.0` restores exactly.
-    pub(crate) fn set_scale(&mut self, scale: f64) {
+    pub(crate) fn set_scale(&self, scale: f64) {
         let scaled = self.base_timeout.as_secs_f64() * scale.max(1.0);
-        self.timeout = Duration::from_secs_f64(scaled);
+        self.timeout_ns.store(
+            Duration::from_secs_f64(scaled).as_nanos() as u64,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// The current (possibly scaled) timeout.
+    #[cfg(test)]
+    pub(crate) fn timeout(&self) -> Duration {
+        Duration::from_nanos(self.timeout_ns.load(Ordering::Relaxed))
     }
 
     /// Feed the watchdog (reset timer)
@@ -331,7 +346,7 @@ impl Watchdog {
     pub(crate) fn check(&self) -> bool {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns().saturating_sub(last_ns);
-        let expired = elapsed_ns >= self.timeout.as_nanos() as u64;
+        let expired = elapsed_ns >= self.timeout_ns.load(Ordering::Relaxed);
         if expired {
             self.expired.store(true, Ordering::SeqCst);
         }
@@ -361,7 +376,7 @@ impl Watchdog {
     pub(crate) fn check_graduated_at(&self, now_ns: u64) -> WatchdogSeverity {
         let last_ns = self.last_heartbeat_ns.load(Ordering::Acquire);
         let elapsed_ns = now_ns.saturating_sub(last_ns);
-        let timeout_ns = self.timeout.as_nanos() as u64;
+        let timeout_ns = self.timeout_ns.load(Ordering::Relaxed);
 
         if elapsed_ns <= timeout_ns {
             WatchdogSeverity::Ok
@@ -388,56 +403,74 @@ impl Watchdog {
 /// min/max/avg/p99 calculations without unbounded memory growth.
 const TIMING_RING_CAPACITY: usize = 1024;
 
+/// Sentinel in `NodeTimingState::budget_ns` for "no budget configured".
+const NO_BUDGET: u64 = u64::MAX;
+
+/// Written by exactly ONE thread per node — the executor that owns it — and
+/// read by reporting threads. That is what lets `record` be `&self` with plain
+/// relaxed stores instead of read-modify-writes: there is no writer-writer
+/// race to lose an update to.
+///
+/// A reader may see a torn snapshot — a `count` that has advanced past a slot
+/// the writer has not filled yet, or a mix of old and new samples across a
+/// wrap. That is deliberate and acceptable: these feed min/avg/p99 of a
+/// 1024-sample window in a shutdown report, where one stale sample changes
+/// nothing anybody acts on. It is NOT acceptable for the counters that drive
+/// escalation, and those are not in here — see `NodeTimingState`.
 #[derive(Debug)]
 pub(crate) struct TickTimingRing {
-    durations: Box<[u64; TIMING_RING_CAPACITY]>,
-    write_pos: usize,
-    count: u64,
+    durations: Box<[AtomicU64; TIMING_RING_CAPACITY]>,
+    /// Total samples ever recorded. `write_pos` is `count % CAPACITY`, so one
+    /// counter serves both and they cannot disagree.
+    count: AtomicU64,
 }
 
 impl TickTimingRing {
     pub(crate) fn new() -> Self {
         Self {
-            durations: Box::new([0u64; TIMING_RING_CAPACITY]),
-            write_pos: 0,
-            count: 0,
+            durations: Box::new(std::array::from_fn(|_| AtomicU64::new(0))),
+            count: AtomicU64::new(0),
         }
     }
 
     /// Record a tick duration in microseconds.
-    pub(crate) fn record(&mut self, duration_us: u64) {
-        self.durations[self.write_pos] = duration_us;
-        self.write_pos = (self.write_pos + 1) % TIMING_RING_CAPACITY;
-        self.count += 1;
+    ///
+    /// `&self`, and on the RT tick path. The whole point of the atomics is that
+    /// this no longer needs the process-wide mutex it used to be called under.
+    pub(crate) fn record(&self, duration_us: u64) {
+        let n = self.count.load(Ordering::Relaxed);
+        self.durations[(n as usize) % TIMING_RING_CAPACITY].store(duration_us, Ordering::Relaxed);
+        // Release so a reader that sees this count also sees the sample.
+        self.count.store(n.wrapping_add(1), Ordering::Release);
     }
 
     /// Number of samples recorded (total, not just in buffer).
     #[cfg(test)]
     pub(crate) fn total_count(&self) -> u64 {
-        self.count
-    }
-
-    /// Number of valid samples in the ring (min of count and capacity).
-    fn valid_count(&self) -> usize {
-        (self.count as usize).min(TIMING_RING_CAPACITY)
+        self.count.load(Ordering::Acquire)
     }
 
     /// Compute timing statistics from the ring buffer.
     pub(crate) fn stats(&self) -> TimingStats {
-        let n = self.valid_count();
+        let count = self.count.load(Ordering::Acquire);
+        let n = (count as usize).min(TIMING_RING_CAPACITY);
         if n == 0 {
             return TimingStats::default();
         }
 
-        let samples = &self.durations[..n];
+        // One pass into a stack copy, so min/max/avg/p99 all describe the SAME
+        // snapshot. Reading the atomics four separate times could otherwise
+        // report a max that is not in the set the average was taken over.
+        let mut scratch = [0u64; TIMING_RING_CAPACITY];
+        for (i, slot) in scratch[..n].iter_mut().enumerate() {
+            *slot = self.durations[i].load(Ordering::Relaxed);
+        }
+        let samples = &scratch[..n];
         let min = samples.iter().copied().min().unwrap_or(0);
         let max = samples.iter().copied().max().unwrap_or(0);
         let sum: u64 = samples.iter().sum();
         let avg = sum / n as u64;
 
-        // P99: sort on stack-allocated copy (no heap allocation)
-        let mut scratch = [0u64; TIMING_RING_CAPACITY];
-        scratch[..n].copy_from_slice(samples);
         scratch[..n].sort_unstable();
         let p99_idx = ((n as f64 * 0.99) as usize).min(n - 1);
         let p99 = scratch[p99_idx];
@@ -447,7 +480,7 @@ impl TickTimingRing {
             max_us: max,
             avg_us: avg,
             p99_us: p99,
-            total_ticks: self.count,
+            total_ticks: count,
         }
     }
 }
@@ -484,49 +517,117 @@ pub(crate) struct NodeTimingReport {
 }
 
 /// Per-node timing and overrun tracking.
+///
+/// Every field is atomic and every method takes `&self`, so an executor can
+/// hold this by `Arc` and update it from its tick loop without a lock. That is
+/// the point: this used to live behind one process-wide `Mutex<BudgetEnforcer>`
+/// that EVERY RT chain took once per node per tick, which serialised chains
+/// against each other — measured at 32.9x per-call cost with 8 chains, so
+/// timing got worse the more cores the robot used. See `budget_check_cost`.
+///
+/// `consecutive_misses` in particular must not be sampled loosely: it drives
+/// `trigger_emergency_stop` and the degradation ladder.
+///
+/// # Single writer per node
+///
+/// Correctness here rests on one invariant: a node is owned by exactly one
+/// executor, so exactly one thread ever WRITES its state. That is what makes
+/// `record_deadline_met`'s `store(0)` on `consecutive_misses` safe against
+/// `record_miss`'s increment — they are the same thread, one tick apart, and
+/// cannot interleave. (The store used to live in `record_tick`, which reset the
+/// run on any tick that made its BUDGET; a node can make its budget and still
+/// miss its deadline, so a met deadline is what ends the run.)
+///
+/// The counters use `fetch_add`/`fetch_max` anyway, so a second writer would
+/// not lose a count; what it would break is the reset, which could be clobbered
+/// and leave a stale run in the number the emergency stop reads. If a future
+/// change ever gives two threads the same node, this type needs revisiting —
+/// widening the atomics is not enough.
+///
+/// Readers are unconstrained: any thread may read at any time, and the worst it
+/// sees is a value one tick stale.
 #[derive(Debug)]
 pub(crate) struct NodeTimingState {
     /// Tick duration ring buffer
     pub(crate) ring: TickTimingRing,
-    /// Budget for this node (None = no budget set)
-    pub(crate) budget: Option<Duration>,
+    /// Budget for this node in nanoseconds; `NO_BUDGET` means none is set.
+    ///
+    /// Flattened from `Option<Duration>` so it can be one atomic. The sentinel
+    /// is `u64::MAX`, NOT zero: a zero budget is a real, tested configuration
+    /// meaning "every tick violates" (see `test_budget_enforcer_zero_budget`),
+    /// so zero has to stay distinguishable from absent. `u64::MAX` ns is ~584
+    /// years, which no one is configuring as a tick budget.
+    budget_ns: AtomicU64,
     /// Total overrun count
-    pub(crate) overrun_count: u64,
+    overrun_count: AtomicU64,
     /// Worst overrun (actual - budget), zero if no overruns
-    pub(crate) worst_overrun_us: u64,
+    worst_overrun_us: AtomicU64,
     /// Deadline miss tracking
-    pub(crate) total_deadline_misses: u64,
+    total_deadline_misses: AtomicU64,
     /// Consecutive deadline misses (resets on successful tick)
-    pub(crate) consecutive_misses: u64,
+    consecutive_misses: AtomicU64,
     /// Worst deadline miss severity (how far past deadline)
-    pub(crate) worst_miss_us: u64,
+    worst_miss_us: AtomicU64,
 }
 
 impl NodeTimingState {
     pub(crate) fn new(budget: Option<Duration>) -> Self {
         Self {
             ring: TickTimingRing::new(),
-            budget,
-            overrun_count: 0,
-            worst_overrun_us: 0,
-            total_deadline_misses: 0,
-            consecutive_misses: 0,
-            worst_miss_us: 0,
+            budget_ns: AtomicU64::new(budget.map(|b| b.as_nanos() as u64).unwrap_or(NO_BUDGET)),
+            overrun_count: AtomicU64::new(0),
+            worst_overrun_us: AtomicU64::new(0),
+            total_deadline_misses: AtomicU64::new(0),
+            consecutive_misses: AtomicU64::new(0),
+            worst_miss_us: AtomicU64::new(0),
         }
     }
 
+    pub(crate) fn budget(&self) -> Option<Duration> {
+        match self.budget_ns.load(Ordering::Relaxed) {
+            NO_BUDGET => None,
+            ns => Some(Duration::from_nanos(ns)),
+        }
+    }
+
+    pub(crate) fn set_budget(&self, budget: Duration) {
+        self.budget_ns
+            .store(budget.as_nanos() as u64, Ordering::Relaxed);
+    }
+
+    pub(crate) fn overrun_count(&self) -> u64 {
+        self.overrun_count.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn total_deadline_misses(&self) -> u64 {
+        self.total_deadline_misses.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn consecutive_misses(&self) -> u64 {
+        self.consecutive_misses.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worst_overrun_us(&self) -> u64 {
+        self.worst_overrun_us.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worst_miss_us(&self) -> u64 {
+        self.worst_miss_us.load(Ordering::Relaxed)
+    }
+
     /// Record a tick and check budget.
-    pub(crate) fn record_tick(&mut self, actual: Duration) -> Option<BudgetViolation> {
+    pub(crate) fn record_tick(&self, actual: Duration) -> Option<BudgetViolation> {
         let actual_us = actual.as_micros() as u64;
         self.ring.record(actual_us);
 
-        if let Some(budget) = self.budget {
+        if let Some(budget) = self.budget() {
             if actual > budget {
-                self.overrun_count += 1;
+                self.overrun_count.fetch_add(1, Ordering::Relaxed);
                 let overrun_us = actual_us.saturating_sub(budget.as_micros() as u64);
-                if overrun_us > self.worst_overrun_us {
-                    self.worst_overrun_us = overrun_us;
-                }
+                self.worst_overrun_us
+                    .fetch_max(overrun_us, Ordering::Relaxed);
                 return Some(BudgetViolation::new(
                     String::new(), // filled by caller
                     budget,
@@ -535,28 +636,39 @@ impl NodeTimingState {
             }
         }
 
-        // The consecutive-miss run is NOT cleared here. It counts deadline
-        // misses, and this function knows only about the budget; clearing it
-        // from the budget check pinned the counter at 1 for a node that made
-        // its budget and missed its deadline every single tick, which is the
-        // dominant failure mode (see `check_deadline_from_release`).
-        // `SafetyMonitor::record_deadline_met` owns the reset.
+        // The consecutive-miss run is NOT cleared here.
+        //
+        // It counts missed DEADLINES; this function knows only about the
+        // BUDGET, and the two are independent -- a node released late executes
+        // well inside its budget and still misses. Clearing from the budget
+        // check therefore zeroed the run on the very ticks it needed to count:
+        // such a node was reset to 0 here, incremented to 1 by `record_miss`,
+        // and pinned at 1 forever, so the ladder starting at 3 could never fire
+        // for exactly the node in the worst trouble.
+        //
+        // Moving the reset below the budget check (rather than removing it)
+        // only narrows that to the ticks that also overran, which is not the
+        // dominant case. A met deadline is the only thing that ends a run of
+        // missed deadlines, so `SafetyMonitor::record_deadline_met` owns it --
+        // called from rt_executor.rs and scheduler/mod.rs on every tick that
+        // met one. See `check_deadline_from_release`.
         None
     }
 
     /// Record a deadline miss with severity.
-    pub(crate) fn record_miss(&mut self, severity_us: u64) {
-        self.total_deadline_misses += 1;
-        self.consecutive_misses += 1;
-        if severity_us > self.worst_miss_us {
-            self.worst_miss_us = severity_us;
-        }
+    pub(crate) fn record_miss(&self, severity_us: u64) {
+        self.total_deadline_misses.fetch_add(1, Ordering::Relaxed);
+        // Release, paired with the Acquire in `consecutive_misses()`: this
+        // number is read to decide an emergency stop, so a reader must never
+        // see the increment without the miss that caused it.
+        self.consecutive_misses.fetch_add(1, Ordering::Release);
+        self.worst_miss_us.fetch_max(severity_us, Ordering::Relaxed);
     }
 
     /// Whether this node is chronically missing deadlines (3+ consecutive).
     #[cfg(test)]
     pub(crate) fn is_chronic(&self) -> bool {
-        self.consecutive_misses >= 3
+        self.consecutive_misses() >= 3
     }
 }
 
@@ -676,8 +788,12 @@ pub(crate) enum DegradationAction {
 /// budget (Worst-Case Execution Time) enforcer with real per-node metrics.
 #[derive(Debug)]
 pub(crate) struct BudgetEnforcer {
-    /// Per-node timing state with ring buffers
-    pub(crate) node_timing: HashMap<String, NodeTimingState>,
+    /// Per-node timing state with ring buffers.
+    ///
+    /// `Arc` so a caller can resolve one node's state ONCE and keep it; the
+    /// `RwLock` is then only taken to register a node or to walk every node for
+    /// a report, never on the tick path.
+    pub(crate) node_timing: RwLock<HashMap<String, Arc<NodeTimingState>>>,
     /// Global overrun counter (atomic for cross-thread access)
     pub(crate) overruns: AtomicU64,
     /// Critical overruns (that triggered emergency stop)
@@ -687,7 +803,7 @@ pub(crate) struct BudgetEnforcer {
 impl Default for BudgetEnforcer {
     fn default() -> Self {
         Self {
-            node_timing: HashMap::new(),
+            node_timing: RwLock::new(HashMap::new()),
             overruns: AtomicU64::new(0),
             critical_overruns: AtomicU64::new(0),
         }
@@ -699,63 +815,62 @@ impl BudgetEnforcer {
         Self::default()
     }
 
-    /// Set tick budget for a node.
-    pub(crate) fn set_budget(&mut self, node: String, budget: Duration) {
-        self.node_timing
-            .entry(node)
-            .or_insert_with(|| NodeTimingState::new(Some(budget)))
-            .budget = Some(budget);
+    /// Resolve (creating if absent) one node's timing state, so a caller can
+    /// hold it and never look it up again.
+    ///
+    /// This is what takes the tick path off the lock. Registration happens once
+    /// per node, before its executor starts ticking.
+    pub(crate) fn handle(&self, node: &str) -> Arc<NodeTimingState> {
+        if let Some(state) = self.node_timing.read().get(node) {
+            return Arc::clone(state);
+        }
+        let mut map = self.node_timing.write();
+        Arc::clone(
+            map.entry(node.to_string())
+                .or_insert_with(|| Arc::new(NodeTimingState::new(None))),
+        )
     }
 
-    /// Record a tick duration and check against budget.
+    /// Set tick budget for a node.
+    pub(crate) fn set_budget(&self, node: String, budget: Duration) {
+        self.node_timing
+            .write()
+            .entry(node)
+            .or_insert_with(|| Arc::new(NodeTimingState::new(Some(budget))))
+            .set_budget(budget);
+    }
+
+    /// Record a tick duration and check against budget, for a caller that has
+    /// already resolved the node's state.
     ///
-    /// This is the real enforcement: tracks per-node timing history,
-    /// computes overrun severity, and updates the ring buffer.
-    pub(crate) fn check_budget(
-        &mut self,
+    /// The RT tick loop uses this one. It touches no lock and no hash: the only
+    /// shared writes are the node's own atomics and the global overrun counter.
+    pub(crate) fn check_budget_of(
+        &self,
         node: &str,
+        state: &NodeTimingState,
         actual: Duration,
     ) -> Result<(), BudgetViolation> {
-        // `entry(node.to_string())` allocated a String on EVERY call, including
-        // the hit — and this one runs per tick for every RT node with a budget.
-        // It is the same defect the profiler carried, and the note there says
-        // why it matters: malloc has no WCET bound (arena contention -> brk/mmap
-        // -> page fault), so the check that polices timing had unbounded cost of
-        // its own, on the RT thread.
-        //
-        // `contains_key` + `get_mut` borrows the key instead of owning it: two
-        // hash lookups and no allocation in the steady state, against one lookup
-        // and a malloc/free pair before. Only a node's FIRST tick allocates.
-        if !self.node_timing.contains_key(node) {
-            self.node_timing
-                .insert(node.to_string(), NodeTimingState::new(None));
-        }
-        let state = self
-            .node_timing
-            .get_mut(node)
-            .expect("inserted immediately above");
-
-        if let Some(mut violation) = state.record_tick(actual) {
+        if let Some(violation) = state.record_tick(actual) {
             self.overruns.fetch_add(1, Ordering::SeqCst);
-            violation =
-                BudgetViolation::new(node.to_string(), violation.budget(), violation.actual());
-            return Err(violation);
+            return Err(BudgetViolation::new(
+                node.to_string(),
+                violation.budget(),
+                violation.actual(),
+            ));
         }
         Ok(())
     }
 
-    /// Record a deadline miss with severity for a node.
-    pub(crate) fn record_deadline_miss(&mut self, node: &str, severity_us: u64) {
-        // As `check_budget`: no allocation on the hit path. This runs on the RT
-        // thread every time a deadline is missed, and the report of a timing
-        // failure must not cost more than the failure did.
-        if let Some(state) = self.node_timing.get_mut(node) {
-            state.record_miss(severity_us);
-            return;
-        }
-        let mut state = NodeTimingState::new(None);
-        state.record_miss(severity_us);
-        self.node_timing.insert(node.to_string(), state);
+    /// `check_budget_of` for a caller that has not resolved the state.
+    ///
+    /// Test-only: the production paths all hold a resolved handle now — the RT
+    /// loop resolves at thread start, and `SafetyMonitor::check_tick_budget`
+    /// resolves per call for the non-RT callers.
+    #[cfg(test)]
+    pub(crate) fn check_budget(&self, node: &str, actual: Duration) -> Result<(), BudgetViolation> {
+        let state = self.handle(node);
+        self.check_budget_of(node, &state, actual)
     }
 
     /// Record that a node MET its deadline, clearing its consecutive-miss run.
@@ -763,28 +878,29 @@ impl BudgetEnforcer {
     /// No allocation and no insert on the miss of the map: a node with no entry
     /// has no run to clear, and this runs on the RT thread on every healthy
     /// tick — by far the hottest of these paths.
-    pub(crate) fn record_deadline_met(&mut self, node: &str) {
-        if let Some(state) = self.node_timing.get_mut(node) {
-            state.consecutive_misses = 0;
+    pub(crate) fn record_deadline_met(&self, node: &str) {
+        if let Some(state) = self.node_timing.read().get(node) {
+            state.consecutive_misses.store(0, Ordering::Release);
         }
     }
 
     /// Get timing stats for a specific node.
     #[cfg(test)]
     pub(crate) fn node_stats(&self, node: &str) -> Option<TimingStats> {
-        self.node_timing.get(node).map(|s| s.ring.stats())
+        self.node_timing.read().get(node).map(|s| s.ring.stats())
     }
 
     /// Get all node timing states (for timing report).
     pub(crate) fn all_node_stats(&self) -> Vec<NodeTimingReport> {
         self.node_timing
+            .read()
             .iter()
             .map(|(name, state)| NodeTimingReport {
                 name: name.clone(),
                 stats: state.ring.stats(),
-                budget: state.budget,
-                overruns: state.overrun_count,
-                deadline_misses: state.total_deadline_misses,
+                budget: state.budget(),
+                overruns: state.overrun_count(),
+                deadline_misses: state.total_deadline_misses(),
             })
             .collect()
     }
@@ -811,9 +927,9 @@ pub(crate) struct SafetyMonitor {
     /// only READ the map (individual watchdog state is in `AtomicU64`/`AtomicBool`),
     /// so multiple scheduler ticks can iterate concurrently.  Only
     /// `add_critical_node()` needs a write lock (infrequent setup-time call).
-    watchdogs: Arc<RwLock<HashMap<String, Watchdog>>>,
+    watchdogs: Arc<RwLock<HashMap<String, Arc<Watchdog>>>>,
     /// budget enforcer
-    budget_enforcer: Arc<Mutex<BudgetEnforcer>>,
+    budget_enforcer: Arc<BudgetEnforcer>,
     /// Critical nodes that must never fail — protected by RwLock for interior mutability.
     /// add_critical_node() acquires a write lock; all readers acquire a read lock.
     critical_nodes: Arc<RwLock<Vec<String>>>,
@@ -827,6 +943,22 @@ pub(crate) struct SafetyMonitor {
     degradation_policy: DegradationPolicy,
     /// Per-node degradation state
     degradation_states: Mutex<HashMap<String, NodeDegradationState>>,
+    /// How many nodes are currently in a non-`Normal` degradation stage.
+    ///
+    /// Exists so `record_successful_tick` — which runs on the RT thread after
+    /// EVERY successful tick — does not have to take `degradation_states` to
+    /// discover that there is nothing to do. That mutex is process-global and
+    /// blocking, and on a healthy robot the answer is always "nothing to do":
+    /// with no node degraded, the function provably returns
+    /// `DegradationAction::None` for every node, so skipping it is exact rather
+    /// than approximate.
+    ///
+    /// Maintained under the `degradation_states` lock by `refresh_degraded_count`,
+    /// which recomputes it from the map after any stage change. Recomputing is
+    /// O(nodes) but only happens when a stage actually moves, which is rare;
+    /// incrementing and decrementing at each transition would be cheaper and
+    /// far easier to get wrong.
+    degraded_nodes: AtomicUsize,
     /// A NEW external safe-state request the tick loop has not acted on yet.
     ///
     /// Separate from `state`, which latches `SafetyState::SafeState` as an
@@ -851,7 +983,7 @@ pub(crate) struct SafetyMonitor {
 /// fleet-halting emergency stop (FIX #2).
 #[derive(Clone, Debug)]
 pub(crate) struct WatchdogFeeder {
-    watchdogs: Arc<RwLock<HashMap<String, Watchdog>>>,
+    watchdogs: Arc<RwLock<HashMap<String, Arc<Watchdog>>>>,
 }
 
 impl WatchdogFeeder {
@@ -861,6 +993,14 @@ impl WatchdogFeeder {
         if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.feed();
         }
+    }
+
+    /// Resolve a node's watchdog ONCE, so a tick loop never looks it up again.
+    ///
+    /// `None` for a node with no registered watchdog, which `feed` treats as a
+    /// no-op — so a caller holding `None` simply never feeds, exactly as before.
+    pub(crate) fn handle(&self, node_name: &str) -> Option<Arc<Watchdog>> {
+        self.watchdogs.read().get(node_name).cloned()
     }
 }
 
@@ -899,13 +1039,14 @@ impl SafetyMonitor {
             state: Arc::new(Mutex::new(SafetyState::Normal)),
             emergency_stop: Arc::new(AtomicBool::new(false)),
             watchdogs: Arc::new(RwLock::new(HashMap::new())),
-            budget_enforcer: Arc::new(Mutex::new(BudgetEnforcer::new())),
+            budget_enforcer: Arc::new(BudgetEnforcer::new()),
             critical_nodes: Arc::new(RwLock::new(Vec::new())),
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
             degrade_activations: AtomicU64::new(0),
             degradation_policy: DegradationPolicy::reaching(max_deadline_misses),
             degradation_states: Mutex::new(HashMap::new()),
+            degraded_nodes: AtomicUsize::new(0),
             external_safe_state_pending: AtomicBool::new(false),
         }
     }
@@ -935,7 +1076,7 @@ impl SafetyMonitor {
         self.critical_nodes.write().push(node_name.clone());
         self.watchdogs
             .write()
-            .insert(node_name, Watchdog::new(watchdog_timeout));
+            .insert(node_name, Arc::new(Watchdog::new(watchdog_timeout)));
     }
 
     /// Returns true if `node_name` was registered as a critical node.
@@ -949,7 +1090,7 @@ impl SafetyMonitor {
 
     /// Set tick budget for a node.
     pub(crate) fn set_tick_budget(&self, node_name: String, budget: Duration) {
-        self.budget_enforcer.lock().set_budget(node_name, budget);
+        self.budget_enforcer.set_budget(node_name, budget);
     }
 
     /// Feed watchdog for a node.
@@ -965,7 +1106,7 @@ impl SafetyMonitor {
     /// The current watchdog timeout for a node, after any rate scaling.
     #[cfg(test)]
     pub(crate) fn watchdog_timeout(&self, node_name: &str) -> Option<Duration> {
-        self.watchdogs.read().get(node_name).map(|w| w.timeout)
+        self.watchdogs.read().get(node_name).map(|w| w.timeout())
     }
 
     /// Scale a node's watchdog timeout to match a deliberate change in its
@@ -983,7 +1124,7 @@ impl SafetyMonitor {
     /// values below 1.0 are clamped away — this may only ever widen the window,
     /// never tighten it below what the operator asked for.
     pub(crate) fn scale_watchdog(&self, node_name: &str, scale: f64) {
-        if let Some(watchdog) = self.watchdogs.write().get_mut(node_name) {
+        if let Some(watchdog) = self.watchdogs.read().get(node_name) {
             watchdog.set_scale(scale);
             watchdog.feed();
         }
@@ -1143,14 +1284,45 @@ impl SafetyMonitor {
         node_name: &str,
         execution_time: Duration,
     ) -> Result<(), BudgetViolation> {
+        let state = self.budget_enforcer.handle(node_name);
+        self.check_tick_budget_of(node_name, &state, execution_time)
+    }
+
+    /// Resolve one node's timing state, so a tick loop can hold it and stop
+    /// paying for the lookup.
+    pub(crate) fn tick_budget_handle(&self, node_name: &str) -> Arc<NodeTimingState> {
+        self.budget_enforcer.handle(node_name)
+    }
+
+    /// `check_tick_budget` for a caller that resolved the state up front.
+    ///
+    /// This runs once per node per tick for every node with a `.tick_budget()`,
+    /// which is what an RT node configures — so it was the last blocking lock
+    /// on the RT tick path. Every RT chain is its own thread and all of them
+    /// took the SAME `Mutex<BudgetEnforcer>`, which made per-call cost grow
+    /// with chain count: measured 87.6 ns with one chain and 2886 ns with
+    /// eight, i.e. timing degraded as the robot used more cores. See
+    /// `budget_check_cost`.
+    ///
+    /// It could not be fixed the way the profiler and blackbox calls beside it
+    /// were, by dropping the sample under contention with `try_lock`: this call
+    /// is what RESETS `consecutive_misses` on a clean tick, and that counter
+    /// drives `trigger_emergency_stop`. A skipped reset leaves it stale-high
+    /// and can fire a spurious stop, so the sample has to be taken — the lock
+    /// had to go rather than be bypassed.
+    pub(crate) fn check_tick_budget_of(
+        &self,
+        node_name: &str,
+        state: &NodeTimingState,
+        execution_time: Duration,
+    ) -> Result<(), BudgetViolation> {
         let result = self
             .budget_enforcer
-            .lock()
-            .check_budget(node_name, execution_time);
+            .check_budget_of(node_name, state, execution_time);
 
         // Still counted for reporting — only the escalation is gone.
-        if result.is_err() && self.critical_nodes.read().contains(&node_name.to_string()) {
-            self.budget_enforcer.lock().mark_critical_overrun();
+        if result.is_err() && self.critical_nodes.read().iter().any(|n| n == node_name) {
+            self.budget_enforcer.mark_critical_overrun();
         }
 
         result
@@ -1173,7 +1345,7 @@ impl SafetyMonitor {
     /// count and `max_deadline_misses` was a lifetime total wearing the name of
     /// a consecutive one.
     pub(crate) fn record_deadline_met(&self, node_name: &str) {
-        self.budget_enforcer.lock().record_deadline_met(node_name);
+        self.budget_enforcer.record_deadline_met(node_name);
     }
 
     /// Record a deadline miss with severity tracking.
@@ -1211,8 +1383,6 @@ impl SafetyMonitor {
         // a full emergency stop. Nothing reset it, so a long enough run halted
         // regardless of health, and one badly tuned node spent the whole
         // robot's budget.
-        self.deadline_misses.fetch_add(1, Ordering::SeqCst);
-
         // The ceiling is now per node and CONSECUTIVE, which is the thing an
         // operator setting a "maximum deadline misses" actually means: this node
         // is not keeping up right now. A run of misses is a node in trouble; a
@@ -1222,14 +1392,24 @@ impl SafetyMonitor {
         // dispatch paths and whether or not the node has a budget, so recovery
         // genuinely clears the count.
         let consecutive = {
-            let mut enforcer = self.budget_enforcer.lock();
-            enforcer.record_deadline_miss(node_name, severity_us);
-            enforcer
-                .node_timing
-                .get(node_name)
-                .map(|s| s.consecutive_misses)
-                .unwrap_or(0)
+            let state = self.budget_enforcer.handle(node_name);
+            state.record_miss(severity_us);
+            state.consecutive_misses()
         };
+        self.note_deadline_miss_recorded(node_name, consecutive);
+    }
+
+    /// The monitor-level half of recording a deadline miss, for a caller that
+    /// already recorded the per-node half through a resolved
+    /// [`NodeTimingState`] handle.
+    ///
+    /// Split out so the RT tick loop can update the node's own atomics without
+    /// a map lookup and still get the process-wide accounting and, critically,
+    /// the `max_deadline_misses` emergency stop. Skipping this would turn a
+    /// performance change into a silent safety regression: the node's counter
+    /// would climb and nothing would ever act on it.
+    pub(crate) fn note_deadline_miss_recorded(&self, node_name: &str, consecutive: u64) {
+        self.deadline_misses.fetch_add(1, Ordering::SeqCst);
 
         if consecutive >= self.max_deadline_misses {
             self.trigger_emergency_stop(format!(
@@ -1241,16 +1421,16 @@ impl SafetyMonitor {
 
     /// Get per-node timing stats (for timing report).
     pub(crate) fn all_node_timing(&self) -> Vec<NodeTimingReport> {
-        self.budget_enforcer.lock().all_node_stats()
+        self.budget_enforcer.all_node_stats()
     }
 
     /// Get consecutive miss count for a node.
     pub(crate) fn consecutive_misses(&self, node_name: &str) -> u64 {
         self.budget_enforcer
-            .lock()
             .node_timing
+            .read()
             .get(node_name)
-            .map(|s| s.consecutive_misses)
+            .map(|s| s.consecutive_misses())
             .unwrap_or(0)
     }
 
@@ -1258,6 +1438,16 @@ impl SafetyMonitor {
     ///
     /// Returns a `DegradationAction` that the scheduler should execute.
     /// Call this after recording a deadline miss or budget violation.
+    /// Recompute [`SafetyMonitor::degraded_nodes`] from the map. Call while
+    /// holding the `degradation_states` lock, after any stage change.
+    fn refresh_degraded_count(&self, states: &HashMap<String, NodeDegradationState>) {
+        let n = states
+            .values()
+            .filter(|s| s.stage != DegradationStage::Normal)
+            .count();
+        self.degraded_nodes.store(n, Ordering::Release);
+    }
+
     pub(crate) fn evaluate_degradation(
         &self,
         node_name: &str,
@@ -1284,7 +1474,9 @@ impl SafetyMonitor {
         // field's own comment already claimed to be a consecutive run.
         state.recovery_counter = 0;
 
-        if consecutive_misses >= policy.kill_after && state.stage != DegradationStage::Killed {
+        let action = if consecutive_misses >= policy.kill_after
+            && state.stage != DegradationStage::Killed
+        {
             state.stage = DegradationStage::Killed;
             state.recovery_counter = 0;
             DegradationAction::Kill(node_name.to_string())
@@ -1316,7 +1508,13 @@ impl SafetyMonitor {
             DegradationAction::Warn(node_name.to_string())
         } else {
             DegradationAction::None
-        }
+        };
+
+        // Single exit, so a stage change cannot escape without updating the
+        // lock-free counter `record_successful_tick` reads. This is the only
+        // function that moves a node OUT of `Normal`.
+        self.refresh_degraded_count(&states);
+        action
     }
 
     /// Record a successful tick for recovery tracking.
@@ -1325,6 +1523,14 @@ impl SafetyMonitor {
     /// consecutive times, it returns `RestoreRate` to signal the scheduler should
     /// restore the original rate.
     pub(crate) fn record_successful_tick(&self, node_name: &str) -> DegradationAction {
+        // Nothing degraded anywhere: every branch below would return
+        // `DegradationAction::None`, so do not take a process-global blocking
+        // mutex on the RT thread to find that out. This is the steady state of
+        // a healthy robot — i.e. essentially every tick.
+        if self.degraded_nodes.load(Ordering::Acquire) == 0 {
+            return DegradationAction::None;
+        }
+
         let recovery_ticks = self.degradation_policy.recovery_ticks;
 
         let mut states = self.degradation_states.lock();
@@ -1332,7 +1538,7 @@ impl SafetyMonitor {
             return DegradationAction::None;
         };
 
-        match state.stage {
+        let action = match state.stage {
             DegradationStage::RateReduced => {
                 state.recovery_counter += 1;
                 if state.recovery_counter >= recovery_ticks {
@@ -1341,17 +1547,21 @@ impl SafetyMonitor {
                     state.recovery_counter = 0;
                     state.original_rate_hz = None;
                     if let Some(rate) = original {
-                        return DegradationAction::RestoreRate {
+                        // An early `return` here would leave `degraded_nodes`
+                        // stale-high on the very transition that clears the last
+                        // degraded node, so this arm yields a value like the rest.
+                        DegradationAction::RestoreRate {
                             node: node_name.to_string(),
                             original_rate_hz: rate,
-                        };
+                        }
+                    } else {
+                        // No original rate saved — rate cannot be restored
+                        log::warn!(
+                            "Node '{}': recovered from RateReduced but original_rate_hz was None — rate not restored",
+                            node_name
+                        );
+                        DegradationAction::None
                     }
-                    // No original rate saved — rate cannot be restored
-                    log::warn!(
-                        "Node '{}': recovered from RateReduced but original_rate_hz was None — rate not restored",
-                        node_name
-                    );
-                    DegradationAction::None
                 } else {
                     DegradationAction::None
                 }
@@ -1379,7 +1589,13 @@ impl SafetyMonitor {
                 }
             }
             _ => DegradationAction::None,
-        }
+        };
+
+        // Single exit, as in `evaluate_degradation`: this is the only function
+        // that moves a node back INTO `Normal`, so it must refresh the counter
+        // or a recovered robot would keep paying for the mutex forever.
+        self.refresh_degraded_count(&states);
+        action
     }
 
     /// Get the current degradation stage for a node.
@@ -1504,7 +1720,7 @@ impl SafetyMonitor {
     pub(crate) fn get_stats(&self) -> SafetyStats {
         SafetyStats {
             state: self.get_state(),
-            budget_overruns: self.budget_enforcer.lock().get_overrun_count(),
+            budget_overruns: self.budget_enforcer.get_overrun_count(),
             deadline_misses: self.deadline_misses.load(Ordering::SeqCst),
             watchdog_expirations: self
                 .watchdogs
@@ -2069,10 +2285,10 @@ mod tests {
 
         let monitor = SafetyMonitor::new(100);
         // Register a watchdog but NOT as critical
-        monitor
-            .watchdogs
-            .write()
-            .insert("noncritical".to_string(), Watchdog::new(10_u64.ms()));
+        monitor.watchdogs.write().insert(
+            "noncritical".to_string(),
+            Arc::new(Watchdog::new(10_u64.ms())),
+        );
 
         thread::sleep(35_u64.ms());
 
@@ -2109,7 +2325,7 @@ mod tests {
     /// TickTimingRing wraps correctly after capacity.
     #[test]
     fn test_timing_ring_wraps() {
-        let mut ring = TickTimingRing::new();
+        let ring = TickTimingRing::new();
         // Fill beyond capacity
         for i in 0..(TIMING_RING_CAPACITY + 100) {
             ring.record(i as u64);
@@ -2122,7 +2338,7 @@ mod tests {
     /// TimingStats p99 is correct for uniform data.
     #[test]
     fn test_timing_stats_p99() {
-        let mut ring = TickTimingRing::new();
+        let ring = TickTimingRing::new();
         // Record 100 samples: 1..=100
         for i in 1..=100u64 {
             ring.record(i);
@@ -2140,30 +2356,30 @@ mod tests {
     /// NodeTimingState tracks overruns correctly.
     #[test]
     fn test_node_timing_state_overruns() {
-        let mut state = NodeTimingState::new(Some(100_u64.us()));
+        let state = NodeTimingState::new(Some(100_u64.us()));
 
         // Normal tick — no violation
         assert!(state.record_tick(50_u64.us()).is_none());
-        assert_eq!(state.overrun_count, 0);
+        assert_eq!(state.overrun_count(), 0);
 
         // Overrun tick
         let violation = state.record_tick(150_u64.us());
         assert!(violation.is_some());
-        assert_eq!(state.overrun_count, 1);
-        assert_eq!(state.worst_overrun_us, 50); // 150 - 100
+        assert_eq!(state.overrun_count(), 1);
+        assert_eq!(state.worst_overrun_us(), 50); // 150 - 100
     }
 
     /// NodeTimingState tracks consecutive deadline misses.
     #[test]
     fn test_node_timing_consecutive_misses() {
-        let mut state = NodeTimingState::new(None);
+        let state = NodeTimingState::new(None);
 
         state.record_miss(100);
-        assert_eq!(state.consecutive_misses, 1);
+        assert_eq!(state.consecutive_misses(), 1);
         state.record_miss(200);
-        assert_eq!(state.consecutive_misses, 2);
+        assert_eq!(state.consecutive_misses(), 2);
         state.record_miss(50);
-        assert_eq!(state.consecutive_misses, 3);
+        assert_eq!(state.consecutive_misses(), 3);
         assert!(state.is_chronic());
 
         // A tick inside budget is NOT a reset: this state knows only about the
@@ -2171,19 +2387,21 @@ mod tests {
         // well inside it. Clearing here pinned the run at 1 for exactly that
         // node. Only a met DEADLINE ends the run, via `record_deadline_met`.
         state.record_tick(10_u64.us());
-        assert_eq!(state.consecutive_misses, 3);
+        assert_eq!(state.consecutive_misses(), 3);
         assert!(state.is_chronic());
 
-        state.consecutive_misses = 0; // what `record_deadline_met` does
+        // What `record_deadline_met` does, which is the only thing that ends
+        // the run.
+        state.consecutive_misses.store(0, Ordering::Release);
         assert!(!state.is_chronic());
         // But total misses persist
-        assert_eq!(state.total_deadline_misses, 3);
+        assert_eq!(state.total_deadline_misses(), 3);
     }
 
     /// BudgetEnforcer records per-node timing correctly.
     #[test]
     fn test_budget_enforcer_per_node() {
-        let mut enforcer = BudgetEnforcer::new();
+        let enforcer = BudgetEnforcer::new();
         enforcer.set_budget("motor".to_string(), 100_u64.us());
 
         // Under budget
@@ -2396,7 +2614,7 @@ mod tests {
 
     #[test]
     fn test_timing_ring_total_count() {
-        let mut ring = TickTimingRing::new();
+        let ring = TickTimingRing::new();
         assert_eq!(ring.total_count(), 0);
         ring.record(100);
         ring.record(200);
@@ -2406,7 +2624,7 @@ mod tests {
 
     #[test]
     fn test_timing_stats_fields() {
-        let mut ring = TickTimingRing::new();
+        let ring = TickTimingRing::new();
         ring.record(10);
         ring.record(20);
         ring.record(30);
@@ -2421,7 +2639,7 @@ mod tests {
 
     #[test]
     fn test_node_timing_is_chronic() {
-        let mut state = NodeTimingState::new(Some(1_u64.ms()));
+        let state = NodeTimingState::new(Some(1_u64.ms()));
         assert!(!state.is_chronic());
         state.record_miss(100);
         state.record_miss(200);
@@ -2432,7 +2650,7 @@ mod tests {
 
     #[test]
     fn test_budget_enforcer_node_stats() {
-        let mut enforcer = BudgetEnforcer::new();
+        let enforcer = BudgetEnforcer::new();
         // No data yet
         assert!(enforcer.node_stats("unknown").is_none());
 
@@ -3052,7 +3270,7 @@ mod tests {
     /// Verifies HashMap scaling and per-node isolation.
     #[test]
     fn test_budget_enforcer_20_nodes() {
-        let mut enforcer = BudgetEnforcer::new();
+        let enforcer = BudgetEnforcer::new();
 
         for i in 0..20 {
             enforcer.set_budget(
@@ -3339,7 +3557,7 @@ mod tests {
     /// BudgetEnforcer with zero budget: any non-zero tick triggers a violation.
     #[test]
     fn test_budget_enforcer_zero_budget() {
-        let mut enforcer = BudgetEnforcer::new();
+        let enforcer = BudgetEnforcer::new();
         enforcer.set_budget("zero_node".to_string(), Duration::ZERO);
 
         // A zero-duration tick should not trigger (0 is not > 0)
@@ -3450,7 +3668,7 @@ mod tests {
     /// Verifies ring buffer wrapping (capacity=1024) and correct stats after wrap.
     #[test]
     fn test_budget_enforcer_ring_buffer_stress() {
-        let mut enforcer = BudgetEnforcer::new();
+        let enforcer = BudgetEnforcer::new();
         enforcer.set_budget("stress_node".to_string(), 1_u64.ms());
 
         // Record 2000 ticks (wraps ring buffer which has capacity 1024)
@@ -3685,7 +3903,7 @@ mod tests {
     /// Timing ring stats with a single sample.
     #[test]
     fn test_timing_ring_single_sample() {
-        let mut ring = TickTimingRing::new();
+        let ring = TickTimingRing::new();
         ring.record(42);
         let stats = ring.stats();
         assert_eq!(stats.min_us, 42);
@@ -3710,42 +3928,42 @@ mod tests {
     /// NodeTimingState tracks worst_miss_us correctly across multiple misses.
     #[test]
     fn test_node_timing_worst_miss_tracking() {
-        let mut state = NodeTimingState::new(None);
+        let state = NodeTimingState::new(None);
 
         state.record_miss(100);
-        assert_eq!(state.worst_miss_us, 100);
+        assert_eq!(state.worst_miss_us(), 100);
 
         state.record_miss(500);
-        assert_eq!(state.worst_miss_us, 500);
+        assert_eq!(state.worst_miss_us(), 500);
 
         // A smaller miss does not overwrite the worst
         state.record_miss(200);
-        assert_eq!(state.worst_miss_us, 500);
+        assert_eq!(state.worst_miss_us(), 500);
 
-        assert_eq!(state.total_deadline_misses, 3);
+        assert_eq!(state.total_deadline_misses(), 3);
     }
 
     /// NodeTimingState with zero-duration budget: record_tick returns violation
     /// for any non-zero actual, tracks worst overrun correctly.
     #[test]
     fn test_node_timing_zero_budget_overrun_tracking() {
-        let mut state = NodeTimingState::new(Some(Duration::ZERO));
+        let state = NodeTimingState::new(Some(Duration::ZERO));
 
         // Zero tick vs zero budget: not a violation (0 is not > 0)
         assert!(state.record_tick(Duration::ZERO).is_none());
-        assert_eq!(state.overrun_count, 0);
+        assert_eq!(state.overrun_count(), 0);
 
         // 1us vs zero budget: violation
         let v = state.record_tick(1_u64.us());
         assert!(v.is_some());
-        assert_eq!(state.overrun_count, 1);
-        assert_eq!(state.worst_overrun_us, 1);
+        assert_eq!(state.overrun_count(), 1);
+        assert_eq!(state.worst_overrun_us(), 1);
 
         // 10us vs zero budget: bigger violation
         let v = state.record_tick(10_u64.us());
         assert!(v.is_some());
-        assert_eq!(state.overrun_count, 2);
-        assert_eq!(state.worst_overrun_us, 10);
+        assert_eq!(state.overrun_count(), 2);
+        assert_eq!(state.worst_overrun_us(), 10);
     }
 
     /// Watchdog graduated check on a freshly-constructed (never fed) watchdog:
@@ -3856,15 +4074,15 @@ mod tests {
         monitor
             .watchdogs
             .write()
-            .insert("short_a".to_string(), Watchdog::new(1_u64.ms()));
+            .insert("short_a".to_string(), Arc::new(Watchdog::new(1_u64.ms())));
         monitor
             .watchdogs
             .write()
-            .insert("short_b".to_string(), Watchdog::new(1_u64.ms()));
+            .insert("short_b".to_string(), Arc::new(Watchdog::new(1_u64.ms())));
         monitor
             .watchdogs
             .write()
-            .insert("long_c".to_string(), Watchdog::new(1_u64.secs()));
+            .insert("long_c".to_string(), Arc::new(Watchdog::new(1_u64.secs())));
 
         // Let the short ones expire
         thread::sleep(5_u64.ms());
@@ -4055,5 +4273,521 @@ mod estop_trigger_tests {
             "already latched — not a rising edge, so no second broadcast"
         );
         assert!(monitor.is_emergency_stop(), "the latch still holds");
+    }
+}
+
+/// What `check_tick_budget` costs the RT tick loop.
+///
+/// It runs once per node per tick for every node with a `.tick_budget()`, which
+/// is what an RT node configures, and it takes a BLOCKING
+/// `budget_enforcer.lock()`. The profiler and blackbox calls beside it in
+/// `tick_node` use `try_lock` precisely to avoid that, but this one cannot:
+/// `check_budget` is what RESETS `consecutive_misses` on a clean tick, and that
+/// counter drives `trigger_emergency_stop`. Skipping a sample would leave it
+/// stale-high and could fire a spurious e-stop, so the sample must not be
+/// dropped — meaning the lock has to go, not be bypassed.
+///
+/// `#[ignore]`d: a stopwatch, not an assertion.
+///
+/// ```text
+/// cargo test -p horus_core --release budget_check_cost -- --ignored --nocapture
+/// ```
+/// Correctness guards for taking the budget check off its mutex.
+///
+/// The speedup is the easy half. These are the half that matters: the counters
+/// this moved into atomics are the ones `trigger_emergency_stop` and the
+/// degradation ladder read, so a lost or mis-ordered update here is a robot
+/// that either stops for no reason or fails to stop when it should.
+/// Guards for the two lock-free fast paths added to the RT tick loop:
+/// the degraded-node counter and the resolved watchdog handle.
+#[cfg(test)]
+mod tick_fast_path_correctness {
+    use super::*;
+
+    /// The `degraded_nodes` shortcut must not swallow a real recovery.
+    ///
+    /// `record_successful_tick` returns early without taking
+    /// `degradation_states` when the counter is zero. That is exact only if the
+    /// counter is refreshed on EVERY stage change — so drive a node all the way
+    /// down the ladder and back up, and require the recovery actions to still
+    /// come out. If a refresh were missed on the way down, the counter would
+    /// read zero, the early return would fire, and the node would stay degraded
+    /// for the life of the process with `recovery_ticks` silently dead.
+    #[test]
+    fn a_degraded_node_still_recovers_through_the_lock_free_fast_path() {
+        let mut m = SafetyMonitor::new(u64::MAX);
+        m.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 100,
+            kill_after: 200,
+            recovery_ticks: 3,
+        });
+
+        // Healthy: nothing degraded, so the fast path is what runs.
+        assert_eq!(m.degraded_nodes.load(Ordering::Acquire), 0);
+        assert_eq!(
+            m.record_successful_tick("servo"),
+            DegradationAction::None,
+            "a healthy node must be a no-op"
+        );
+
+        // Degrade it to RateReduced.
+        let _ = m.evaluate_degradation("servo", 1, Some(1000.0));
+        let action = m.evaluate_degradation("servo", 2, Some(1000.0));
+        assert!(
+            matches!(action, DegradationAction::ReduceRate { .. }),
+            "expected ReduceRate, got {action:?}"
+        );
+        assert_eq!(
+            m.degraded_nodes.load(Ordering::Acquire),
+            1,
+            "the counter must see the node leave Normal, or recovery is unreachable"
+        );
+
+        // Recover: recovery_ticks successes must produce RestoreRate.
+        assert_eq!(m.record_successful_tick("servo"), DegradationAction::None);
+        assert_eq!(m.record_successful_tick("servo"), DegradationAction::None);
+        let restored = m.record_successful_tick("servo");
+        assert!(
+            matches!(
+                restored,
+                DegradationAction::RestoreRate { ref node, original_rate_hz }
+                    if node == "servo" && original_rate_hz == 1000.0
+            ),
+            "expected RestoreRate(1000Hz), got {restored:?}"
+        );
+
+        // ...and the counter must fall back to zero, or a recovered robot pays
+        // for the mutex forever.
+        assert_eq!(
+            m.degraded_nodes.load(Ordering::Acquire),
+            0,
+            "the counter must clear when the last node returns to Normal"
+        );
+    }
+
+    /// One degraded node must not let another node's ticks skip the check.
+    #[test]
+    fn the_counter_is_process_wide_so_a_second_node_is_still_evaluated() {
+        let mut m = SafetyMonitor::new(u64::MAX);
+        m.set_degradation_policy(DegradationPolicy {
+            warn_after: 1,
+            reduce_after: 2,
+            isolate_after: 100,
+            kill_after: 200,
+            recovery_ticks: 2,
+        });
+
+        let _ = m.evaluate_degradation("a", 1, Some(1000.0));
+        let _ = m.evaluate_degradation("a", 2, Some(1000.0));
+        let _ = m.evaluate_degradation("b", 1, Some(500.0));
+        let _ = m.evaluate_degradation("b", 2, Some(500.0));
+        assert_eq!(m.degraded_nodes.load(Ordering::Acquire), 2);
+
+        // Recover only 'a'. 'b' must still be degraded and still recoverable.
+        assert_eq!(m.record_successful_tick("a"), DegradationAction::None);
+        assert!(matches!(
+            m.record_successful_tick("a"),
+            DegradationAction::RestoreRate { .. }
+        ));
+        assert_eq!(
+            m.degraded_nodes.load(Ordering::Acquire),
+            1,
+            "'b' is still degraded"
+        );
+
+        assert_eq!(m.record_successful_tick("b"), DegradationAction::None);
+        assert!(
+            matches!(
+                m.record_successful_tick("b"),
+                DegradationAction::RestoreRate { .. }
+            ),
+            "'b' must still recover after 'a' did"
+        );
+        assert_eq!(m.degraded_nodes.load(Ordering::Acquire), 0);
+    }
+
+    /// A watchdog fed through a resolved handle is the same watchdog the
+    /// main-thread expiry check reads.
+    ///
+    /// The RT loop now feeds `Arc<Watchdog>` resolved at thread start instead of
+    /// calling `WatchdogFeeder::feed(name)`. If the handle ever pointed at a
+    /// different object than the map holds — a clone of the value rather than a
+    /// shared `Arc` — feeding would appear to work and `check_watchdogs` would
+    /// expire the node anyway, e-stopping a perfectly healthy robot.
+    #[test]
+    fn a_watchdog_fed_through_its_handle_is_the_one_the_monitor_checks() {
+        let m = SafetyMonitor::new(u64::MAX);
+        m.add_critical_node("servo".to_string(), Duration::from_millis(50));
+        let feeder = m.watchdog_feeder();
+        let handle = feeder.handle("servo").expect("servo has a watchdog");
+
+        // Let it go stale, confirm the monitor sees that.
+        std::thread::sleep(Duration::from_millis(80));
+        let mut expired = Vec::new();
+        m.check_watchdogs(&mut expired);
+        assert_eq!(expired, vec!["servo".to_string()], "should have expired");
+
+        // Feed through the HANDLE, then re-check: the monitor must agree.
+        handle.feed();
+        let mut expired = Vec::new();
+        m.check_watchdogs(&mut expired);
+        assert!(
+            expired.is_empty(),
+            "feeding through the resolved handle did not reach the watchdog the \
+             monitor checks — got {expired:?}"
+        );
+
+        // An unregistered node has no handle, which is the documented no-op.
+        assert!(feeder.handle("not_registered").is_none());
+    }
+
+    /// `scale_watchdog` must still reach a watchdog held by `Arc`.
+    #[test]
+    fn scaling_still_widens_the_timeout_behind_the_arc() {
+        let m = SafetyMonitor::new(u64::MAX);
+        m.add_critical_node("servo".to_string(), Duration::from_millis(10));
+        assert_eq!(m.watchdog_timeout("servo"), Some(Duration::from_millis(10)));
+
+        m.scale_watchdog("servo", 3.0);
+        assert_eq!(
+            m.watchdog_timeout("servo"),
+            Some(Duration::from_millis(30)),
+            "scaling did not reach the shared watchdog"
+        );
+
+        // Never tightens below the configured value.
+        m.scale_watchdog("servo", 0.5);
+        assert_eq!(m.watchdog_timeout("servo"), Some(Duration::from_millis(10)));
+    }
+}
+
+#[cfg(test)]
+mod budget_atomics_correctness {
+    use super::*;
+
+    /// The `max_deadline_misses` ceiling must still fire when the miss is
+    /// recorded the way the RT loop records it.
+    ///
+    /// The RT executor no longer calls `record_deadline_miss`; it updates the
+    /// node's own atomics through a handle it resolved at thread start, then
+    /// calls `note_deadline_miss_recorded` for the process-wide half. If that
+    /// second call is ever dropped, the per-node counter still climbs and looks
+    /// perfectly healthy in every report — and the robot simply never stops.
+    /// Nothing else would notice.
+    #[test]
+    fn the_deadline_ceiling_still_fires_through_a_resolved_handle() {
+        let m = SafetyMonitor::new(3);
+        m.set_tick_budget("servo".to_string(), Duration::from_micros(800));
+        let state = m.tick_budget_handle("servo");
+
+        for i in 1..=2 {
+            state.record_miss(0);
+            m.note_deadline_miss_recorded("servo", state.consecutive_misses());
+            assert!(
+                !m.is_emergency_stop(),
+                "stopped after {i} consecutive misses, limit is 3"
+            );
+        }
+
+        state.record_miss(0);
+        m.note_deadline_miss_recorded("servo", state.consecutive_misses());
+        assert!(
+            m.is_emergency_stop(),
+            "3 consecutive misses reached the limit of 3 and did not stop"
+        );
+    }
+
+    /// A clean tick must clear the consecutive-miss run through the handle path.
+    ///
+    /// This is why the budget check could not simply be `try_lock`-and-skip
+    /// like the profiler call beside it: `record_tick` is what resets the
+    /// counter, so a dropped sample leaves it stale-high and the NEXT miss can
+    /// cross a ceiling it had no business crossing.
+    #[test]
+    fn a_met_deadline_clears_the_miss_run_and_prevents_a_spurious_stop() {
+        let m = SafetyMonitor::new(3);
+        m.set_tick_budget("servo".to_string(), Duration::from_micros(800));
+        let state = m.tick_budget_handle("servo");
+
+        for _ in 0..2 {
+            state.record_miss(0);
+            m.note_deadline_miss_recorded("servo", state.consecutive_misses());
+        }
+        assert_eq!(state.consecutive_misses(), 2);
+
+        // A tick well inside BUDGET does not end a run of missed DEADLINES.
+        // The two are independent: a node released late executes well inside
+        // its budget and still misses. Clearing here is what pinned such a
+        // node's run at 1 and kept the ladder, which starts at 3, from ever
+        // firing for exactly the node in the worst trouble.
+        m.check_tick_budget_of("servo", &state, Duration::from_micros(10))
+            .expect("10us is inside an 800us budget");
+        assert_eq!(
+            state.consecutive_misses(),
+            2,
+            "a tick inside budget is not evidence the deadline was met"
+        );
+
+        // Met deadline, the way both loops report one (rt_executor.rs:1462,
+        // scheduler/mod.rs:5715). This is the only thing that ends the run.
+        m.record_deadline_met("servo");
+        assert_eq!(
+            state.consecutive_misses(),
+            0,
+            "a met deadline must clear the run"
+        );
+
+        // So the next two misses must NOT reach the ceiling.
+        for _ in 0..2 {
+            state.record_miss(0);
+            m.note_deadline_miss_recorded("servo", state.consecutive_misses());
+        }
+        assert!(
+            !m.is_emergency_stop(),
+            "stopped on a 2-miss run after a clean tick had reset the counter"
+        );
+    }
+
+    /// Concurrent chains must not lose each other's updates.
+    ///
+    /// The mutex this replaced made that trivially true. The atomics have to
+    /// earn it: every chain shares one `BudgetEnforcer` and the global overrun
+    /// counter, even though each node's state is written by one thread only.
+    #[test]
+    fn concurrent_chains_lose_no_updates() {
+        const CHAINS: usize = 8;
+        const TICKS: u64 = 5_000;
+
+        let m = Arc::new(SafetyMonitor::new(u64::MAX));
+        let names: Vec<String> = (0..CHAINS).map(|c| format!("chain_{c}")).collect();
+        for n in &names {
+            // 1us budget, and every tick below is 10us, so EVERY tick overruns.
+            m.set_tick_budget(n.clone(), Duration::from_micros(1));
+        }
+
+        let threads: Vec<_> = names
+            .iter()
+            .cloned()
+            .map(|n| {
+                let m = Arc::clone(&m);
+                std::thread::spawn(move || {
+                    let state = m.tick_budget_handle(&n);
+                    for _ in 0..TICKS {
+                        let _ = m.check_tick_budget_of(&n, &state, Duration::from_micros(10));
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        // Per-node counts are exact.
+        for n in &names {
+            let state = m.tick_budget_handle(n);
+            assert_eq!(
+                state.overrun_count(),
+                TICKS,
+                "{n} lost overrun updates: {} of {TICKS}",
+                state.overrun_count()
+            );
+            assert_eq!(
+                state.ring.total_count(),
+                TICKS,
+                "{n} lost ring samples: {} of {TICKS}",
+                state.ring.total_count()
+            );
+        }
+
+        // And so is the shared total, which every chain increments.
+        assert_eq!(
+            m.budget_enforcer.get_overrun_count(),
+            TICKS * CHAINS as u64,
+            "the shared overrun counter lost updates across {CHAINS} chains"
+        );
+    }
+
+    /// A zero budget stays distinguishable from no budget.
+    ///
+    /// `budget_ns` flattens `Option<Duration>` into one atomic, and the first
+    /// version of that used `0` as the "absent" sentinel — which silently turned
+    /// a configured zero budget (every tick violates, and it is a tested
+    /// configuration) into no budget at all. The sentinel is `u64::MAX`.
+    #[test]
+    fn a_zero_budget_is_not_the_same_as_no_budget() {
+        let with_zero = NodeTimingState::new(Some(Duration::ZERO));
+        assert_eq!(with_zero.budget(), Some(Duration::ZERO));
+        assert!(
+            with_zero.record_tick(Duration::from_nanos(1)).is_some(),
+            "a 1ns tick must violate a zero budget"
+        );
+
+        let with_none = NodeTimingState::new(None);
+        assert_eq!(with_none.budget(), None);
+        assert!(
+            with_none.record_tick(Duration::from_secs(1)).is_none(),
+            "no budget means nothing can violate it"
+        );
+    }
+}
+
+#[cfg(test)]
+mod budget_hot_path_perf {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    const NODES: usize = 8;
+    const TICKS: usize = 100_000;
+
+    fn monitor_with(names: &[String]) -> Arc<SafetyMonitor> {
+        let m = Arc::new(SafetyMonitor::new(100));
+        for n in names {
+            m.set_tick_budget(n.clone(), Duration::from_micros(800));
+        }
+        m
+    }
+
+    /// The old shape: resolve the node by name inside the call.
+    fn sweep_by_name(m: &SafetyMonitor, names: &[String]) -> f64 {
+        let start = Instant::now();
+        for _ in 0..TICKS {
+            for n in names {
+                // Well inside budget: the steady-state, non-violating path.
+                let _ = m.check_tick_budget(black_box(n), Duration::from_micros(10));
+            }
+        }
+        start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+    }
+
+    /// What the RT loop does now: resolve once, then update atomics.
+    fn sweep_by_handle(m: &SafetyMonitor, names: &[String]) -> f64 {
+        let states: Vec<_> = names.iter().map(|n| m.tick_budget_handle(n)).collect();
+        let start = Instant::now();
+        for _ in 0..TICKS {
+            for (n, st) in names.iter().zip(&states) {
+                let _ =
+                    m.check_tick_budget_of(black_box(n), black_box(st), Duration::from_micros(10));
+            }
+        }
+        start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+    }
+
+    /// Run both arms with `chains - 1` other threads doing the same work, which
+    /// is what a multi-chain robot actually does: `start_pool` gives each chain
+    /// its own thread and every one of them checks every budgeted node's budget
+    /// every tick.
+    fn under_chains(m: &Arc<SafetyMonitor>, names: &[String], chains: usize) -> (f64, f64) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let others: Vec<_> = (1..chains)
+            .map(|c| {
+                let m = Arc::clone(m);
+                let stop = Arc::clone(&stop);
+                let mine: Vec<String> = (0..NODES).map(|i| format!("chain{c}_stage_{i}")).collect();
+                for n in &mine {
+                    m.set_tick_budget(n.clone(), Duration::from_micros(800));
+                }
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        for n in &mine {
+                            let _ = m.check_tick_budget(n, Duration::from_micros(10));
+                        }
+                    }
+                })
+            })
+            .collect();
+        let by_name = sweep_by_name(m, names);
+        let by_handle = sweep_by_handle(m, names);
+        stop.store(true, Ordering::Relaxed);
+        for h in others {
+            h.join().unwrap();
+        }
+        (by_name, by_handle)
+    }
+
+    /// The other two per-tick safety calls: the watchdog feed and the
+    /// degradation-recovery check.
+    ///
+    /// Both ran by NAME on every successful tick — the feed through an
+    /// `RwLock<HashMap<String, Watchdog>>`, the recovery check through a
+    /// process-global blocking `Mutex<HashMap<String, _>>` that a healthy robot
+    /// never needed to take at all.
+    #[test]
+    #[ignore = "stopwatch, not an assertion — run manually with --ignored"]
+    fn watchdog_and_recovery_cost() {
+        let names: Vec<String> = (0..NODES)
+            .map(|i| format!("perception_stage_{i}"))
+            .collect();
+        let m = Arc::new(SafetyMonitor::new(u64::MAX));
+        for n in &names {
+            m.add_critical_node(n.clone(), Duration::from_millis(50));
+        }
+        let feeder = m.watchdog_feeder();
+        let handles: Vec<_> = names.iter().map(|n| feeder.handle(n).unwrap()).collect();
+
+        let by_name = {
+            let start = Instant::now();
+            for _ in 0..TICKS {
+                for n in &names {
+                    feeder.feed(black_box(n));
+                }
+            }
+            start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+        };
+        let by_handle = {
+            let start = Instant::now();
+            for _ in 0..TICKS {
+                for h in &handles {
+                    black_box(h).feed();
+                }
+            }
+            start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+        };
+
+        // Recovery check on a HEALTHY robot: nothing degraded, which is the
+        // steady state and the case the counter short-circuits.
+        let recovery = {
+            let start = Instant::now();
+            for _ in 0..TICKS {
+                for n in &names {
+                    black_box(m.record_successful_tick(black_box(n)));
+                }
+            }
+            start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+        };
+
+        println!("\n  remaining per-tick safety calls, per node per tick:");
+        println!("    watchdog feed by name  : {by_name:8.1} ns");
+        println!(
+            "    watchdog feed by handle: {by_handle:8.1} ns  ({:.1}x)",
+            by_name / by_handle
+        );
+        println!("    recovery check (healthy, counter==0): {recovery:8.1} ns");
+        println!(
+            "    => saved per tick for {NODES} nodes: {:8.1} ns on the feed alone\n",
+            (by_name - by_handle) * NODES as f64
+        );
+    }
+
+    #[test]
+    #[ignore = "stopwatch, not an assertion — run manually with --ignored"]
+    fn budget_check_cost() {
+        let names: Vec<String> = (0..NODES)
+            .map(|i| format!("perception_stage_{i}"))
+            .collect();
+        let m = monitor_with(&names);
+
+        println!("\n  SafetyMonitor budget check, per node per tick:");
+        println!("    chains |    by name |  by handle |  speedup");
+        for chains in [1usize, 2, 4, 8] {
+            let (by_name, by_handle) = under_chains(&m, &names, chains);
+            println!(
+                "    {chains:6} | {by_name:8.1} ns | {by_handle:8.1} ns | {:6.1}x",
+                by_name / by_handle
+            );
+        }
+        println!();
     }
 }

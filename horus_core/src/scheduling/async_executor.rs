@@ -218,6 +218,7 @@ impl AsyncExecutor {
                             node_ref,
                             &*clock,
                             ctx_tick_period,
+                            None,
                         );
                         let tr = NodeRunner::run_tick(&mut node_ref.node);
                         super::primitives::clear_node_tick_context();
