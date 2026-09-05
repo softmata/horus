@@ -12499,10 +12499,6 @@ fn no_message_is_lost_without_being_counted() {
                      treat this as a real failure, not a skip."
                 );
             }
-            MigrationResult::Failed => {
-                eprintln!("skipping {mode:?}: not available in this build");
-                continue;
-            }
         }
         backends_checked += 1;
         trigger_shm_dispatch(&name);

@@ -24,8 +24,6 @@ pub(crate) enum MigrationResult {
     AlreadyInProgress,
     /// Migration lock acquisition failed (contention)
     LockContention,
-    /// Migration failed due to error
-    Failed,
 }
 
 // ============================================================================
@@ -34,10 +32,21 @@ pub(crate) enum MigrationResult {
 
 /// Backend migration coordinator.
 ///
-/// Handles safe backend transitions with:
+/// Handles backend transitions with:
 /// - CAS-based locking to prevent concurrent migrations
 /// - Epoch versioning for reader/writer coordination
-/// - Drain logic to ensure no in-flight message loss
+/// - A bounded settle before the switch
+///
+/// It does NOT guarantee that no message is lost across a switch, and this
+/// used to say it did ("Drain logic to ensure no in-flight message loss").
+/// Nothing in `TopicHeader` counts in-flight operations, so there is nothing
+/// to drain against — see [`Self::settle_before_switch`]. A real guarantee
+/// needs an in-flight counter incremented and decremented on the send and
+/// recv hot paths of a real-time framework, which is a deliberate design
+/// decision with a measurable cost. Until that is taken, the honest statement
+/// is that a topology change switches backends under a lock and a message in
+/// flight across the switch can be lost. The topic's own test suite already
+/// works around it, pre-warming backends "to avoid migration losses".
 pub(crate) struct BackendMigrator<'a> {
     header: &'a TopicHeader,
     /// Spin count before yielding during drain
@@ -90,24 +99,15 @@ impl<'a> BackendMigrator<'a> {
 
     /// Perform the actual migration (must hold lock).
     ///
-    /// Drains in-flight operations before switching the backend mode.
-    /// If the first drain attempt times out, retries once before failing.
+    /// Settles briefly, then switches the backend mode.
+    ///
+    /// This used to say it "drains in-flight operations before switching" and
+    /// "retries once before failing". Both halves guarded a return value that
+    /// no longer exists: `settle_before_switch` cannot observe an in-flight
+    /// operation and so cannot report one, which made the retry and the
+    /// `Failed` result unreachable code describing a guarantee nothing made.
     fn perform_migration(&self, new_mode: BackendMode) -> MigrationResult {
-        if !self.drain_in_flight() {
-            tracing::warn!(
-                "migration drain timed out on first attempt, retrying (target={:?})",
-                new_mode
-            );
-            // One retry: in-flight ops are <200ns, so a second attempt should succeed
-            // unless there is a genuine stall (e.g., thread suspended by debugger).
-            if !self.drain_in_flight() {
-                tracing::warn!(
-                    "migration drain timed out on retry, aborting migration (target={:?})",
-                    new_mode
-                );
-                return MigrationResult::Failed;
-            }
-        }
+        self.settle_before_switch();
 
         // IMPORTANT: Store backend_mode BEFORE incrementing epoch.
         // The epoch increment is the "publication fence" — observers that
@@ -133,13 +133,14 @@ impl<'a> BackendMigrator<'a> {
         MigrationResult::Success { new_epoch }
     }
 
-    /// Grace period for in-flight operations to complete before migration.
+    /// Bounded settle before the backend mode is switched.
     ///
-    /// Since send/recv are lock-free and complete in <200ns, a short spin
-    /// followed by yields gives in-progress operations time to finish.
-    /// Returns `false` if the drain timeout is exceeded, indicating that
-    /// migration should be retried rather than proceeding unsafely.
-    fn drain_in_flight(&self) -> bool {
+    /// NOT a drain, despite what this was called. Send and recv are lock-free
+    /// and complete in under 200 ns, so a bounded spin plus a few yields gives
+    /// an in-progress operation a good chance to finish — but "a good chance"
+    /// is the whole of it. Nothing here can confirm one finished, and nothing
+    /// here can fail.
+    fn settle_before_switch(&self) {
         // Give any in-flight send/recv time to finish. They complete in under
         // 200 ns, so a bounded spin plus a few yields is the whole mechanism.
         //
@@ -190,17 +191,16 @@ impl<'a> BackendMigrator<'a> {
             std::sync::atomic::fence(Ordering::SeqCst);
             std::hint::spin_loop();
             if start.elapsed() > budget {
-                return true;
+                return;
             }
         }
         // Yield to let preempted producer threads complete.
         for _ in 0..3 {
             std::thread::yield_now();
             if start.elapsed() > budget {
-                return true;
+                return;
             }
         }
-        true
     }
 
     /// Force a migration to the detected optimal backend.
@@ -220,6 +220,49 @@ impl<'a> BackendMigrator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The settle is bounded, and that bound is the only thing it guarantees.
+    ///
+    /// It cannot observe an in-flight operation — nothing in `TopicHeader`
+    /// counts them — so it can neither confirm a drain nor report a failure.
+    /// What it can do is not spin forever, and that part matters: removing the
+    /// budget made `send_blocking` block measurably longer under load (a test
+    /// asserting an immediate return went from failing 2 runs in 8 to 7 in 8).
+    #[test]
+    fn the_settle_is_bounded() {
+        let header = make_header(true);
+        let migrator = BackendMigrator::new(&header);
+
+        let started = std::time::Instant::now();
+        migrator.settle_before_switch();
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "the settle must stay bounded; it took {elapsed:?}"
+        );
+    }
+
+    /// A migration cannot report failure, so nothing may branch on one.
+    ///
+    /// `perform_migration` used to retry a drain and return
+    /// `MigrationResult::Failed` when it "timed out" — guarding a return value
+    /// `drain_in_flight` had stopped producing, so both the retry and the
+    /// result were unreachable code standing for a guarantee nothing made.
+    /// Callers wrote handlers for a case that could not occur.
+    #[test]
+    fn an_uncontended_migration_always_completes() {
+        let header = make_header(true);
+        header.publisher_count.store(1, Ordering::Release);
+        header.subscriber_count.store(2, Ordering::Release);
+        let migrator = BackendMigrator::new(&header);
+
+        // Single-threaded, so there is nothing to contend with.
+        match migrator.migrate_to_optimal() {
+            MigrationResult::Success { .. } | MigrationResult::NotNeeded => {}
+            other => panic!("an uncontended migration reported {other:?}"),
+        }
+    }
     use std::sync::atomic::Ordering;
 
     fn make_header(is_pod: bool) -> TopicHeader {
@@ -237,7 +280,6 @@ mod tests {
             MigrationResult::NotNeeded,
             MigrationResult::AlreadyInProgress,
             MigrationResult::LockContention,
-            MigrationResult::Failed,
         ];
         for (i, a) in results.iter().enumerate() {
             for (j, b) in results.iter().enumerate() {

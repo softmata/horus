@@ -1934,10 +1934,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         local.cached_mode = header.mode();
                         break;
                     }
-                    MigrationResult::Failed => {
-                        local.cached_mode = header.mode();
-                        break;
-                    }
                 }
             }
             local.cached_mode = header.mode();
