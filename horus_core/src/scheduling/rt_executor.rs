@@ -1794,19 +1794,35 @@ impl RtExecutor {
         // Reported as the thread's actual affinity, so a refused pin shows as
         // unpinned rather than as whatever was requested.
         let mut pinned_cpus: Vec<usize> = Vec::new();
+        let mut affinity_degraded: Option<String> = None;
         if !rt_cpus.is_empty() {
             match super::rt::set_thread_affinity(&rt_cpus) {
-                Ok(()) => {
-                    pinned_cpus = rt_cpus.clone();
+                // The installed mask, not `rt_cpus`. Assigning the request here
+                // is how a thread reports an isolation it does not have: the
+                // pin can be partially applied, and before `set_thread_affinity`
+                // returned the read-back there was no way to tell.
+                Ok(installed) => {
+                    pinned_cpus = installed;
                     if monitors.verbose {
-                        print_line(&format!("[RT-thread] Pinned to CPU(s) {:?}", rt_cpus));
+                        print_line(&format!("[RT-thread] Pinned to CPU(s) {:?}", pinned_cpus));
                     }
                 }
                 Err(e) => {
-                    print_line(&format!(
-                        "[RT-thread] Could not pin to CPU(s) {:?}: {} (continuing unpinned)",
-                        rt_cpus, e
-                    ));
+                    // Not just a console line. `require_rt()` refuses to arm on
+                    // recorded degradations, and a thread that asked for the
+                    // isolated cores and got the housekeeping ones is precisely
+                    // the "running non-RT while you believe otherwise" outcome
+                    // it exists to prevent — the old code printed
+                    // "continuing unpinned" and left every programmatic
+                    // consumer believing the pin had taken.
+                    let msg = format!(
+                        "could not pin to CPU(s) {:?}: {} (continuing on {:?})",
+                        rt_cpus,
+                        e,
+                        horus_sys::rt::current_affinity()
+                    );
+                    print_line(&format!("[RT-thread] {msg}"));
+                    affinity_degraded = Some(msg);
                 }
             }
         }
@@ -1893,6 +1909,8 @@ impl RtExecutor {
                 },
                 refusal,
                 cpus: pinned_cpus,
+                cpus_requested: rt_cpus.clone(),
+                affinity_refusal: affinity_degraded,
                 memory_locked: identity.memory_locked,
             });
         }

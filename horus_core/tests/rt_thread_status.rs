@@ -77,6 +77,8 @@ fn st(name: &str, requested: RtPolicy, granted: RtPolicy, locked: bool) -> RtThr
             None
         },
         cpus: vec![],
+        cpus_requested: vec![],
+        affinity_refusal: None,
         memory_locked: locked,
     }
 }
@@ -91,6 +93,61 @@ fn a_refused_thread_is_reported_as_degraded() {
     assert_eq!(degraded.len(), 1, "exactly one thread was refused");
     assert_eq!(degraded[0].thread_name, "refused");
     assert!(!report.all_realtime());
+}
+
+/// A thread can hold SCHED_FIFO and still be running on the wrong CPUs.
+///
+/// The two failures are independent, and the affinity one used to be
+/// unobservable: `set_thread_affinity` returned `Ok(())` and the executor
+/// recorded its own *request* as the placement, so a pin that the kernel
+/// declined, partially applied, or silently ignored all published as success.
+#[test]
+fn a_thread_that_did_not_get_its_cpus_is_affinity_degraded() {
+    let mut s = st("pinned_elsewhere", RtPolicy::Fifo, RtPolicy::Fifo, true);
+    s.cpus_requested = vec![6, 7];
+    s.cpus = vec![0, 1, 2, 3, 4, 5];
+    s.affinity_refusal = Some("CPU(s) [6, 7] are not present on this machine".to_string());
+
+    assert!(
+        s.is_affinity_degraded(),
+        "asked for the isolated cores, running on the housekeeping ones"
+    );
+    assert!(
+        !s.is_degraded(),
+        "the scheduling policy was granted — conflating the two would hide one of them"
+    );
+    assert!(
+        s.summary().contains("[6, 7]"),
+        "the summary must name the CPUs that were asked for: {}",
+        s.summary()
+    );
+}
+
+#[test]
+fn a_thread_that_got_exactly_the_cpus_it_asked_for_is_not_affinity_degraded() {
+    let mut s = st("pinned", RtPolicy::Fifo, RtPolicy::Fifo, true);
+    s.cpus_requested = vec![6, 7];
+    s.cpus = vec![6, 7];
+    assert!(!s.is_affinity_degraded());
+
+    // And a thread that asked for nothing is not degraded by being unpinned.
+    let unpinned = st("unpinned", RtPolicy::Fifo, RtPolicy::Fifo, true);
+    assert!(unpinned.cpus_requested.is_empty());
+    assert!(!unpinned.is_affinity_degraded());
+}
+
+/// Half a pin is not a pin.
+///
+/// `sched_setaffinity` intersects the requested mask with what a cpuset cgroup
+/// permits and reports success, so this is the shape a container produces: the
+/// thread lands on a subset of the cores it was placed on and every consumer
+/// that echoed the request believed it was isolated.
+#[test]
+fn a_partially_applied_pin_is_affinity_degraded() {
+    let mut s = st("half_pinned", RtPolicy::Fifo, RtPolicy::Fifo, true);
+    s.cpus_requested = vec![2, 3];
+    s.cpus = vec![2];
+    assert!(s.is_affinity_degraded());
 }
 
 #[test]

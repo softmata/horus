@@ -206,50 +206,135 @@ pub fn timer_slack_ns() -> Option<u64> {
     }
 }
 
-/// Pin the current thread to a specific CPU core.
+/// Pin the current thread to one CPU, addressed by kernel CPU id.
 ///
-/// Uses the `core_affinity` crate which is cross-platform.
+/// "Id", not "index into a list of the CPUs this process may use" — see
+/// [`pin_to_cores`] for why that distinction is the whole point of this
+/// function and what it used to get wrong.
 pub fn pin_to_core(core_id: usize) -> anyhow::Result<()> {
-    let core_ids =
-        core_affinity::get_core_ids().ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
-
-    if core_id >= core_ids.len() {
+    let installed = pin_to_cores(&[core_id])?;
+    if installed != [core_id] {
         anyhow::bail!(
-            "Core {} does not exist (max: {})",
+            "asked to pin to CPU {} but the thread ended up on {:?}",
             core_id,
-            core_ids.len() - 1
+            installed
         );
     }
-
-    if core_affinity::set_for_current(core_ids[core_id]) {
-        Ok(())
-    } else {
-        anyhow::bail!("Failed to pin to core {}", core_id)
-    }
+    Ok(())
 }
 
-/// Pin the current thread to any of the specified cores (first success wins).
-pub fn pin_to_cores(cores: &[usize]) -> anyhow::Result<()> {
+/// Pin the current thread to **all** of `cores`, addressed by kernel CPU id,
+/// and return the mask the kernel actually installed.
+///
+/// # Two things this deliberately does not do
+///
+/// **It does not index a list.** It used to: it fetched the CPUs the process
+/// was already allowed to run on and used the caller's number as a *position*
+/// in that vector. That is correct only when the inherited mask is exactly
+/// `0..N-1`, which is true on a developer laptop and false on the tuned host an
+/// RT deployment runs on. Boot a machine with `isolcpus=6,7` and init's mask is
+/// `{0..5}`: a request for CPU 6 evaluated `6 < 6`, fell through, and the
+/// thread ran unpinned across the housekeeping cores — competing with every
+/// other process on the box, while the log said only "continuing unpinned" and
+/// the isolated cores the operator rebooted for went unused. `sched_setaffinity`
+/// takes ids and succeeds on an isolated CPU, because `isolcpus` changes the
+/// mask init hands out rather than granting or withholding a permission.
+///
+/// **It does not stop at the first core that works.** It used to do that too,
+/// so `.cores([2, 3])` pinned to CPU 2 alone and the second core was silently
+/// dropped. A multi-core request is a request for a mask.
+///
+/// # Return value
+///
+/// The read-back affinity, not the request. `sched_setaffinity` intersects the
+/// mask with whatever a cpuset cgroup permits and reports success on a partial
+/// application, so a caller that logs its own request as the outcome can
+/// announce an isolation it did not get. Compare the return value against what
+/// you asked for.
+///
+/// An empty `cores` is "no affinity requested" and returns an empty mask
+/// without touching the thread.
+pub fn pin_to_cores(cores: &[usize]) -> anyhow::Result<Vec<usize>> {
     if cores.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
-    let core_ids =
-        core_affinity::get_core_ids().ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
+    #[cfg(target_os = "linux")]
+    {
+        linux::set_affinity(cores)
+    }
 
-    for &core_idx in cores {
-        if core_idx < core_ids.len() && core_affinity::set_for_current(core_ids[core_idx]) {
-            return Ok(());
+    // No `sched_setaffinity` outside Linux. `core_affinity` addresses cores by
+    // the id carried in `CoreId`, which is the processor number on both macOS
+    // (where it is advisory — Darwin offers affinity *tags*, not placement) and
+    // Windows (`SetThreadAffinityMask`). Pin to each requested core in turn and
+    // report the ones that took; there is no mask-setting call to make this one
+    // operation.
+    #[cfg(not(target_os = "linux"))]
+    {
+        let core_ids = core_affinity::get_core_ids()
+            .ok_or_else(|| anyhow::anyhow!("Failed to get core IDs"))?;
+        let mut installed = Vec::new();
+        for &want in cores {
+            if let Some(id) = core_ids.iter().find(|c| c.id == want) {
+                if core_affinity::set_for_current(*id) {
+                    installed.push(want);
+                }
+            }
         }
+        if installed.is_empty() {
+            anyhow::bail!("Failed to pin to any of cores {:?}", cores);
+        }
+        Ok(installed)
     }
-
-    anyhow::bail!("Failed to pin to any of cores {:?}", cores)
 }
 
-/// Get the list of available CPU core IDs.
+/// The CPUs the calling thread may currently run on, as kernel CPU ids.
+///
+/// This is what a pin should be verified against; see [`pin_to_cores`].
+pub fn current_affinity() -> Vec<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::current_affinity().unwrap_or_else(|_| available_cores())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        available_cores()
+    }
+}
+
+/// The CPU ids the kernel has enumerated, whether or not this process may use
+/// them.
+///
+/// On Linux this is `/sys/devices/system/cpu/present`, which unlike
+/// [`available_cores`] still lists a CPU that `isolcpus` has taken out of the
+/// inherited mask — so it is the right set to validate a pin *request* against.
+/// Empty when it cannot be determined.
+pub fn present_cpus() -> Vec<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::present_cpus()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        available_cores()
+    }
+}
+
+/// The CPU **ids** this process may currently run on.
+///
+/// Ids, not positions. This returned `0..n` — a dense count of the allowed
+/// CPUs presented as if those were their numbers — which on an `isolcpus=6,7`
+/// host reported `[0, 1, 2, 3, 4, 5]` for a machine whose RT cores are 6 and 7,
+/// and handed every caller a number that meant nothing to `taskset`, to
+/// `/proc/stat`, or to the operator.
 pub fn available_cores() -> Vec<usize> {
     core_affinity::get_core_ids()
-        .map(|ids| (0..ids.len()).collect())
+        .map(|ids| {
+            let mut cpus: Vec<usize> = ids.iter().map(|c| c.id).collect();
+            cpus.sort_unstable();
+            cpus
+        })
         .unwrap_or_else(|| vec![0])
 }
 
@@ -455,6 +540,37 @@ mod tests {
     fn test_available_cores() {
         let cores = available_cores();
         assert!(!cores.is_empty());
+        assert!(
+            cores.windows(2).all(|w| w[0] < w[1]),
+            "available_cores must be sorted and free of duplicates: {cores:?}"
+        );
+    }
+
+    /// `available_cores` reports CPU **ids**, and it used to report `0..n`.
+    ///
+    /// On a host with isolated cores that is not a cosmetic difference: it
+    /// answered `[0, 1, 2, 3, 4, 5]` for a machine whose RT cores are 6 and 7,
+    /// and every consumer — `taskset`, `/proc/stat`, the operator — reads those
+    /// numbers as CPU ids.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn available_cores_reports_ids_not_a_dense_count() {
+        std::thread::spawn(|| {
+            let all = current_affinity();
+            if all.len() < 4 {
+                eprintln!("skipped: needs >= 4 usable CPUs, have {all:?}");
+                return;
+            }
+            let upper: Vec<usize> = all[all.len() / 2..].to_vec();
+            pin_to_cores(&upper).expect("restricting to the upper half");
+            assert_eq!(
+                available_cores(),
+                upper,
+                "available_cores must name the CPUs this thread may use, not count them"
+            );
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
@@ -609,8 +725,18 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn test_pin_to_core_zero_succeeds() {
-        // Core 0 should always exist
-        pin_to_core(0).unwrap();
+        // Not literally core 0: a cpuset cgroup can exclude it, and then
+        // "core 0 should always exist" is true about the machine and false
+        // about this process. Pin to a CPU this thread is demonstrably allowed
+        // to use, on a thread of its own so the rest of the binary keeps its
+        // affinity.
+        std::thread::spawn(|| {
+            let usable = current_affinity();
+            let cpu = *usable.first().expect("a thread runs on at least one CPU");
+            pin_to_core(cpu).unwrap();
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
@@ -621,9 +747,84 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn test_pin_to_cores_first_valid_wins() {
-        // First core (99999) doesn't exist, second (0) does
-        pin_to_cores(&[99999, 0]).unwrap();
+    fn pinning_to_a_missing_cpu_is_an_error_not_a_silent_fallback() {
+        // This asserted the opposite: that `pin_to_cores(&[99999, 0])`
+        // succeeded, because the implementation walked the list and stopped at
+        // the first core that worked. That is the behaviour that made
+        // `.cores([2, 3])` pin to CPU 2 alone, and it turned a typo'd CPU
+        // number into a silent placement on some other core.
+        let err = pin_to_cores(&[99999, 0]).unwrap_err().to_string();
+        assert!(
+            err.contains("99999"),
+            "the error must name the CPU that does not exist, got: {err}"
+        );
+    }
+
+    /// The isolcpus shape, reproduced without isolcpus and without privilege.
+    ///
+    /// Shrink this thread's own affinity mask so the CPU ids it may use no
+    /// longer start at zero, then pin to one of them **by id**. Under the old
+    /// implementation — which used the caller's number as a position in the
+    /// list of allowed CPUs — the request evaluated `id < len` against a
+    /// shortened list, fell through, and the pin silently did not happen. That
+    /// is exactly what `isolcpus=6,7` did to a request for CPU 6.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinning_addresses_a_cpu_id_not_a_position_in_the_allowed_set() {
+        std::thread::spawn(|| {
+            let all = current_affinity();
+            if all.len() < 4 {
+                eprintln!("skipped: needs >= 4 usable CPUs, have {all:?}");
+                return;
+            }
+            // The upper half: ids that no longer begin at 0.
+            let upper: Vec<usize> = all[all.len() / 2..].to_vec();
+            let installed = pin_to_cores(&upper).expect("restricting to the upper half");
+            assert_eq!(installed, upper, "the restriction itself must take");
+
+            // `target`'s POSITION in the shrunken mask is `upper.len() - 1`,
+            // which is strictly less than its ID. Indexing by position would
+            // therefore refuse this pin (or take the wrong CPU).
+            let target = *upper.last().unwrap();
+            assert!(
+                target >= upper.len(),
+                "the test needs a CPU whose id exceeds its position; got id {target}                  in a {}-CPU mask",
+                upper.len()
+            );
+
+            let installed = pin_to_cores(&[target]).expect("pinning to a CPU id in the mask");
+            assert_eq!(installed, vec![target]);
+            assert_eq!(
+                current_affinity(),
+                vec![target],
+                "the kernel's read-back must agree with what pin_to_cores reported"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// A multi-core request is a request for a mask, not for whichever core
+    /// happens to work first.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pinning_to_several_cpus_installs_all_of_them() {
+        std::thread::spawn(|| {
+            let all = current_affinity();
+            if all.len() < 2 {
+                eprintln!("skipped: needs >= 2 usable CPUs, have {all:?}");
+                return;
+            }
+            let want = vec![all[0], all[1]];
+            let installed = pin_to_cores(&want).expect("pinning to two CPUs");
+            assert_eq!(
+                installed, want,
+                "both CPUs must be in the mask; stopping at the first one that                  works is what silently halved `.cores([a, b])`"
+            );
+            assert_eq!(current_affinity(), want);
+        })
+        .join()
+        .unwrap();
     }
 
     // ── prefault_stack intent test ──────────────────────────────────

@@ -76,28 +76,45 @@ impl From<RuntimeError> for crate::error::HorusError {
 // CPU Core Affinity
 // ============================================================================
 
-/// Pin the current thread to specific CPU cores
+/// Pin the current thread to **all** of `cores`, addressed by kernel CPU id,
+/// and return the affinity mask the kernel actually installed.
+///
+/// Delegates to [`horus_sys::rt::pin_to_cores`], which carries the full account
+/// of the two bugs this signature exists to make unrepeatable: the CPU number
+/// used to be an index into the process's inherited affinity mask rather than a
+/// kernel CPU id (so pinning to an `isolcpus` core silently did nothing at all),
+/// and a multi-core request stopped at the first core that worked.
+///
+/// # Why it returns the mask
+///
+/// So the caller reports the outcome instead of its request. `sched_setaffinity`
+/// intersects the mask with whatever a cpuset cgroup allows and still returns
+/// success, so `Ok(())` never meant "the thread is on the CPUs you named".
+/// Callers that log a placement, or record a degradation when RT did not fully
+/// apply, need the difference.
 #[doc(hidden)]
-pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<()> {
+pub fn set_thread_affinity(cores: &[usize]) -> RuntimeResult<Vec<usize>> {
     if cores.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
-    let core_ids = core_affinity::get_core_ids()
-        .ok_or_else(|| RuntimeError::AffinityError("Failed to get core IDs".to_string()))?;
+    let installed = horus_sys::rt::pin_to_cores(cores)
+        .map_err(|e| RuntimeError::AffinityError(e.to_string()))?;
 
-    // Find the requested cores
-    for &core_idx in cores {
-        if core_idx < core_ids.len() && core_affinity::set_for_current(core_ids[core_idx]) {
-            crate::terminal::print_line(&format!("[RT] Pinned thread to core {}", core_idx));
-            return Ok(());
-        }
+    let mut wanted: Vec<usize> = cores.to_vec();
+    wanted.sort_unstable();
+    wanted.dedup();
+    if installed != wanted {
+        return Err(RuntimeError::AffinityError(format!(
+            "requested CPU(s) {:?} but the thread is on {:?} — the kernel intersected the \
+             request with what this process is allowed (cpuset cgroup, or a CPU that is \
+             present but offline)",
+            wanted, installed
+        )));
     }
 
-    Err(RuntimeError::AffinityError(format!(
-        "Failed to pin to cores {:?}",
-        cores
-    )))
+    crate::terminal::print_line(&format!("[RT] Pinned thread to CPU(s) {:?}", installed));
+    Ok(installed)
 }
 
 // ============================================================================

@@ -409,6 +409,152 @@ pub(super) fn can_set_rt_priority() -> bool {
     }
 }
 
+// ── CPU affinity, addressed by kernel CPU id ────────────────────────────
+//
+// The distinction this section exists to enforce: a CPU *id* is what the kernel
+// calls a processor, and it is what `isolcpus=6,7`, `taskset -c 6`, `/proc/stat`
+// and every operator instruction mean. A CPU *index* is a position in some
+// vector this process happens to hold. They coincide on an untuned machine and
+// diverge on exactly the tuned host an RT deployment runs on: with
+// `isolcpus=6,7` the process inherits an affinity mask of {0..5}, so a list of
+// "the CPUs I may run on" has six entries and position 6 does not exist. Code
+// that pins "to core 6" by indexing that list therefore silently declines to
+// pin at all, and the isolated cores the operator rebooted for are never used.
+//
+// `sched_setaffinity` takes ids, and — this is the part that makes the whole
+// approach work — it SUCCEEDS on an isolated CPU. `isolcpus` changes the mask
+// init hands out; it is not a permission. So a request for CPU 6 on an
+// `isolcpus=6,7` host is granted, while the same request expressed as an index
+// into the inherited mask is refused.
+
+/// The CPU ids the kernel has enumerated, from `/sys/devices/system/cpu/present`.
+///
+/// `present` rather than `online` or the inherited affinity mask: it is the set
+/// that validates a *request*. An offline CPU can come back and an isolated CPU
+/// is deliberately absent from the inherited mask, so both are legitimate pin
+/// targets; a CPU that is not present never will be, and a request naming one
+/// is a configuration error worth reporting.
+///
+/// Empty when the file cannot be read (a container with a trimmed `/sys`, a
+/// non-standard kernel). Callers treat empty as "cannot validate" and let the
+/// kernel arbitrate rather than refusing the pin.
+pub(super) fn present_cpus() -> Vec<usize> {
+    match std::fs::read_to_string("/sys/devices/system/cpu/present") {
+        Ok(content) => super::parse_cpu_list(content.trim()),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The CPUs the calling thread may currently run on, as kernel CPU ids.
+///
+/// This is the read-back that makes a pin verifiable. `sched_setaffinity`
+/// intersects the requested mask with what a cpuset cgroup allows and reports
+/// success on a partial application, so "the call returned 0" and "the thread
+/// is on the CPUs I asked for" are different statements.
+pub(super) fn current_affinity() -> anyhow::Result<Vec<usize>> {
+    // SAFETY: `set` is a stack-allocated `cpu_set_t` for which all-zero is a
+    // valid bit pattern, and `sched_getaffinity` only writes into it. `pid == 0`
+    // addresses the calling thread.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    let rc =
+        unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
+    if rc != 0 {
+        anyhow::bail!(
+            "sched_getaffinity failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    let mut cpus = Vec::new();
+    for cpu in 0..libc::CPU_SETSIZE as usize {
+        // SAFETY: `cpu` is below `CPU_SETSIZE`, which is the bound the macro
+        // indexes within, and `set` was filled by the call above.
+        if unsafe { libc::CPU_ISSET(cpu, &set) } {
+            cpus.push(cpu);
+        }
+    }
+    Ok(cpus)
+}
+
+/// Pin the calling thread to exactly `cpus`, addressed by kernel CPU id.
+///
+/// Returns the mask the kernel actually installed, read back with
+/// [`current_affinity`]. The return value is the point: a caller that reports
+/// "pinned to {2,3}" because the call returned `Ok` is reporting its request,
+/// not the outcome, and that is how a thread ends up running everywhere while
+/// the log says it is isolated.
+///
+/// Errors when the request is empty, names a CPU outside `cpu_set_t`, names a
+/// CPU that is not present, or when the kernel refuses the call outright.
+pub(super) fn set_affinity(cpus: &[usize]) -> anyhow::Result<Vec<usize>> {
+    if cpus.is_empty() {
+        anyhow::bail!("refusing to install an empty CPU affinity mask");
+    }
+
+    let setsize = libc::CPU_SETSIZE as usize;
+    if let Some(&too_big) = cpus.iter().find(|&&c| c >= setsize) {
+        anyhow::bail!(
+            "CPU {} does not fit in a cpu_set_t (CPU_SETSIZE = {})",
+            too_big,
+            setsize
+        );
+    }
+
+    // Validate against `present` when it is readable. Skipping the check when
+    // the file is missing is deliberate: refusing a pin because `/sys` was not
+    // mounted would break containers that can pin perfectly well.
+    let present = present_cpus();
+    if !present.is_empty() {
+        let missing: Vec<usize> = cpus
+            .iter()
+            .copied()
+            .filter(|c| !present.contains(c))
+            .collect();
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "CPU(s) {:?} are not present on this machine (present: {:?})",
+                missing,
+                present
+            );
+        }
+    }
+
+    // SAFETY: `set` is a stack-allocated `cpu_set_t` for which all-zero is a
+    // valid bit pattern. Every `cpu` was bounds-checked against `CPU_SETSIZE`
+    // above, which is the range `CPU_SET` indexes within. `pid == 0` addresses
+    // the calling thread and `sched_setaffinity` only reads through the pointer.
+    let rc = unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        for &cpu in cpus {
+            libc::CPU_SET(cpu, &mut set);
+        }
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set)
+    };
+
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EPERM) => anyhow::bail!(
+                "sched_setaffinity({:?}) refused: {} — the process lacks permission to \
+                 move this thread (a cpuset cgroup or a seccomp filter, not isolcpus: \
+                 isolcpus changes the inherited mask, it is not a permission)",
+                cpus,
+                err
+            ),
+            Some(libc::EINVAL) => anyhow::bail!(
+                "sched_setaffinity({:?}) rejected the mask: {} — none of the requested \
+                 CPUs is available to this process (check the cpuset cgroup)",
+                cpus,
+                err
+            ),
+            _ => anyhow::bail!("sched_setaffinity({:?}) failed: {}", cpus, err),
+        }
+    }
+
+    current_affinity()
+}
+
 /// Detect isolated CPUs (isolcpus kernel parameter).
 pub(super) fn detect_isolated_cpus() -> Vec<usize> {
     match std::fs::read_to_string("/sys/devices/system/cpu/isolated") {
