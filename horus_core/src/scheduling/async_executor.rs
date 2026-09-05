@@ -182,7 +182,9 @@ impl AsyncExecutor {
                         ctx.start_tick();
                     }
                     if let Some(ref mut recorder) = nodes[i].recorder {
-                        recorder.begin_tick(0);
+                        // No global tick counter on this thread; a literal 0 made `interval`
+                        // inert and stamped every snapshot with tick 0.
+                        recorder.begin_next_tick();
                     }
                 }
 

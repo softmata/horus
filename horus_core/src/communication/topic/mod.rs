@@ -120,6 +120,10 @@ pub(crate) mod local_state;
 pub mod metrics;
 pub(crate) mod migration;
 pub mod send_budget;
+
+/// Full scans of the topic registry, process-wide. See
+/// `TopicNodeRegistry::scan_count`.
+static REGISTRY_SCAN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Authoritative byte layout of a topic's SHM region, for out-of-crate readers
 /// and writers (`horus_net`). Offsets are `offset_of!`-asserted against
 /// `TopicHeader`, so drift is a build failure.
@@ -364,6 +368,20 @@ impl TopicNodeRegistry {
         }
     }
 
+    /// Full scans of the topic registry since process start.
+    ///
+    /// The test seam for the recorder's per-tick registry walk: each scan takes
+    /// the process-global read lock and walks every topic in the process,
+    /// allocating a `Vec` and two `String`s per match — once per recording node
+    /// per tick on the input side, and again on the output side. None of that
+    /// changes between ticks, which is what [`version`](Self::version) is for.
+    ///
+    /// Monotonic; a monitor samples it as a delta.
+    #[doc(hidden)]
+    pub fn scan_count() -> u64 {
+        REGISTRY_SCAN_COUNT.load(Ordering::Relaxed)
+    }
+
     /// Current topology version. Bumped on every register/unregister.
     /// The scheduler compares this to its last-built version to know
     /// whether the dependency graph needs rebuilding.
@@ -426,6 +444,7 @@ impl TopicNodeRegistry {
 
     /// Get all topics published by a given node.
     pub fn publishers_for_node(&self, node_name: &str) -> Vec<crate::core::TopicMetadata> {
+        REGISTRY_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
         let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let mut result = Vec::new();
         for (topic_name, entries) in topics.iter() {
@@ -445,6 +464,7 @@ impl TopicNodeRegistry {
 
     /// Get all topics subscribed to by a given node.
     pub fn subscribers_for_node(&self, node_name: &str) -> Vec<crate::core::TopicMetadata> {
+        REGISTRY_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
         let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let mut result = Vec::new();
         for (topic_name, entries) in topics.iter() {
@@ -542,8 +562,8 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 #[doc(hidden)]
 pub use header::{
     read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total,
-    read_topic_sequence, set_topic_verbose, TopicHeaderInfo, TopicKind, TopicSlotRead,
-    TOPIC_VERBOSE_OFFSET,
+    read_topic_sequence, set_topic_verbose, shm_map_count, TopicHeaderInfo, TopicKind, TopicReader,
+    TopicSlotRead, TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;

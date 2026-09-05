@@ -1340,28 +1340,15 @@ impl RtExecutor {
 
         // Begin recording tick (before execution)
         if let Some(ref mut recorder) = node.recorder {
-            recorder.begin_tick(0); // RT thread has no global tick counter
+            // The RT thread has no global tick counter, and passing a literal
+            // 0 here made `interval` inert — 0 is a multiple of every N, so
+            // "record every 10 ticks" recorded every one — and stamped every
+            // snapshot with tick 0.
+            recorder.begin_next_tick();
 
-            // Capture this node's inputs (subscriber topics) into the snapshot,
-            // mirroring the single-threaded scheduler path. Without this, RT-node
-            // recordings held only tick/timestamp metadata with empty payloads, so
-            // `horus record export` produced metadata-only output. Gated on an
-            // active recording tick, so there is zero cost when not recording.
-            if recorder.is_active_tick() {
-                let subscribers =
-                    crate::communication::topic_node_registry().subscribers_for_node(&node.name);
-                if !subscribers.is_empty() {
-                    let topics_dir = crate::memory::platform::shm_topics_dir();
-                    for sub in &subscribers {
-                        let topic_path = topics_dir.join(&sub.topic_name);
-                        if let Some(slot_read) =
-                            crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                        {
-                            recorder.record_input(&sub.topic_name, slot_read.payload);
-                        }
-                    }
-                }
-            }
+            // Capture this node's inputs. The registry walk and the topic
+            // mappings are cached across ticks; see `NodeRecorder::capture_inputs`.
+            recorder.capture_inputs(&node.name);
         }
 
         // Start tick timing in context (required for record_tick() to increment counter)

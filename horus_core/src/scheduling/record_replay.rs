@@ -179,7 +179,7 @@ impl From<super::config::RecordingConfigYaml> for RecordingConfig {
             record_timing: yaml.record_timing,
             max_size_bytes: (yaml.max_size_mb as u64).saturating_mul(1024 * 1024),
             compress: yaml.compress,
-            max_snapshots: 0, // Configurable via API, not yet exposed in YAML
+            max_snapshots: yaml.max_snapshots,
         }
     }
 }
@@ -635,6 +635,62 @@ impl Recording for SchedulerRecording {
 }
 
 /// Active recorder for a node
+/// The topics a recorder taps, and the mappings it holds open for them.
+///
+/// # Why this exists
+///
+/// The capture path did, per recording node per tick: one read-lock on the
+/// process-global topic registry plus a full O(topics-in-process) walk that
+/// allocated a `Vec` and two `String`s per match — and then, for each topic it
+/// found, an `open` + `fstat` + `mmap` + `munmap` + `close`. Five syscalls and
+/// at least two minor page faults per topic, because unmapping tears down the
+/// PTEs and the header and payload pages fault back in on the next tick. Twice
+/// over, once for inputs and once for outputs.
+///
+/// None of it changes between ticks. The registry carries a version counter, so
+/// the lists are rebuilt only when the graph's topology actually changes, and
+/// the mappings are held across ticks by [`TopicReader`].
+struct TopicTaps {
+    /// `topic_node_registry().version()` these lists were built at.
+    /// `u64::MAX` means "never built", which is distinct from version 0.
+    registry_version: u64,
+    inputs: Vec<(String, crate::communication::TopicReader)>,
+    outputs: Vec<(String, crate::communication::TopicReader)>,
+}
+
+impl TopicTaps {
+    fn new() -> Self {
+        Self {
+            registry_version: u64::MAX,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+        }
+    }
+
+    /// Rebuild one side's list, keeping the readers already open.
+    ///
+    /// Mark-and-sweep, deliberately not clear-and-refill: one topic appearing
+    /// must not unmap every topic already mapped, which is the entire point of
+    /// holding them.
+    fn rebuild(
+        taps: &mut Vec<(String, crate::communication::TopicReader)>,
+        topics: &[crate::core::TopicMetadata],
+    ) {
+        taps.retain(|(name, _)| topics.iter().any(|t| &t.topic_name == name));
+        for t in topics {
+            if taps.iter().any(|(name, _)| name == &t.topic_name) {
+                continue;
+            }
+            if let Some(path) = horus_sys::shm::topic_shm_path_checked(&t.topic_name) {
+                taps.push((
+                    t.topic_name.clone(),
+                    crate::communication::TopicReader::new(path),
+                ));
+            }
+        }
+    }
+}
+
 pub struct NodeRecorder {
     recording: NodeRecording,
     config: RecordingConfig,
@@ -650,6 +706,11 @@ pub struct NodeRecorder {
     mono_base: Instant,
     /// Wall-clock epoch at `mono_base` (for converting back to absolute time).
     epoch_base_us: u64,
+    /// Cached topic taps and their held mappings.
+    taps: TopicTaps,
+    /// This recorder's own tick counter, for the executors that have no global
+    /// one to pass.
+    tick_seq: u64,
 }
 
 impl NodeRecorder {
@@ -667,6 +728,8 @@ impl NodeRecorder {
             io_capacity: 0,
             mono_base: Instant::now(),
             epoch_base_us: now_wall,
+            taps: TopicTaps::new(),
+            tick_seq: 0,
         }
     }
 
@@ -675,6 +738,9 @@ impl NodeRecorder {
     /// Uses pre-allocated HashMap capacity after the first tick to reduce
     /// allocation pressure in the recording hot path.
     pub(crate) fn begin_tick(&mut self, tick: u64) {
+        // Kept in step even when the caller supplies its own tick, so a mix of
+        // the two cannot produce a counter that goes backwards.
+        self.tick_seq = tick.wrapping_add(1);
         if !self.enabled {
             return;
         }
@@ -772,6 +838,75 @@ impl NodeRecorder {
     /// Returns `false` when recording is disabled or the current tick was
     /// skipped by the interval filter.  The scheduler checks this to avoid
     /// the overhead of reading topic shared-memory on non-recorded ticks.
+    /// Begin the next tick when the caller has no tick number of its own.
+    ///
+    /// The RT, compute and async executors run nodes on their own threads at
+    /// their own rates and have no global tick counter, so they passed a
+    /// literal `0`. That made `interval` INERT — 0 is a multiple of every N, so
+    /// "record every 10 ticks" recorded every tick — and stamped every snapshot
+    /// with tick 0, which a replay cannot order.
+    pub(crate) fn begin_next_tick(&mut self) {
+        let tick = self.tick_seq;
+        self.begin_tick(tick);
+    }
+
+    /// Refresh the tap lists if the graph's topology has changed.
+    ///
+    /// One `Acquire` load on an `AtomicU64` in the common case: no lock, no
+    /// walk, no allocation. The lists are rebuilt only when a topic is
+    /// registered or unregistered, which happens during startup and then
+    /// essentially never.
+    fn refresh_taps(&mut self, node_name: &str) {
+        let registry = crate::communication::topic_node_registry();
+        let version = registry.version();
+        if self.taps.registry_version == version {
+            return;
+        }
+        if self.config.record_inputs {
+            let subs = registry.subscribers_for_node(node_name);
+            TopicTaps::rebuild(&mut self.taps.inputs, &subs);
+        }
+        if self.config.record_outputs {
+            let pubs = registry.publishers_for_node(node_name);
+            TopicTaps::rebuild(&mut self.taps.outputs, &pubs);
+        }
+        self.taps.registry_version = version;
+    }
+
+    /// Capture this node's subscribed topics into the current snapshot.
+    ///
+    /// Reuses the held mappings; see [`TopicTaps`].
+    pub(crate) fn capture_inputs(&mut self, node_name: &str) {
+        if !self.is_active_tick() || !self.config.record_inputs {
+            return;
+        }
+        self.refresh_taps(node_name);
+        // `std::mem::take` so the readers can be borrowed mutably while
+        // `record_input` borrows `self`; put back immediately after.
+        let mut taps = std::mem::take(&mut self.taps.inputs);
+        for (name, reader) in taps.iter_mut() {
+            if let Some(slot) = reader.read_latest(0) {
+                self.record_input(name, slot.payload);
+            }
+        }
+        self.taps.inputs = taps;
+    }
+
+    /// Capture this node's published topics into the current snapshot.
+    pub(crate) fn capture_outputs(&mut self, node_name: &str) {
+        if !self.is_active_tick() || !self.config.record_outputs {
+            return;
+        }
+        self.refresh_taps(node_name);
+        let mut taps = std::mem::take(&mut self.taps.outputs);
+        for (name, reader) in taps.iter_mut() {
+            if let Some(slot) = reader.read_latest(0) {
+                self.record_output(name, slot.payload);
+            }
+        }
+        self.taps.outputs = taps;
+    }
+
     pub(crate) fn is_active_tick(&self) -> bool {
         self.current_snapshot.is_some()
     }

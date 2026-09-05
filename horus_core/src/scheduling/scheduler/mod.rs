@@ -5342,21 +5342,9 @@ impl Scheduler {
                 ..
             } = self.nodes[i];
             if let Some(recorder) = recorder.as_mut() {
-                if recorder.is_active_tick() {
-                    let subscribers =
-                        crate::communication::topic_node_registry().subscribers_for_node(name);
-                    if !subscribers.is_empty() {
-                        let topics_dir = crate::memory::platform::shm_topics_dir();
-                        for sub in &subscribers {
-                            let topic_path = topics_dir.join(&sub.topic_name);
-                            if let Some(slot_read) =
-                                crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                            {
-                                recorder.record_input(&sub.topic_name, slot_read.payload);
-                            }
-                        }
-                    }
-                }
+                // The registry walk and the topic mappings are cached across
+                // ticks; see `NodeRecorder::capture_inputs`.
+                recorder.capture_inputs(name);
             }
         }
 
@@ -5630,21 +5618,7 @@ impl Scheduler {
                 ..
             } = self.nodes[i];
             if let Some(recorder) = recorder.as_mut() {
-                if recorder.is_active_tick() {
-                    let publishers =
-                        crate::communication::topic_node_registry().publishers_for_node(name);
-                    if !publishers.is_empty() {
-                        let topics_dir = crate::memory::platform::shm_topics_dir();
-                        for pub_topic in &publishers {
-                            let topic_path = topics_dir.join(&pub_topic.topic_name);
-                            if let Some(slot_read) =
-                                crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                            {
-                                recorder.record_output(&pub_topic.topic_name, slot_read.payload);
-                            }
-                        }
-                    }
-                }
+                recorder.capture_outputs(name);
             }
         }
 

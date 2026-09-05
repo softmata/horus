@@ -398,7 +398,10 @@ impl EventExecutor {
 
                 // Begin recording tick
                 if let Some(ref mut recorder) = node.recorder {
-                    recorder.begin_tick(tick_count);
+                    // `tick_count` is only incremented in the Ok arm below, so
+                    // a node whose tick returns Err re-stamped tick 0 forever
+                    // and its `interval` was inert too.
+                    recorder.begin_next_tick();
                 }
 
                 // FIX #5: this tick runs on THIS watcher thread — install the
