@@ -75,3 +75,67 @@ def test_the_package_quick_start_runs():
     assert received is not None
     arr = received.to_numpy()
     assert arr.shape == (48, 64, 3)
+
+
+def test_send_blocking_on_a_broadcast_topic_raises_backpressure_not_timeout():
+    """The mapping must hold on the SEND PATH, not just in the constructor.
+
+    The Rust-side test asserts `no_backpressure_err` builds the right exception.
+    That is the easy half: the defect was that `send_blocking_pod` ended in
+    `.is_ok()`, discarding WHICH `SendBlockingError` came back, so the send path
+    reported every refusal as a timeout no matter what the core returned. This
+    drives a real broadcast-backed topic instead.
+
+    A second subscriber is what resolves a POD topic to `PodShm`, and it has to
+    be on another thread: an entry is keyed on (pid, thread), so two handles
+    here would share one registration and the topic would stay `SpscShm`.
+    """
+    import threading
+
+    name = _unique("estop_broadcast")
+    pub = Topic(CmdVel, endpoint=name)
+
+    stop = threading.Event()
+    ready = threading.Barrier(3)
+
+    def hold():
+        sub = Topic(CmdVel, endpoint=name)
+        sub.try_recv()          # claims this thread's participant slot
+        ready.wait()
+        while not stop.is_set():
+            sub.try_recv()
+
+    threads = [threading.Thread(target=hold, daemon=True) for _ in range(2)]
+    for t in threads:
+        t.start()
+    ready.wait()
+
+    try:
+        # Resolve the backend, then confirm the topology we need.
+        pub.send(CmdVel(0.0, 0.0))
+        if pub.provides_backpressure:
+            pytest.skip(f"topic did not reach a broadcast backend: {pub.backend_type}")
+
+        with pytest.raises(horus.HorusBackpressureError) as excinfo:
+            pub.send_blocking(CmdVel(1.0, 0.0), 0.05)
+
+        msg = str(excinfo.value)
+        assert name in msg, f"the error must name the topic: {msg}"
+        assert "backpressure" in msg.lower() or "MpscShm" in msg, (
+            f"the core's remediation text must survive the crossing: {msg}"
+        )
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(timeout=5)
+
+
+def test_provides_backpressure_reports_the_backend():
+    """The property Python had no way to ask before."""
+    name = _unique("bp_single")
+    t = Topic(CmdVel, endpoint=name)
+    assert t.provides_backpressure is False, "unresolved backend must fail closed"
+    t.send(CmdVel(0.0, 0.0))
+    assert t.provides_backpressure is True, (
+        "a single-subscriber POD topic resolves to SpscShm, which refuses a full ring"
+    )

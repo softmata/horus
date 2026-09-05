@@ -658,6 +658,23 @@ impl ComputeExecutor {
                 ready_indices.push(i);
             }
 
+            // Safing requested by the main thread's watchdog ladder. Applied
+            // to EVERY node this executor owns, not just the ones ticking this
+            // pass — an Isolated node is precisely one that is not ticking.
+            //
+            // ABOVE the `ready_indices.is_empty()` early-continue, not below
+            // it. Below, this loop was skipped on exactly the pass the comment
+            // describes: when nothing is ready, which is the state a set of
+            // isolated or rate-limited nodes is permanently in. A link-loss
+            // `request_safe_state_all()` under `safety.on_link_lost =
+            // "safe_state"` — the path that deliberately does not latch an
+            // e-stop and leaves the scheduler running — would then never be
+            // consumed by this executor's nodes at all.
+            for node in nodes.iter_mut() {
+                super::primitives::honor_safe_state_request(node, &monitors);
+                super::primitives::honor_restart_request(node, &monitors);
+            }
+
             if ready_indices.is_empty() {
                 // Nothing to do — sleep and check again
                 let elapsed = loop_start.elapsed();
@@ -665,14 +682,6 @@ impl ComputeExecutor {
                     std::thread::sleep(tick_period - elapsed);
                 }
                 continue;
-            }
-
-            // Safing requested by the main thread's watchdog ladder. Applied
-            // to EVERY node this executor owns, not just the ones ticking this
-            // pass — an Isolated node is precisely one that is not ticking.
-            for node in nodes.iter_mut() {
-                super::primitives::honor_safe_state_request(node, &monitors);
-                super::primitives::honor_restart_request(node, &monitors);
             }
 
             // Update last_tick for rate-limited nodes

@@ -26,6 +26,23 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
+/// The CODE of `which_monitor_binary`, with comment lines removed.
+///
+/// Stripping comments is the whole point. The first version of this guard
+/// matched the raw body, and the function's own comment explains what
+/// `global_bin_dir()` is — so the assertion was satisfied by the prose
+/// describing the fix rather than by the call performing it, and would have
+/// stayed green if the call were replaced by a hardcoded path with the comment
+/// left in place. That is the failure mode a source-reading guard has to be
+/// built against.
+fn which_monitor_binary_code() -> String {
+    which_monitor_binary_body()
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The body of `which_monitor_binary`, from its signature to the matching brace.
 fn which_monitor_binary_body() -> String {
     let src = std::fs::read_to_string(repo_root().join("src/main.rs")).expect("main.rs must exist");
@@ -53,7 +70,7 @@ fn which_monitor_binary_body() -> String {
 /// The lookup resolves the global plugin directory through the accessor.
 #[test]
 fn the_monitor_lookup_uses_the_accessor_the_installer_writes_through() {
-    let body = which_monitor_binary_body();
+    let body = which_monitor_binary_code();
     assert!(
         body.contains("global_bin_dir()"),
         "which_monitor_binary must resolve the global plugin directory through \

@@ -1,8 +1,14 @@
 #![allow(private_interfaces)]
 //! Backend migration coordinator.
 //!
-//! Handles safe backend transitions with CAS-based locking, epoch versioning,
-//! and drain logic for in-flight messages.
+//! Handles backend transitions with CAS-based locking, epoch versioning, and a
+//! bounded settle before the switch.
+//!
+//! NOT a drain. This header said "drain logic for in-flight messages" while the
+//! struct doc below already retracted exactly that claim: nothing in
+//! `TopicHeader` counts in-flight operations, so there is nothing to drain
+//! against, and a message in flight across a switch can be lost. Rustdoc shows
+//! this block first, so the retraction 35 lines down was the half nobody read.
 
 use std::sync::atomic::Ordering;
 

@@ -1965,14 +1965,29 @@ impl RtExecutor {
             let loop_start = Instant::now();
 
             for (idx, node) in nodes.iter_mut().enumerate() {
-                if !node.initialized || node.is_stopped {
+                // An uninitialized node has never run, so it has nothing to
+                // safe and no state to leave behind.
+                if !node.initialized {
                     continue;
                 }
 
                 // Safing requested by the main thread's watchdog ladder. Runs
                 // before the pause/stop gates: an Isolated node must reach its
                 // safe state even if it is also about to be stopped.
+                //
+                // `is_stopped` used to be part of the guard above, which made
+                // that sentence false for the case it was written for: a node
+                // already stopped — by `BudgetPolicy::Enforce`, by the kill
+                // rung, by `horus node kill` — was skipped before ever reaching
+                // this call, so it kept holding whatever setpoint it last
+                // commanded. Stopping a node halts its ticks; it does not put
+                // its actuator anywhere. The sibling executors safe every node
+                // they own regardless of stop state, and so does the main loop.
                 super::primitives::honor_safe_state_request(node, &monitors);
+
+                if node.is_stopped {
+                    continue;
+                }
 
                 // Check shared control flags (set by CLI: horus node pause/kill)
                 if monitors.node_controls.is_stopped(node.name.as_ref()) {

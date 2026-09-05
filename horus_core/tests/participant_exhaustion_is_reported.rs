@@ -18,6 +18,12 @@
 use horus_core::communication::Topic;
 use std::sync::{Arc, Mutex};
 
+/// The participant table's size. Mirrors `MAX_PARTICIPANTS` in
+/// `topic/header.rs`, which is `pub(crate)` and so not importable here.
+const MAX_PARTICIPANTS: u32 = 16;
+/// Live subscribers needed to fill it, given the producer holds one slot.
+const HOLDERS: usize = MAX_PARTICIPANTS as usize - 1;
+
 /// A `tracing::Subscriber` that keeps the formatted fields of every event.
 ///
 /// Hand-rolled against `tracing` core so this test needs no new dependency.
@@ -70,38 +76,77 @@ fn a_participant_that_does_not_fit_is_told_so() {
     };
     producer.send(1u64);
 
-    // Fill the participant table. Each thread claims its own slot, and — this
-    // is the open leak documented in participant_count_leak.rs — the slot is
-    // not returned when the thread ends, which is what lets one process fill
-    // the table at all. The producer holds one, so 15 subscribers saturate it
-    // and every thread after that is refused.
-    for _ in 0..20 {
+    // Fill the participant table with LIVE holders.
+    //
+    // This used to spawn threads and let them exit, relying on the leak
+    // documented in participant_count_leak.rs to keep their slots occupied.
+    // That leak is fixed — a dropped handle gives its registration back — so
+    // the table stopped filling and this test skipped itself unconditionally:
+    // "the participant table did not fill (1/16)". The anti-vacuity guard
+    // reported it rather than passing quietly, which is what such a guard is
+    // for, but the test proved nothing until it held its registrations open.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut holders = Vec::new();
+    for _ in 0..HOLDERS {
         let n = name.clone();
-        std::thread::spawn(move || {
-            if let Ok(sub) = Topic::<u64>::new(&n) {
-                let _ = sub.try_recv();
+        let ready = ready_tx.clone();
+        let release = Arc::clone(&release);
+        holders.push(std::thread::spawn(move || {
+            let sub = Topic::<u64>::new(&n).expect("holder subscriber");
+            let _ = sub.try_recv(); // claims this thread's participant slot
+            let _ = ready.send(());
+            // Hold the registration open until the assertions are done.
+            while !release.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
-        })
-        .join()
-        .expect("subscriber thread");
+            drop(sub);
+        }));
+    }
+    drop(ready_tx);
+    for _ in 0..HOLDERS {
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("every holder must claim its slot");
+    }
+
+    // Anti-vacuity: assert the table really is full BEFORE asking whether the
+    // overflow was reported. Without this the test passes on a platform where a
+    // slot was always available and nothing was ever refused.
+    let occupied = producer.sub_count() + producer.pub_count();
+
+    // One more subscriber, on a thread of its own so it needs a slot of its
+    // own. There is none left to give it.
+    let n = name.clone();
+    let received = std::thread::spawn(move || {
+        let sub = Topic::<u64>::new(&n).expect("the handle itself still constructs");
+        sub.try_recv()
+    })
+    .join()
+    .expect("late subscriber thread");
+
+    release.store(true, std::sync::atomic::Ordering::Release);
+    for h in holders {
+        h.join().expect("holder thread");
     }
 
     let messages = captured.lock().unwrap_or_else(|p| p.into_inner()).clone();
 
-    // Anti-vacuity: assert the table really did fill BEFORE asking whether the
-    // overflow was reported. Without this the test passes on a platform where a
-    // slot was always available and nothing was ever refused.
-    let occupied = producer.sub_count() + producer.pub_count();
-    if occupied < 16 {
-        eprintln!("skipping: the participant table did not fill ({occupied}/16)");
-        return;
-    }
+    assert!(
+        occupied >= MAX_PARTICIPANTS,
+        "precondition: the table must be full for anything to be refused \
+         ({occupied}/{MAX_PARTICIPANTS} occupied)"
+    );
+    assert!(
+        received.is_none(),
+        "precondition: with the table full this subscriber holds no \
+         registration, so it must receive nothing"
+    );
 
     assert!(
         messages.iter().any(|m| m.contains("participant slots")),
-        "five subscribers were refused a registration and will receive nothing \
-         for the life of their handles. Not one of them was told. Warnings \
-         seen: {:?}",
+        "a subscriber was refused a registration and will receive nothing for \
+         the life of its handle, and was told nothing. Warnings seen: {:?}",
         messages
     );
     assert!(
