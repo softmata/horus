@@ -177,6 +177,46 @@ TEST(UserApi, RuntimeParams) {
     EXPECT_FALSE(params.has("nope"));
 }
 
+// A value longer than the internal stack buffer must come back WHOLE.
+//
+// `Params::get_string` reads into a 1024-byte stack buffer. It used to return
+// whatever fitted, as an ordinary std::optional<std::string> with no way for a
+// caller to tell a clipped value from a complete one — and it clipped on a raw
+// byte boundary, so a UTF-8 value could come back invalid. Rust and Python
+// always returned the whole string; only C++ clipped, over values that hold
+// paths, URLs and calibration blobs.
+//
+// The shim reports the REQUIRED length now and this wrapper re-fetches when the
+// value does not fit. That re-call is the part with an off-by-one to get wrong,
+// and nothing exercised it.
+TEST(UserApi, RuntimeParamsLongStringRoundTrips) {
+    horus::Params params;
+
+    // Either side of the 1024-byte stack buffer, and exactly on it.
+    for (size_t len : {1023u, 1024u, 1025u, 4096u}) {
+        const std::string value(len, 'x');
+        params.set("blob", value.c_str());
+        auto got = params.get_string("blob");
+        ASSERT_TRUE(got.has_value()) << "length " << len;
+        EXPECT_EQ(got->size(), len) << "truncated at length " << len;
+        EXPECT_EQ(*got, value) << "content differs at length " << len;
+    }
+}
+
+// Truncation, when a caller drives the C shim directly, must not split UTF-8.
+TEST(UserApi, RuntimeParamsTruncationKeepsValidUtf8) {
+    horus::Params params;
+    // Three-byte characters, so a naive byte cut lands mid-sequence.
+    std::string value;
+    for (int i = 0; i < 10; ++i) value += "\xe4\xb8\xad";
+    params.set("label", value.c_str());
+
+    // The wrapper always returns the whole value.
+    auto whole = params.get_string("label");
+    ASSERT_TRUE(whole.has_value());
+    EXPECT_EQ(*whole, value);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // 5. TransformFrame
 // ═══════════════════════════════════════════════════════════════════════════

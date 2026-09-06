@@ -3075,6 +3075,53 @@ fn test_builder_order_independence() {
     );
 }
 
+/// A watchdog timeout is rounded UP, never tightened.
+///
+/// The config stores whole milliseconds. `as_millis()` truncates, so
+/// `.watchdog(1500_u64.us())` used to store 1 ms — and the graduated ladder
+/// latches a system-wide emergency stop past 3x the window, so it fired at 3 ms
+/// instead of the 4.5 ms the operator asked for, with no diagnostic.
+///
+/// Tightening is the dangerous direction: it halts a healthy robot. The builder
+/// already argued exactly this for the sub-1 ms case — "a slightly-looser
+/// watchdog is a safety feature, and no watchdog is not" — and then truncated
+/// every other value.
+#[test]
+fn a_watchdog_timeout_is_never_silently_tightened() {
+    let _guard = lock_scheduler();
+
+    // The case the old code got right.
+    let sub_ms = Scheduler::new().watchdog(500_u64.us());
+    assert_eq!(
+        sub_ms.pending_config.realtime.watchdog_timeout_ms, 1,
+        "a sub-millisecond watchdog must not round to 0, which disables it"
+    );
+
+    // The case it got backwards.
+    let fractional = Scheduler::new().watchdog(1500_u64.us());
+    assert_eq!(
+        fractional.pending_config.realtime.watchdog_timeout_ms, 2,
+        "1.5 ms must round UP to 2 ms; truncating to 1 ms makes the 3x \
+         emergency-stop rung fire at 3 ms instead of 4.5 ms"
+    );
+
+    let just_over = Scheduler::new().watchdog(Duration::from_micros(2_001));
+    assert_eq!(
+        just_over.pending_config.realtime.watchdog_timeout_ms, 3,
+        "any remainder rounds up — the stored window must never be shorter \
+         than the one that was asked for"
+    );
+
+    // Whole milliseconds are untouched, and an explicit zero still disables.
+    let whole = Scheduler::new().watchdog(500_u64.ms());
+    assert_eq!(whole.pending_config.realtime.watchdog_timeout_ms, 500);
+    let disabled = Scheduler::new().watchdog(Duration::ZERO);
+    assert_eq!(
+        disabled.pending_config.realtime.watchdog_timeout_ms, 0,
+        "an explicit zero is a disable and must be honoured"
+    );
+}
+
 // ============================================================================
 // Phase 6: Graduated Safety Monitor Response
 // ============================================================================
@@ -5706,6 +5753,87 @@ fn shared_monitors_carry_a_safety_handle_for_executors() {
             .consecutive_misses("agg_rt"),
         m.consecutive_misses("agg_rt"),
         "the executor's handle must share state with the scheduler's monitor"
+    );
+}
+
+/// The main loop must clear a node's consecutive-miss run on a tick that MET
+/// its deadline — and this node has a deadline and no tick budget, so it never
+/// enters the budget block that used to nominally own the reset.
+///
+/// `node_builder` derives a deadline from a budget and never the reverse, so
+/// this shape is ordinary: `.deadline(..)` with no `.tick_budget(..)`. For it,
+/// `check_timing_violations` skipped the whole `if let Some(tick_budget)`
+/// block, nothing ever called `check_budget`, and `consecutive_misses` was a
+/// lifetime total. A node missing once an hour and recovering instantly
+/// reached any ceiling eventually — the exact "timer wearing a safety
+/// threshold's name" the per-node ceiling was introduced to end.
+struct AlternatingNode {
+    name: String,
+    ticks: Arc<AtomicUsize>,
+}
+
+impl Node for AlternatingNode {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn tick(&mut self) {
+        // Miss the deadline on every other tick, comfortably meeting it in
+        // between. Never two misses in a row.
+        if self.ticks.fetch_add(1, Ordering::SeqCst).is_multiple_of(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+#[test]
+fn a_met_deadline_clears_the_miss_run_for_a_node_with_no_budget() {
+    let _guard = lock_scheduler();
+    let ticks = Arc::new(AtomicUsize::new(0));
+
+    let mut scheduler = Scheduler::new()
+        .tick_rate(100_u64.hz())
+        // Keeps the RT node on the main thread, so this exercises
+        // `check_timing_violations` rather than the RT executor.
+        .deterministic(true);
+    scheduler
+        .add(AlternatingNode {
+            name: "flaky".to_string(),
+            ticks: ticks.clone(),
+        })
+        .deadline(1_u64.ms()) // deliberately no .tick_budget()
+        .build();
+
+    let _ = scheduler.run_for(400_u64.ms());
+
+    let monitor = scheduler
+        .monitor
+        .safety
+        .as_ref()
+        .expect("a node with a deadline produces a safety monitor");
+
+    // Anti-vacuity: the node must actually have missed, repeatedly, or the
+    // assertion below passes for the wrong reason.
+    let total_misses = monitor
+        .all_node_timing()
+        .into_iter()
+        .find(|r| r.name == "flaky")
+        .map(|r| r.deadline_misses)
+        .unwrap_or(0);
+    assert!(
+        total_misses >= 3,
+        "precondition: the node must miss its deadline repeatedly for this \
+         test to mean anything (saw {} misses in {} ticks)",
+        total_misses,
+        ticks.load(Ordering::SeqCst)
+    );
+
+    assert!(
+        monitor.consecutive_misses("flaky") <= 1,
+        "the node met its deadline between every miss, so its CONSECUTIVE run \
+         is at most 1 — it read {} because nothing on this path ever cleared \
+         it, making a per-node consecutive ceiling a lifetime total",
+        monitor.consecutive_misses("flaky")
     );
 }
 

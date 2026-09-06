@@ -1839,3 +1839,81 @@ fn test_recording_with_no_publisher_has_empty_inputs() {
         );
     }
 }
+
+// ============================================================================
+// Test: replay restores the RECORDED execution order
+// ============================================================================
+
+/// `replay_from` must give each node the priority its recorded position had.
+///
+/// It looked the priority up by `node_id` — the key of `node_recordings`, a
+/// generated hex string (`format!("{:x}{:x}", unix_nanos, node_count)`) — while
+/// the map is keyed by node NAME. A node id can never equal a name, so every
+/// lookup missed, `unwrap_or(0)` gave every node priority 0, and `add_replay`'s
+/// stable sort left the replay in `node_recordings` HashMap order: neither the
+/// recorded order nor the same order twice.
+///
+/// This asserts the priorities, not the tick counts, because a replay whose
+/// node ordering is arbitrary still ticks every node the right number of times
+/// — which is why the existing tests passed throughout.
+#[test]
+fn replay_restores_the_recorded_execution_order() {
+    use horus_core::scheduling::SchedulerRecording;
+
+    let tmp = TestTempDir::new("replay_order");
+    let session = tmp.path().to_path_buf();
+
+    // Three nodes, recorded in a known order that is NOT alphabetical and not
+    // the order they are registered in below.
+    let order = ["zulu", "alpha", "mike"];
+
+    let mut scheduler_recording = SchedulerRecording::new("sched_id", "order_session");
+    for (i, name) in order.iter().enumerate() {
+        // The id shape `Scheduler::add` generates: a hex string, never a name.
+        let node_id = format!("{:x}{:x}", 1_700_000_000_000_000_000u64 + i as u64, i);
+        let relative_path = format!("{name}@{node_id}.horus");
+
+        let mut rec = NodeRecording::new(name, &node_id, "order_session");
+        for tick in 0..3u64 {
+            rec.add_snapshot(NodeTickSnapshot::new(tick).with_duration(100));
+        }
+        rec.finish();
+        rec.save(&session.join(&relative_path))
+            .expect("write node recording");
+
+        scheduler_recording.add_node_recording(&node_id, &relative_path);
+    }
+    scheduler_recording.record_execution_order(order.iter().map(|s| s.to_string()).collect());
+
+    let scheduler_path = session.join("scheduler@sched_id.horus");
+    scheduler_recording
+        .save(&scheduler_path)
+        .expect("write scheduler recording");
+
+    let scheduler = Scheduler::replay_from(scheduler_path).expect("replay_from");
+
+    let mut by_name: Vec<(String, u32)> = scheduler
+        .metrics()
+        .into_iter()
+        .map(|m| (m.name().to_string(), m.order()))
+        .collect();
+    by_name.sort_by_key(|(_, order)| *order);
+
+    let replayed: Vec<&str> = by_name.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        replayed,
+        order.to_vec(),
+        "replay must restore the recorded execution order, got priorities {by_name:?}"
+    );
+
+    // And the priorities must be distinct — all-zero is the failure mode, and
+    // it looks like a valid order until you notice the sort has nothing to do.
+    let distinct: std::collections::BTreeSet<u32> =
+        by_name.iter().map(|(_, order)| *order).collect();
+    assert_eq!(
+        distinct.len(),
+        order.len(),
+        "every replayed node got the same priority, so the ordering is whatever \
+         the recordings HashMap iterated: {by_name:?}"
+    );
+}

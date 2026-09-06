@@ -606,9 +606,13 @@ pub fn format_console_line(
 /// not-taken branch: the level is checked **before** the format arguments are
 /// evaluated, so a suppressed line pays for neither `format!` nor its
 /// arguments' `Display` impls. The default level is
-/// [`DEFAULT_LEVEL`](crate::core::hlog::DEFAULT_LEVEL) (`info`, i.e. `debug`
-/// is off); change it with `HORUS_LOG_LEVEL=debug` or
-/// [`set_max_level`](crate::core::hlog::set_max_level).
+/// [`DEFAULT_LEVEL`](crate::core::hlog::DEFAULT_LEVEL), and it is `debug` —
+/// **nothing is suppressed until you configure it**, so in an unconfigured
+/// process a `hlog!(debug, ...)` pays for its `format!`, a timestamp and a
+/// serialise into the shared log buffer. Set `HORUS_LOG_LEVEL=info` (or call
+/// [`set_max_level`](crate::core::hlog::set_max_level)) to get the not-taken
+/// branch. This paragraph said `info` for a while; see `DEFAULT_LEVEL`'s own
+/// doc for why the permissive default is deliberate.
 ///
 /// The corollary is that arguments with side effects are not evaluated when
 /// the line is suppressed — which is the intended semantics of a level, and

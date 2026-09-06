@@ -92,6 +92,74 @@ fn this_binary_has_no_rt_allocator_and_reports_that_honestly() {
     );
 }
 
+/// Registering a `.no_alloc()` node must actually print the warning.
+///
+/// `warn_if_unenforced` names its own call site — "Intended call site: node
+/// registration, once per `.no_alloc()` node" — and had no caller anywhere
+/// outside the two tests that invoke it directly. So the function worked
+/// perfectly and no user ever saw it: `.no_alloc()` in a binary without the
+/// allocator was silently inert, which is the precise failure the warning text
+/// exists to prevent.
+///
+/// Calling the function proves the function. This builds a node and requires
+/// the warning to come out of a real process's stderr, which is the part that
+/// was missing. The child is this same test binary — the one that deliberately
+/// does not install the allocator.
+#[test]
+fn building_a_no_alloc_node_warns_that_nothing_is_enforcing_it() {
+    const CHILD: &str = "HORUS_NO_ALLOC_WARN_CHILD";
+
+    struct Inert;
+    impl Node for Inert {
+        fn name(&self) -> &str {
+            "unenforced_controller"
+        }
+        fn tick(&mut self) {}
+    }
+
+    if std::env::var_os(CHILD).is_some() {
+        let mut scheduler = Scheduler::new().tick_rate(1000_u64.hz());
+        scheduler
+            .add(Inert)
+            .order(0)
+            .rate(1000_u64.hz())
+            .no_alloc()
+            .build()
+            .expect("a .no_alloc() RT node must still build — this warns, it does not fail");
+        return;
+    }
+
+    let exe = std::env::current_exe().expect("test binary path");
+    let out = std::process::Command::new(exe)
+        .args([
+            "--exact",
+            "building_a_no_alloc_node_warns_that_nothing_is_enforcing_it",
+            "--nocapture",
+            "--test-threads",
+            "1",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .expect("re-running the test binary should work");
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("1 passed"),
+        "the child ran no test — was this test renamed?\n{stdout}"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(".no_alloc() IS NOT BEING ENFORCED"),
+        "registering a .no_alloc() node in a binary with no RtAwareAllocator \
+         printed no warning, so the user is told nothing.\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("unenforced_controller"),
+        "the warning must name the node that asked for the guarantee.\nstderr:\n{stderr}"
+    );
+}
+
 /// Without the allocator, `.no_alloc()` is inert — allocating inside the bracket
 /// is not detected. Asserting the no-op keeps the documentation honest and makes
 /// the warning above load-bearing rather than decorative.

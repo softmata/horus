@@ -97,6 +97,56 @@ fn topic_lock<T>(lock: &Mutex<T>) -> PyResult<std::sync::MutexGuard<'_, T>> {
         .map_err(|e| PyRuntimeError::new_err(format!("Topic lock poisoned: {e}")))
 }
 
+/// A message object's public, non-callable attributes as a dict.
+///
+/// The Rust twin of `horus._message_to_dict`, and used the same way: only
+/// after a direct conversion has already been refused, so it needs no guess
+/// about which types are messages. Returns `None` for anything with nothing to
+/// extract, and for the built-in and array-like types a caller would never mean
+/// to flatten.
+fn message_object_as_dict<'py>(
+    py: Python<'py>,
+    obj: &pyo3::Bound<'py, PyAny>,
+) -> Option<pyo3::Bound<'py, pyo3::types::PyDict>> {
+    use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+
+    // Anything pythonize already handles, or would mangle.
+    if obj.is_none()
+        || obj.is_instance_of::<pyo3::types::PyDict>()
+        || obj.is_instance_of::<pyo3::types::PyList>()
+        || obj.is_instance_of::<pyo3::types::PyTuple>()
+        || obj.is_instance_of::<pyo3::types::PySet>()
+        || obj.is_instance_of::<pyo3::types::PyString>()
+        || obj.is_instance_of::<pyo3::types::PyBytes>()
+        || obj.is_instance_of::<pyo3::types::PyBool>()
+        || obj.is_instance_of::<pyo3::types::PyInt>()
+        || obj.is_instance_of::<pyo3::types::PyFloat>()
+        || obj.hasattr("__array_interface__").unwrap_or(false)
+        || obj.hasattr("__array__").unwrap_or(false)
+    {
+        return None;
+    }
+
+    let dict = PyDict::new(py);
+    let names = obj.dir().ok()?;
+    for name in names.iter() {
+        let Ok(key) = name.extract::<String>() else {
+            continue;
+        };
+        if key.starts_with('_') {
+            continue;
+        }
+        let Ok(value) = obj.getattr(key.as_str()) else {
+            continue;
+        };
+        if value.is_callable() {
+            continue;
+        }
+        let _ = dict.set_item(key, value);
+    }
+    (!dict.is_empty()).then_some(dict)
+}
+
 /// Encode an arbitrary Python object as a `GenericMessage` (MessagePack payload).
 ///
 /// Shared by `send`, `try_send`, and `send_blocking` so an untyped
@@ -104,9 +154,31 @@ fn topic_lock<T>(lock: &Mutex<T>) -> PyResult<std::sync::MutexGuard<'_, T>> {
 /// matter which of the three the caller reached for.
 fn generic_message_from_py(py: Python, message: &Py<PyAny>) -> PyResult<GenericMessage> {
     let bound = message.bind(py);
-    let value: serde_json::Value = pythonize::depythonize(bound).map_err(|e| {
-        pyo3::exceptions::PyTypeError::new_err(format!("Failed to convert Python object: {}", e))
-    })?;
+    let value: serde_json::Value = match pythonize::depythonize(bound) {
+        Ok(v) => v,
+        // `depythonize` cannot read an opaque `#[pyclass]`, which is what every
+        // HORUS message class and every msggen-generated class is. So
+        // `Topic(RobotStatus).send(instance)` — the line `build_messages()`
+        // prints on success — raised `TypeError: Failed to convert Python
+        // object`, while `node.send("robot.status", instance)` worked, because
+        // `Node.send` catches that refusal and retries the object as a dict.
+        // Two spellings of one operation disagreeing is the defect; the
+        // conversion belongs here, where all three send paths share it.
+        Err(first) => {
+            let Some(as_dict) = message_object_as_dict(py, bound) else {
+                return Err(pyo3::exceptions::PyTypeError::new_err(format!(
+                    "Failed to convert Python object: {}",
+                    first
+                )));
+            };
+            pythonize::depythonize(&as_dict).map_err(|e| {
+                pyo3::exceptions::PyTypeError::new_err(format!(
+                    "Failed to convert Python object: {}",
+                    e
+                ))
+            })?
+        }
+    };
     let msgpack_bytes = rmp_serde::to_vec(&value).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!(
             "Failed to serialize to MessagePack: {}",
@@ -147,6 +219,38 @@ fn send_timeout_err(
     deadline: std::time::Duration,
 ) -> PyErr {
     crate::errors::to_py_err(send_timeout_error(topic, elapsed, deadline))
+}
+
+/// The message type an existing topic's ring already holds, or `None`.
+///
+/// Reads the SHM header only; it never constructs a `Topic`. That is the whole
+/// point. Asking "what type is this ring?" by opening it is circular — opening
+/// requires choosing a type, and choosing the wrong one is refused by the size
+/// check in `RingTopic::new`. The previous auto-detection did exactly that:
+/// `probe = Topic(name, 64)` builds a `Topic<GenericMessage>`, which the header
+/// check is guaranteed to refuse on any typed ring, so the probe always raised
+/// into a bare `except Exception` and the step could never succeed.
+#[pyfunction]
+pub fn peek_topic_type(name: &str) -> Option<String> {
+    horus_core::communication::peek_topic_type_name(name)
+}
+
+/// `SendBlockingError::NoBackpressure` as a Python exception.
+///
+/// NOT `HorusTimeoutError`. The core writes this variant specifically to be
+/// un-retryable — "it does not clear on retry — it lasts as long as the
+/// topology that caused it" — and a timeout is the one error a caller retries.
+/// Collapsing the two handed Python the opposite instruction, on the path the
+/// method is documented for: emergency stop and motor setpoints. It is also
+/// permanent and easy to reach, since any POD topic with a second subscriber
+/// (a `horus topic echo`, a monitor) resolves to `PodShm`.
+///
+/// The core's own message names the fix, so it is passed through verbatim.
+fn no_backpressure_err(topic: &str) -> PyErr {
+    crate::errors::HorusBackpressureError::new_err(format!(
+        "send_blocking on topic {topic}: {}",
+        horus_core::communication::topic::SendBlockingError::NoBackpressure
+    ))
 }
 
 /// The `HorusError` behind [`send_timeout_err`], split out so its wording can be
@@ -359,12 +463,17 @@ macro_rules! pod_topic_types {
 
             /// Send a POD message, waiting up to `timeout` for ring space.
             ///
-            /// `Ok(Some(true))` sent, `Ok(Some(false))` the ring stayed full for
-            /// the whole timeout, `Ok(None)` not a POD type (caller handles it).
+            /// `Ok(Some(Ok(())))` sent, `Ok(Some(Err(e)))` the core refused and
+            /// said why, `Ok(None)` not a POD type (caller handles it).
+            ///
+            /// This used to be `.is_ok()`, which threw away WHICH
+            /// `SendBlockingError` came back, so the caller had nothing left to
+            /// distinguish "the ring stayed full" from "this backend has no
+            /// full ring at all" and reported both as a timeout.
             fn send_blocking_pod(
                 &self, py: Python, message: &Py<PyAny>, node: &Option<Py<PyAny>>,
                 timeout: std::time::Duration, start: std::time::Instant,
-            ) -> PyResult<Option<bool>> {
+            ) -> PyResult<Option<Result<(), horus_core::communication::topic::SendBlockingError>>> {
                 match &self.topic_type {
                     $(
                         TopicType::$rust_ty(topic) => {
@@ -379,10 +488,18 @@ macro_rules! pod_topic_types {
                             // consumer drains, so the GIL cannot be held across it:
                             // a 10 ms wait here would stop every other Python thread
                             // in the process for 10 ms.
+                            //
+                            // Both halves matter: `topic_lock` turns a poisoned
+                            // lock into a Python error instead of panicking, and
+                            // the `Result` is carried out whole so the caller can
+                            // still tell `NoBackpressure` from `Timeout`.
+                            // Collapsing it with `.is_ok()` here is what made a
+                            // deliberate, un-retryable refusal arrive as a
+                            // timeout.
                             let sent = py.detach(|| {
-                                topic_lock(&topic_ref).map(|g| g.send_blocking(val, timeout).is_ok())
+                                topic_lock(&topic_ref).map(|g| g.send_blocking(val, timeout))
                             })?;
-                            if sent {
+                            if sent.is_ok() {
                                 if let Some(s) = summary {
                                     log_ipc_event(py, node, &self.name, s,
                                         start.elapsed().as_nanos() as u64, "log_pub");
@@ -960,13 +1077,7 @@ impl PyTopic {
                 let img = py_img.inner().clone();
                 let log_msg = format!("Image({}x{})", img.height(), img.width());
                 let topic_ref = topic.clone();
-                let sent = py.detach(|| {
-                    topic_ref
-                        .lock()
-                        .expect("topic lock poisoned")
-                        .try_send(img)
-                        .is_ok()
-                });
+                let sent = py.detach(|| topic_lock(&topic_ref).map(|g| g.try_send(img).is_ok()))?;
                 if sent && node.is_some() {
                     log_ipc_event(
                         py,
@@ -984,13 +1095,7 @@ impl PyTopic {
                 let pc = py_pc.inner().clone();
                 let log_msg = format!("PointCloud({} pts)", pc.point_count());
                 let topic_ref = topic.clone();
-                let sent = py.detach(|| {
-                    topic_ref
-                        .lock()
-                        .expect("topic lock poisoned")
-                        .try_send(pc)
-                        .is_ok()
-                });
+                let sent = py.detach(|| topic_lock(&topic_ref).map(|g| g.try_send(pc).is_ok()))?;
                 if sent && node.is_some() {
                     log_ipc_event(
                         py,
@@ -1008,13 +1113,8 @@ impl PyTopic {
                 let depth = py_depth.inner().clone();
                 let log_msg = format!("DepthImage({}x{})", depth.height(), depth.width());
                 let topic_ref = topic.clone();
-                let sent = py.detach(|| {
-                    topic_ref
-                        .lock()
-                        .expect("topic lock poisoned")
-                        .try_send(depth)
-                        .is_ok()
-                });
+                let sent =
+                    py.detach(|| topic_lock(&topic_ref).map(|g| g.try_send(depth).is_ok()))?;
                 if sent && node.is_some() {
                     log_ipc_event(
                         py,
@@ -1032,13 +1132,7 @@ impl PyTopic {
                 use horus::core::LogSummary;
                 let log_summary = msg.log_summary();
                 let topic_ref = topic.clone();
-                let sent = py.detach(|| {
-                    topic_ref
-                        .lock()
-                        .expect("topic lock poisoned")
-                        .try_send(msg)
-                        .is_ok()
-                });
+                let sent = py.detach(|| topic_lock(&topic_ref).map(|g| g.try_send(msg).is_ok()))?;
                 if sent && node.is_some() {
                     log_ipc_event(
                         py,
@@ -1077,7 +1171,12 @@ impl PyTopic {
     ///
     /// Raises:
     ///     HorusTimeoutError: the buffer stayed full for the whole timeout;
-    ///         the message was NOT published.
+    ///         the message was NOT published. Transient — retrying can work.
+    ///     HorusBackpressureError: this topic's backend overwrites unread
+    ///         messages and has no full ring to wait on, so the call was
+    ///         refused before any write. NOT transient: it lasts as long as
+    ///         the topology that caused it, so retrying cannot help. Check
+    ///         `provides_backpressure()` after the first send.
     ///     ValueError: timeout_s is negative, NaN, or infinite.
     ///     NotImplementedError: pool-backed topics (Image, PointCloud,
     ///         DepthImage, Tensor) have no blocking send path.
@@ -1086,7 +1185,10 @@ impl PyTopic {
     ///     try:
     ///         estop.send_blocking(EmergencyStop(True), 0.05)
     ///     except horus.HorusTimeoutError:
-    ///         node.log_error("e-stop not delivered")
+    ///         node.log_error("e-stop not delivered — ring full")
+    ///     except horus.HorusBackpressureError:
+    ///         node.log_error("e-stop topic is broadcast-backed; delivery "
+    ///                        "was never guaranteed")
     #[pyo3(signature = (message, timeout_s, node=None))]
     fn send_blocking(
         &self,
@@ -1101,10 +1203,13 @@ impl PyTopic {
 
         // Fast path: POD types (generated by pod_topic_types! macro)
         if let Some(sent) = self.send_blocking_pod(py, &message, &node, timeout, start)? {
-            return if sent {
-                Ok(())
-            } else {
-                Err(send_timeout_err(&self.name, start.elapsed(), timeout))
+            use horus_core::communication::topic::SendBlockingError;
+            return match sent {
+                Ok(()) => Ok(()),
+                Err(SendBlockingError::NoBackpressure) => Err(no_backpressure_err(&self.name)),
+                Err(SendBlockingError::Timeout) => {
+                    Err(send_timeout_err(&self.name, start.elapsed(), timeout))
+                }
             };
         }
 
@@ -1115,15 +1220,16 @@ impl PyTopic {
                 use horus::core::LogSummary;
                 let log_summary = msg.log_summary();
                 let topic_ref = topic.clone();
-                let sent = py.detach(|| {
-                    topic_ref
-                        .lock()
-                        .expect("topic lock poisoned")
-                        .send_blocking(msg, timeout)
-                        .is_ok()
-                });
-                if !sent {
-                    return Err(send_timeout_err(&self.name, start.elapsed(), timeout));
+                let sent =
+                    py.detach(|| topic_lock(&topic_ref).map(|g| g.send_blocking(msg, timeout)))?;
+                if let Err(e) = sent {
+                    use horus_core::communication::topic::SendBlockingError;
+                    return Err(match e {
+                        SendBlockingError::NoBackpressure => no_backpressure_err(&self.name),
+                        SendBlockingError::Timeout => {
+                            send_timeout_err(&self.name, start.elapsed(), timeout)
+                        }
+                    });
                 }
                 if node.is_some() {
                     log_ipc_event(
@@ -1346,6 +1452,32 @@ impl PyTopic {
     #[getter]
     fn endpoint(&self) -> Option<String> {
         self.endpoint.clone()
+    }
+
+    /// Whether a full ring can make this topic refuse a send.
+    ///
+    /// This is a property of the BACKEND, and the backend is chosen at runtime
+    /// from how many participants are attached — one subscriber gives you
+    /// `SpscShm`, which refuses when full; attach a second (a logger, a
+    /// recorder, a `horus topic echo`) and the same topic becomes `PodShm` or
+    /// `FanoutShm`, which overwrite instead. On those, `send_blocking()` raises
+    /// `HorusBackpressureError` and `send()` silently loses data.
+    ///
+    /// Assert it on any topic carrying commands rather than samples, AFTER the
+    /// first send — the backend is unresolved until a handle moves a message,
+    /// and an unresolved backend answers False.
+    ///
+    /// ```python
+    /// estop.send(EmergencyStop(True))   # resolves the backend
+    /// assert estop.provides_backpressure, estop.backend_type
+    /// ```
+    ///
+    /// Answered from `backend_type` through the runtime's own
+    /// `backend_provides_backpressure`, so this cannot drift from what
+    /// `send_blocking()` will actually do.
+    #[getter]
+    fn provides_backpressure(&self) -> bool {
+        horus_core::communication::topic::backend_provides_backpressure(&self.backend_type())
     }
 
     /// Get the backend type name
@@ -2162,6 +2294,97 @@ mod tests {
             matches!(err, horus_core::error::HorusError::Timeout(_)),
             "must be the Timeout variant so to_py_err maps it to HorusTimeoutError"
         );
+    }
+
+    /// Auto-detecting a subscription's type must not require attaching to it.
+    ///
+    /// `_setup_topics` documents a three-step resolution whose middle step is
+    /// "auto-detect from SHM header". It was implemented as `probe =
+    /// Topic(name, 64)` followed by `getattr(probe, "type_name", None)`, and
+    /// both halves were dead: `Topic` exposes no `type_name`, and the probe
+    /// builds a `GenericMessage` topic, which the runtime refuses to attach to
+    /// a typed ring. So the step could never succeed for any topic that has
+    /// ever existed, and the ~70-entry `_TYPE_NAME_MAP` built for it had no
+    /// reachable reader.
+    ///
+    /// The first assertion below is that refusal — it is correct and must
+    /// stay, since a name-based exemption once let a generic handle write
+    /// megabytes past the end of a typed mapping. The question just cannot be
+    /// answered by attaching, which is what `peek_topic_type` is for.
+    #[test]
+    fn the_ring_type_is_readable_without_attaching_to_it() {
+        use horus::communication::Topic as CoreTopic;
+
+        let name = format!("peek_probe_{}", std::process::id());
+
+        let Ok(typed) = CoreTopic::<CmdVel>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+        typed.send(CmdVel::new(1.0, 0.0));
+
+        // The old probe. It cannot open the ring, so it could never report
+        // anything about it.
+        assert!(
+            CoreTopic::<GenericMessage>::new(&name).is_err(),
+            "a generic handle must still be refused on a typed ring"
+        );
+
+        // The peek reads the header instead of attaching, and answers.
+        let seen = peek_topic_type(&name);
+        assert_eq!(
+            seen.as_deref(),
+            Some("CmdVel"),
+            "the header records the ring's type and it must be readable"
+        );
+
+        assert_eq!(
+            peek_topic_type("peek_probe_no_such_topic_anywhere"),
+            None,
+            "a topic that does not exist has no type"
+        );
+
+        drop(typed);
+    }
+
+    /// A refusal for want of backpressure must NOT arrive as a timeout.
+    ///
+    /// The core writes `SendBlockingError::NoBackpressure` specifically to be
+    /// un-retryable — "it does not clear on retry — it lasts as long as the
+    /// topology that caused it" — and a timeout is the one error a caller
+    /// retries. `send_blocking_pod` used to end in `.is_ok()`, throwing the
+    /// variant away, and both arms reported `HorusTimeoutError`: the opposite
+    /// instruction, on the path this method is documented for (emergency stop
+    /// and motor setpoints). It is easy to reach, too — any POD topic resolves
+    /// to `PodShm` the moment a second subscriber attaches, so a `horus topic
+    /// echo` against an e-stop topic starts it raising forever.
+    #[test]
+    fn a_backpressure_refusal_is_not_a_timeout() {
+        // The exception types are Python objects, so this test needs an
+        // interpreter. Safe to call repeatedly.
+        Python::initialize();
+        Python::attach(|py| {
+            let err = no_backpressure_err("estop");
+
+            assert!(
+                err.is_instance_of::<crate::errors::HorusBackpressureError>(py),
+                "must raise HorusBackpressureError"
+            );
+            assert!(
+                !err.is_instance_of::<crate::errors::HorusTimeoutError>(py),
+                "must NOT be catchable as a timeout — a caller who retries a \
+                 timeout would retry forever, because this condition is \
+                 topological and permanent"
+            );
+
+            let msg = err.value(py).to_string();
+            assert!(msg.contains("estop"), "must name the topic: {msg}");
+            // The core's message names the fix; it must survive the crossing.
+            assert!(
+                msg.contains("MpscShm") || msg.contains("backpressured backend"),
+                "must carry the runtime's remediation text: {msg}"
+            );
+        });
     }
 
     /// The pool-backed refusal must say which call and which type, and point at

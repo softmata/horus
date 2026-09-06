@@ -191,7 +191,12 @@ impl Sandbox {
 
     fn uninstall(&self, xdg: &[(&str, &str)]) -> String {
         let script = format!(
-            "HORUS_DIR=\"$HOME/.horus\"\n\
+            // `set -e`, because uninstall.sh sets it at line 31. Without it the
+            // harness is more forgiving than the shipped script: a command that
+            // legitimately exits non-zero (grep selecting no lines, say) reads
+            // as harmless here and aborts the real uninstall partway through.
+            "set -e\n\
+             HORUS_DIR=\"$HOME/.horus\"\n\
              GREEN=''; YELLOW=''; NC=''\n\
              REMOVED=0; SKIPPED=0\n\
              {paths}\n{removal}\n{profiles}\n\
@@ -521,5 +526,571 @@ fn the_uninstaller_lists_every_location_the_installer_writes() {
         install.contains("# >>> horus completions >>>")
             && uninstall.contains("# >>> horus completions >>>"),
         "the marker install.sh writes into .zshrc and the one uninstall.sh deletes must match"
+    );
+}
+
+/// A prefix install must export `HORUS_PREFIX`, not just `PATH`.
+///
+/// Both readers take the prefix from the environment of the running `horus`
+/// process and from nowhere else — `version.rs` says so outright: "HORUS_PREFIX
+/// is the whole interface ... there is no second name to read, and no way to
+/// discover a prefix install from outside its own tree". `run_rust`'s cache
+/// roots and the version gate's state root are both derived from it.
+///
+/// The installer never put it in the user's environment: the rc file got a PATH
+/// line only, `horus env --init` writes proxy functions and no exports, and the
+/// prefix epilogue told the user to export `PATH` and `HORUS_SOURCE`. So for
+/// every prefix user the cache root fell back to `~/.horus/cache` — deduped
+/// away as the legacy root, meaning the prefix cache was never searched — and
+/// the state root was `~/.horus`, which holds none of that install's files. The
+/// Rust half of the change worked only for someone who guessed the variable.
+#[test]
+fn a_prefix_install_exports_horus_prefix_to_the_shell() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, "/bin/bash", false, &[]);
+
+    let rc = sb
+        .read(".bashrc")
+        .expect("the installer must write to the rc file");
+    assert!(
+        rc.contains("export HORUS_PREFIX="),
+        "a prefix install must export HORUS_PREFIX — without it `horus run` \
+         never searches the prefix cache and the version gate reads a state \
+         root that holds none of this install's files. rc was:\n{rc}"
+    );
+    assert!(
+        rc.contains(&prefix.display().to_string()),
+        "the exported value must be the prefix that was installed to:\n{rc}"
+    );
+}
+
+/// ...including on a re-install, where PATH is already configured.
+///
+/// This is the population the line exists for: a prefix install puts
+/// `${HORUS_PREFIX}/bin` on PATH, so every upgrade and re-install takes the
+/// "PATH already configured" arm. The export first landed inside the `else` arm
+/// of that check, which made it dead for exactly those users — the same mistake
+/// install.sh already records 60 lines above for the shell-integration block
+/// that used to live there.
+#[test]
+fn a_prefix_install_exports_horus_prefix_on_a_reinstall_too() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         PATH=\"$INSTALL_DIR:$PATH\"\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    // INSTALL_DIR is on PATH above, which is what every re-install of a prefix
+    // install looks like.
+    let out = sb.run(&script, "/bin/bash", false, &[]);
+    assert!(
+        out.contains("PATH already configured"),
+        "precondition: this test must exercise the already-configured arm:\n{out}"
+    );
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        rc.contains("export HORUS_PREFIX="),
+        "a re-install must still export HORUS_PREFIX — it is the population \
+         that most needs it, since a prefix install always puts its bin on \
+         PATH. rc was:\n{rc}"
+    );
+}
+
+/// A stale prefix line is replaced, not counted as already configured.
+#[test]
+fn a_changed_prefix_replaces_the_old_export() {
+    let sb = Sandbox::new();
+    std::fs::write(
+        sb.path().join(".bashrc"),
+        "export HORUS_PREFIX=\"/old/location\"\n",
+    )
+    .unwrap();
+
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         PATH=\"$INSTALL_DIR:$PATH\"\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, "/bin/bash", false, &[]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        rc.contains(&prefix.display().to_string()),
+        "the new prefix must be exported:\n{rc}"
+    );
+    assert!(
+        !rc.contains("/old/location"),
+        "a stale prefix line must be removed, not left to win by being first \
+         in the file:\n{rc}"
+    );
+}
+
+/// The `export HORUS_PREFIX` line must be fish-safe.
+///
+/// fish has no `export` builtin, and a POSIX export line stops `config.fish`
+/// loading at that point — the exact failure this file already records for the
+/// PATH line, where a poisoned config stayed poisoned through every upgrade
+/// because the guard found the broken line and skipped writing a working one.
+#[test]
+fn the_prefix_export_uses_fish_syntax_in_config_fish() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, "/usr/bin/fish", false, &[]);
+
+    let rc = sb
+        .read(".config/fish/config.fish")
+        .expect("the installer must write config.fish for a fish shell");
+    assert!(
+        rc.contains("set -gx HORUS_PREFIX"),
+        "config.fish needs `set -gx`, not `export`:\n{rc}"
+    );
+    assert!(
+        !rc.contains("export HORUS_PREFIX"),
+        "a POSIX export line stops config.fish loading at that point:\n{rc}"
+    );
+}
+
+/// The `check_rust_version` gate, verbatim from `install.sh`.
+fn rust_gate_slice() -> String {
+    let src = fs::read_to_string(repo_root().join("install.sh")).expect("install.sh must exist");
+    let begin = "check_rust_version() {";
+    let end = "    ok \"Rust $found (>= $required required)\"\n}";
+    let b = src
+        .find(begin)
+        .unwrap_or_else(|| panic!("install.sh lost the marker {begin:?}"));
+    let e = src
+        .find(end)
+        .unwrap_or_else(|| panic!("install.sh lost the marker {end:?}"));
+    assert!(b < e, "install.sh markers are out of order");
+    let slice = src[b..e + end.len()].to_string();
+    // Without these the harness would be exercising an empty shell function and
+    // every assertion below would hold vacuously.
+    for needed in [
+        "rust-version",
+        "rustc --version",
+        "$HORUS_SRC_DIR/Cargo.toml",
+    ] {
+        assert!(
+            slice.contains(needed),
+            "the check_rust_version slice no longer contains {needed:?} — this test would pass vacuously"
+        );
+    }
+    slice
+}
+
+/// Run the gate against a stub `rustc` reporting `rustc_version`, with the
+/// workspace floor set to `required`. `sort_has_dash_v` chooses whether the
+/// `sort` on PATH understands `-V`. Returns the gate's output plus a
+/// PROCEEDED/ABORTED verdict.
+fn run_rust_gate(rustc_version: &str, required: &str, sort_has_dash_v: bool) -> String {
+    let sb = Sandbox::new();
+    let stub = sb.path().join("stub");
+    fs::create_dir_all(&stub).unwrap();
+    fs::create_dir_all(sb.path().join("src")).unwrap();
+    fs::write(
+        sb.path().join("src/Cargo.toml"),
+        format!("[workspace.package]\nrust-version = \"{required}\"\n"),
+    )
+    .unwrap();
+
+    let rustc = stub.join("rustc");
+    fs::write(
+        &rustc,
+        format!("#!/bin/bash\necho 'rustc {rustc_version} (deadbeef 2026-01-01)'\n"),
+    )
+    .unwrap();
+    // A `sort` that rejects -V, the way any sort predating the GNU/BSD version
+    // extension does. The point is not one named platform: it is that the gate
+    // must not convict a toolchain on a comparison it was unable to perform.
+    if !sort_has_dash_v {
+        let sort = stub.join("sort");
+        fs::write(
+            &sort,
+            "#!/bin/bash\nfor a in \"$@\"; do case \"$a\" in -V|--version-sort)\n\
+             echo 'sort: illegal option -- V' >&2; exit 2 ;; esac; done\nexec /usr/bin/sort \"$@\"\n",
+        )
+        .unwrap();
+        set_exec(&sort);
+    }
+    set_exec(&rustc);
+
+    let script = format!(
+        "set -u\n\
+         PATH=\"$HOME/stub:$PATH\"\n\
+         HORUS_SRC_DIR=\"$HOME/src\"\n\
+         fail() {{ echo \"GATE_FAIL: $*\"; }}\n\
+         ok()   {{ echo \"GATE_OK: $*\"; }}\n\
+         {}\n\
+         if ( check_rust_version ); then echo PROCEEDED; else echo ABORTED; fi\n",
+        rust_gate_slice()
+    );
+    sb.run(&script, "/bin/bash", true, &[])
+}
+
+fn set_exec(p: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn the_rust_version_gate_does_not_abort_when_it_cannot_compare() {
+    let out = run_rust_gate("1.90.0", "1.85", false);
+    assert!(
+        out.contains("PROCEEDED"),
+        "a `sort` without -V made the version gate abort an install on a toolchain \
+         that satisfies the floor (1.90.0 >= 1.85). A gate that cannot perform its \
+         comparison must fail open, as the two guards above it already do:\n{out}"
+    );
+    assert!(
+        !out.contains("or newer is required"),
+        "the installer accused a perfectly good toolchain of being too old:\n{out}"
+    );
+}
+
+#[test]
+fn the_rust_version_gate_still_rejects_a_genuinely_old_toolchain() {
+    let out = run_rust_gate("1.70.0", "1.85", true);
+    assert!(
+        out.contains("ABORTED") && out.contains("or newer is required"),
+        "failing open must not mean failing blind: 1.70.0 is below the 1.85 floor \
+         and the gate has to say so:\n{out}"
+    );
+}
+
+#[test]
+fn the_rust_version_gate_compares_numerically_not_lexically() {
+    let out = run_rust_gate("1.100.0", "1.9", true);
+    assert!(
+        out.contains("PROCEEDED"),
+        "1.100 is newer than 1.9; a string compare says otherwise and would reject \
+         every toolchain once the minor version passes 9:\n{out}"
+    );
+}
+
+/// Drive the installer's tail with `HORUS_PREFIX` set, the way `--prefix` does.
+fn install_with_prefix(sb: &Sandbox, prefix: &Path, shell: &str) -> String {
+    let script = format!(
+        "INSTALL_DIR=\"{prefix}/bin\"\n\
+         HORUS_PREFIX=\"{prefix}\"\n\
+         BINARY_NAME=horus\n\
+         RED=''; GREEN=''; YELLOW=''; CYAN=''; BOLD=''; NC=''\n\
+         info(){{ echo \"  -> $1\"; }}\n\
+         ok(){{ echo \"  ok $1\"; }}\n\
+         warn(){{ echo \"  !  $1\"; }}\n\
+         fail(){{ echo \"  x  $1\"; }}\n\
+         INSTALL_START=$(date +%s)\n\
+         VERSION=0.0.0-test\n\
+         set -e\n\
+         {tail}",
+        prefix = prefix.display(),
+        tail = install_tail()
+    );
+    sb.run(&script, shell, false, &[])
+}
+
+/// Uninstalling must take the `HORUS_PREFIX` export back out of the rc file.
+///
+/// It is not merely untidy to leave it. `install.sh:245` reads the variable:
+///
+///     if [ -n "${HORUS_PREFIX:-}" ]; then INSTALL_DIR="${HORUS_PREFIX}/bin"
+///
+/// so the line the uninstaller leaves behind is still exported by every new
+/// shell, and the *next* install silently lands in the deleted prefix instead
+/// of the default location — with nothing on screen to say so. Uninstall,
+/// open a terminal, reinstall, and horus is back in /opt/horus.
+#[test]
+fn uninstalling_removes_the_horus_prefix_export_from_the_rc() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    fs::write(sb.path().join(".bashrc"), "# bashrc\n").unwrap();
+    install_with_prefix(&sb, &prefix, "/bin/bash");
+    let before = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        before.contains("HORUS_PREFIX="),
+        "precondition: the installer should have written the export:\n{before}"
+    );
+
+    sb.uninstall(&[]);
+
+    let after = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !after.contains("HORUS_PREFIX="),
+        "the uninstaller left the HORUS_PREFIX export behind, pointing at a \
+         prefix it just deleted. Every later shell exports it, and the next \
+         install reads it and reinstalls into the removed directory:\n{after}"
+    );
+}
+
+/// The same line, in fish's syntax, in the file fish actually reads.
+///
+/// `clean_shell_profiles` walks `.bashrc`/`.zshrc`/`.profile`/`.bash_profile`;
+/// `config.fish` is not among them, and the `conf.d/horus.fish` it does delete
+/// is a different file. The installer writes `set -gx HORUS_PREFIX` into
+/// `config.fish`, so for fish users the export survived the uninstall
+/// regardless of how the POSIX side behaved.
+#[test]
+fn uninstalling_removes_the_fish_horus_prefix_export() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let fish_dir = sb.path().join(".config/fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(fish_dir.join("config.fish"), "# config.fish\n").unwrap();
+    install_with_prefix(&sb, &prefix, "/usr/bin/fish");
+    let before = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        before.contains("HORUS_PREFIX"),
+        "precondition: the installer should have written the fish export:\n{before}"
+    );
+
+    sb.uninstall(&[]);
+
+    let after = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        !after.contains("HORUS_PREFIX"),
+        "the uninstaller left the fish HORUS_PREFIX line behind:\n{after}"
+    );
+}
+
+/// The cleanup deletes horus's line and nothing that merely looks like it.
+///
+/// A line-deleting uninstaller is one missing anchor away from eating a
+/// stranger's config. `HORUS_PREFIX=` is anchored by the `=`; the fish form has
+/// no `=`, so without an explicit end-of-name boundary
+/// `set -gx HORUS_PREFIX_OTHER` matches the same pattern and is silently
+/// removed from a file the user has to notice is wrong on their own.
+#[test]
+fn the_prefix_cleanup_leaves_similarly_named_variables_alone() {
+    let sb = Sandbox::new();
+    fs::write(
+        sb.path().join(".bashrc"),
+        "# bashrc\n\
+         export HORUS_PREFIX=\"/opt/horus\"\n\
+         export HORUS_PREFIX_EXTRA=\"keep me\"\n\
+         export MY_HORUS_PREFIX=\"keep me too\"\n",
+    )
+    .unwrap();
+    let fish_dir = sb.path().join(".config/fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(
+        fish_dir.join("config.fish"),
+        "# config.fish\n\
+         set -gx HORUS_PREFIX \"/opt/horus\"\n\
+         set -gx HORUS_PREFIX_OTHER \"keep me\"\n",
+    )
+    .unwrap();
+
+    sb.uninstall(&[]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !rc.contains("export HORUS_PREFIX=\""),
+        "horus's own line survived:\n{rc}"
+    );
+    assert!(
+        rc.contains("HORUS_PREFIX_EXTRA") && rc.contains("MY_HORUS_PREFIX"),
+        "the uninstaller deleted a variable that only shares a prefix with \
+         horus's, out of a file it does not own:\n{rc}"
+    );
+
+    let fish = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        !fish.contains("set -gx HORUS_PREFIX \""),
+        "horus's own fish line survived:\n{fish}"
+    );
+    assert!(
+        fish.contains("HORUS_PREFIX_OTHER"),
+        "the fish cleanup has no end-of-name boundary and ate a neighbouring \
+         variable:\n{fish}"
+    );
+}
+
+/// A prefix install's PATH line goes; the shared `~/.local/bin` line stays.
+///
+/// Both halves matter. The prefix line names a directory this uninstall just
+/// deleted, so leaving it is dead weight the user has to find themselves. The
+/// default line names `~/.local/bin` — which pip, pipx, cargo and rustup all
+/// install into — so removing it because horus happened to write it would take
+/// every one of those off PATH. That is why the removal matches an exact
+/// string built from `$HORUS_PREFIX` rather than anything resembling
+/// `export PATH=`.
+#[test]
+fn uninstalling_a_prefix_install_removes_only_its_own_path_line() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let p = prefix.display().to_string();
+    fs::write(
+        sb.path().join(".bashrc"),
+        format!(
+            "# bashrc\n\
+             export PATH=\"{p}/bin:$PATH\"\n\
+             export PATH=\"$HOME/.local/bin:$PATH\"\n\
+             export PATH=\"/opt/somebody-else/bin:$PATH\"\n"
+        ),
+    )
+    .unwrap();
+
+    sb.uninstall(&[("HORUS_PREFIX", &p)]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !rc.contains(&format!("{p}/bin")),
+        "the prefix PATH line points at a directory the uninstaller just \
+         deleted and must not survive it:\n{rc}"
+    );
+    assert!(
+        rc.contains("$HOME/.local/bin"),
+        "the uninstaller removed the shared ~/.local/bin PATH line. pip, pipx, \
+         cargo and rustup install there too; taking that line out over horus \
+         breaks all of them:\n{rc}"
+    );
+    assert!(
+        rc.contains("/opt/somebody-else/bin"),
+        "the uninstaller removed a PATH line that has nothing to do with \
+         horus:\n{rc}"
+    );
+}
+
+/// The default install must not trip the prefix branch at all.
+#[test]
+fn uninstalling_a_default_install_touches_no_path_line() {
+    let sb = Sandbox::new();
+    let original = "# bashrc\nexport PATH=\"$HOME/.local/bin:$PATH\"\n";
+    fs::write(sb.path().join(".bashrc"), original).unwrap();
+
+    sb.uninstall(&[]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        rc.contains("$HOME/.local/bin"),
+        "a default uninstall (no HORUS_PREFIX) edited a PATH line it has no \
+         claim on:\n{rc}"
+    );
+}
+
+/// An rc file whose only content is the prefix PATH line.
+///
+/// Two ways this went wrong, both invisible in a multi-line fixture:
+/// `grep -v` exits 1 when it selects nothing, so gating the rewrite on `&&`
+/// left the line in the one file where removing it mattered most; and under
+/// `set -e` — which uninstall.sh sets at line 31 — that same exit status
+/// aborts the uninstaller partway through, leaving everything after this
+/// block undone.
+#[test]
+fn an_rc_file_that_is_only_the_prefix_path_line_is_emptied_not_skipped() {
+    let sb = Sandbox::new();
+    let prefix = sb.path().join("opt-horus");
+    let p = prefix.display().to_string();
+    fs::write(
+        sb.path().join(".bashrc"),
+        format!("export PATH=\"{p}/bin:$PATH\"\n"),
+    )
+    .unwrap();
+
+    let out = sb.uninstall(&[("HORUS_PREFIX", &p)]);
+
+    let rc = sb.read(".bashrc").unwrap_or_default();
+    assert!(
+        !rc.contains(&format!("{p}/bin")),
+        "the only line in the file was the one to remove, and it survived:\n{rc}"
+    );
+    assert!(
+        out.contains("Cleaned the prefix PATH line"),
+        "the uninstaller did not report cleaning the line:\n{out}"
+    );
+}
+
+/// A config.fish holding only a *similarly named* variable must report nothing.
+///
+/// The guard grep and the sed that follows it have to agree. When the guard was
+/// unanchored it matched `HORUS_PREFIX_OTHER`, the anchored sed then correctly
+/// deleted nothing, and the block still printed "Cleaned HORUS_PREFIX from
+/// config.fish" and counted a removal. uninstall.sh already carries a comment
+/// about the last time it reported a cleanup that never happened (the declined
+/// -sudo path in the RT block); this is the same failure.
+#[test]
+fn a_config_fish_without_horus_prefix_reports_no_cleanup() {
+    let sb = Sandbox::new();
+    let fish_dir = sb.path().join(".config/fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(
+        fish_dir.join("config.fish"),
+        "# config.fish\nset -gx HORUS_PREFIX_OTHER \"keep me\"\n",
+    )
+    .unwrap();
+
+    let out = sb.uninstall(&[]);
+
+    let fish = sb.read(".config/fish/config.fish").unwrap_or_default();
+    assert!(
+        fish.contains("HORUS_PREFIX_OTHER"),
+        "the unrelated variable was deleted:\n{fish}"
+    );
+    assert!(
+        !out.contains("Cleaned HORUS_PREFIX from config.fish"),
+        "the uninstaller reported cleaning a HORUS_PREFIX line that was never \
+         there and never removed:\n{out}"
     );
 }

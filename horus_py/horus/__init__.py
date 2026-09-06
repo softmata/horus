@@ -11,7 +11,7 @@ Quick start::
     img = horus.Image(480, 640, "rgb8")
 
     # Send over a topic (zero-copy)
-    topic = horus.Topic("camera.rgb")
+    topic = horus.Topic(horus.Image, endpoint="camera.rgb")
     topic.send(img)
 
     # Receive (in another process)
@@ -34,9 +34,15 @@ Common Mistakes:
    'budget'``.
    The ``us`` and ``ms`` constants are available: ``from horus import us, ms``
 
-2. **Topic type** - ``Topic(int)`` or ``Topic(42)`` raises TypeError.
+2. **Topic type** - ``Topic(42)`` raises TypeError. ``Topic(int)`` does NOT:
+   an unrecognised class opens a generic MessagePack topic named after it
+   (here, ``"int"``), which is almost never what was meant.
    Wrong: ``topic = Topic(42)``
    Right: ``topic = Topic(CmdVel)`` or ``Topic("my_topic")``
+
+   A pool-backed type needs the type AND the name:
+   ``Topic(Image, endpoint="camera.rgb")``. Passing only the name gives an
+   untyped topic, and sending an ``Image`` over it raises.
 
 3. **Rate must be positive** - ``Node(rate=0)`` or ``Node(rate=-1)`` raises ValueError.
 
@@ -96,6 +102,9 @@ class Pub:
 try:
     from horus._horus import (
         Topic,  # Unified communication API
+        # Reads an existing ring's recorded type from its SHM header without
+        # attaching to it — see Node._detect_topic_type.
+        peek_topic_type as _peek_topic_type,
         # Internal: Rust bridge classes (not user-facing — use horus.Scheduler wrapper instead)
         Scheduler as _PyScheduler,
         SchedulerConfig as _SchedulerConfig,
@@ -218,6 +227,7 @@ try:
         HorusNotFoundError,
         HorusTransformError,
         HorusTimeoutError,
+        HorusBackpressureError,
         # Coordinate transforms
         TransformFrame,
         Transform,
@@ -258,6 +268,8 @@ except ImportError:
 
     def get_version(): return "0.1.0-mock"
 
+    def _peek_topic_type(name): return None
+
     class Image:
         pass
 
@@ -281,6 +293,14 @@ except ImportError:
 
     class HorusTimeoutError(Exception):
         """Raised when a blocking operation times out."""
+
+    class HorusBackpressureError(Exception):
+        """Raised when send_blocking() is refused for want of backpressure.
+
+        The topic's backend overwrites unread messages and has no full ring to
+        wait on, so the call was refused before any write. Unlike a timeout this
+        is not transient: it lasts as long as the topology that caused it.
+        """
 
 
 
@@ -727,6 +747,25 @@ class Node:
             # try to read the type from the existing SHM header
             if msg_type is None and topic in self.sub_topics:
                 msg_type = self._detect_topic_type(topic)
+                if msg_type is None:
+                    # The ring exists and holds a type this build cannot name.
+                    # Falling through would open a GenericMessage topic against
+                    # it, and the runtime's size check would refuse with a
+                    # message about byte counts that names neither `subs=`, nor
+                    # the type the ring actually holds, nor the fix.
+                    ring_type = self._peek_ring_type(topic)
+                    if ring_type:
+                        raise RuntimeError(
+                            f"topic {topic!r} already holds {ring_type!r} messages, "
+                            f"but it was declared as a bare string in subs=, which "
+                            f"means an untyped MessagePack topic. Those cannot share "
+                            f"a name. Declare the type: "
+                            f"subs=[Sub({topic!r}, {ring_type})] "
+                            f"-- {ring_type} is a class, so import it first "
+                            f"(from horus import {ring_type}). If this build has "
+                            f"no {ring_type}, the ring was written by a peer with "
+                            f"a message type this install does not carry."
+                        )
 
             if msg_type is not None:
                 # Typed topic — Pod zero-copy path (~1.5μs)
@@ -735,24 +774,43 @@ class Node:
                 # String topic — GenericMessage path (~5-50μs)
                 self._topics[topic] = Topic(topic, capacity)
 
+    @staticmethod
+    def _peek_ring_type(topic_name: str):
+        """The type name an existing ring records, or None. Never raises."""
+        try:
+            name = _peek_topic_type(topic_name)
+        except Exception:
+            return None
+        if not name or name.lower() == 'genericmessage':
+            return None
+        return name
+
     def _detect_topic_type(self, topic_name: str):
         """Try to detect the topic's message type from an existing SHM header.
 
         Returns the message type class if found, None otherwise.
+
+        This used to open ``Topic(topic_name, 64)`` and read a ``type_name``
+        attribute off it. Neither half worked: ``Topic`` exposes no
+        ``type_name``, so the value was always ``None``; and the probe could
+        not have succeeded anyway, because ``Topic(name, capacity)`` builds a
+        ``GenericMessage`` topic and attaching that to an existing typed ring
+        is refused by the runtime's size check -- correctly, since a
+        name-based exemption once let a generic handle write past the end of a
+        typed mapping. So step 2 of the documented resolution order never ran
+        for any topic that has ever existed, and ``_TYPE_NAME_MAP`` had no
+        reachable reader.
+
+        ``peek_topic_type`` reads the header without attaching, which is the
+        only way to ask this question without already knowing the answer.
         """
         try:
-            # Create a temporary generic topic to probe the SHM header
-            probe = Topic(topic_name, 64)
-            # Check the topic's type name from the SHM header
-            type_name = getattr(probe, 'type_name', None)
-            if type_name and callable(type_name):
-                type_name = type_name()
-            if not type_name or type_name.lower() == 'genericmessage':
-                return None
-            # Look up the type by name in our known types
-            return _TYPE_NAME_MAP.get(type_name.lower())
+            type_name = _peek_topic_type(topic_name)
         except Exception:
             return None
+        if not type_name or type_name.lower() == 'genericmessage':
+            return None
+        return _TYPE_NAME_MAP.get(type_name.lower())
 
     def _ensure_topic(self, topic: str) -> None:
         """Ensure a Topic object exists for the given name (auto-create if needed)."""
@@ -2002,6 +2060,7 @@ __all__ = [
     "HorusNotFoundError",
     "HorusTransformError",
     "HorusTimeoutError",
+    "HorusBackpressureError",
     # Submodules
     "msggen",
     "perception",

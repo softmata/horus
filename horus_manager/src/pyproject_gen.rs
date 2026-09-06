@@ -73,8 +73,8 @@ pub fn generate(
     // ── Dependencies ─────────────────────────────────────────────────────
     let mut pypi_deps = collect_python_deps(&manifest.dependencies);
 
-    // Add PyPI driver dependencies from [drivers]
-    for value in manifest.drivers.values() {
+    // Add PyPI driver dependencies from [hardware]/[drivers]
+    for value in manifest.hardware_entries().into_values() {
         if let crate::manifest::DriverValue::Config(cfg) = value {
             if let Some(ref pip_name) = cfg.pip {
                 let version = cfg

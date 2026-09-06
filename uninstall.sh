@@ -964,7 +964,7 @@ fi
 # In a function, with markers, for the same reason as the completion
 # removal above: the regression test runs this exact text.
 clean_shell_profiles() {
-    local profile
+    local profile fish_config prefix_path_line prefix_fish_line
     # Shell profiles: remove horus completion eval lines and shell integration
     for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile"; do
         # The block install.sh's add_zsh_fpath_block() writes. It is delimited by
@@ -1000,7 +1000,97 @@ clean_shell_profiles() {
             echo -e "  ${GREEN}[+]${NC} Cleaned horus shell integration from $(basename $profile)"
             REMOVED=$((REMOVED + 1))
         fi
+        # The `export HORUS_PREFIX=` line install.sh writes for a --prefix
+        # install. Leaving it is not untidiness: install.sh:245 reads the
+        # variable to pick INSTALL_DIR, so a line that survives the uninstall is
+        # still exported by every new shell and the NEXT install silently lands
+        # in the prefix this run just deleted.
+        #
+        # ERE via -E, not a `\?` BRE: that quantifier is a GNU extension and
+        # matches nothing on the sed macOS ships, which would leave the line in
+        # place on exactly the platform this cleanup is hardest to notice on.
+        if [ -f "$profile" ] && grep -qE "^(export )?HORUS_PREFIX=" "$profile" 2>/dev/null; then
+            cp "$profile" "${profile}.horus-backup" 2>/dev/null
+            sed -E -i.bak "/^(export )?HORUS_PREFIX=/d" "$profile" 2>/dev/null || \
+                sed -E -i '' "/^(export )?HORUS_PREFIX=/d" "$profile" 2>/dev/null
+            rm -f "${profile}.bak" 2>/dev/null
+            echo -e "  ${GREEN}[+]${NC} Cleaned HORUS_PREFIX export from $(basename $profile)"
+            REMOVED=$((REMOVED + 1))
+        fi
     done
+
+    # The PATH line install.sh writes for a --prefix install points at a
+    # directory this run has just deleted.
+    #
+    # Matched as an exact string, never as a pattern, and only for a prefix.
+    # A default install writes `export PATH="$HOME/.local/bin:$PATH"` for a
+    # directory pip, pipx, cargo and rustup also populate: deleting that line
+    # because horus happened to write it would take every one of those off the
+    # user's PATH. `$HORUS_PREFIX/bin` is a directory horus created and horus
+    # removed, so it is the only one safe to take back out.
+    if [ -n "${HORUS_PREFIX:-}" ] && [ "$HORUS_PREFIX" != "$HORUS_DIR" ]; then
+        prefix_path_line="export PATH=\"${HORUS_PREFIX}/bin:\$PATH\""
+        prefix_fish_line="fish_add_path ${HORUS_PREFIX}/bin"
+        for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" \
+                       "$HOME/.bash_profile" "$HOME/.config/fish/config.fish"; do
+            [ -f "$profile" ] || continue
+            if grep -qF "$prefix_path_line" "$profile" 2>/dev/null ||
+               grep -qF "$prefix_fish_line" "$profile" 2>/dev/null; then
+                cp "$profile" "${profile}.horus-backup" 2>/dev/null
+                # grep exits 1 when it selects no lines, which is exactly
+                # what happens to an rc file whose only content was that PATH
+                # line -- the file where the removal matters most. Gating the
+                # rewrite on `&&` would skip it there, and `set -e` (line 31)
+                # would abort the whole uninstall on the same status. Hence
+                # the braces and the `|| true` rather than `... && mv`.
+                { grep -vF "$prefix_path_line" "$profile" 2>/dev/null \
+                    | grep -vF "$prefix_fish_line" > "${profile}.horus-new" 2>/dev/null; } || true
+                # ...but `|| true` swallows exit 2 as well, and exit 2 means
+                # grep could not READ the file. The redirect creates the target
+                # either way, so `[ -f ]` alone could not tell "this rc held
+                # nothing but our line" from "this rc could not be read", and in
+                # the second case the `mv` replaced a profile it had failed to
+                # read with an empty file.
+                #
+                # `-r` is the whole guard, and it is deliberately the ONLY extra
+                # condition. An earlier attempt here also required the result to
+                # be non-empty "unless the profile held nothing else", testing
+                # that with `[ "$(grep -cvF ... || echo 1)" = "0" ]` — which is
+                # wrong twice over: `grep -c` PRINTS "0" and EXITS 1 when the
+                # count is zero, so the `|| echo 1` fired on the legitimate case
+                # and the substitution became "0\n1", and the whole point of
+                # this block is the file whose only line is ours. That is the
+                # exact case the two failure modes in this function's test are
+                # about, and it made a third.
+                if [ -f "${profile}.horus-new" ] && [ -r "$profile" ]; then
+                    mv "${profile}.horus-new" "$profile"
+                fi
+                rm -f "${profile}.horus-new" 2>/dev/null
+                echo -e "  ${GREEN}[+]${NC} Cleaned the prefix PATH line from $(basename $profile)"
+                REMOVED=$((REMOVED + 1))
+            fi
+        done
+    fi
+
+    # fish keeps its own syntax in its own file, and the loop above does not
+    # walk it. install.sh writes `set -gx HORUS_PREFIX "..."` into config.fish;
+    # the conf.d/horus.fish removed below is a different file entirely, so for
+    # fish users the export survived no matter what the POSIX side did.
+    fish_config="$HOME/.config/fish/config.fish"
+    # Anchored the same way the sed below is. An unanchored "HORUS_PREFIX"
+    # also matches a user's HORUS_PREFIX_OTHER, and the sed would then delete
+    # nothing while this block still printed "Cleaned" and counted a removal --
+    # the same false success this script already records for the declined-sudo
+    # path in the RT cleanup above.
+    if [ -f "$fish_config" ] &&
+       grep -qE "^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)" "$fish_config" 2>/dev/null; then
+        cp "$fish_config" "${fish_config}.horus-backup" 2>/dev/null
+        sed -E -i.bak "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)/d" "$fish_config" 2>/dev/null || \
+            sed -E -i '' "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|$)/d" "$fish_config" 2>/dev/null
+        rm -f "${fish_config}.bak" 2>/dev/null
+        echo -e "  ${GREEN}[+]${NC} Cleaned HORUS_PREFIX from config.fish"
+        REMOVED=$((REMOVED + 1))
+    fi
 
     # Remove fish shell integration
     if [ -f "$HOME/.config/fish/conf.d/horus.fish" ]; then

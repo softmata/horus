@@ -245,27 +245,19 @@ pub fn shm_namespace() -> String {
 /// - macOS: `/tmp/horus_<namespace>/`
 /// - Windows: `%TEMP%\horus_<namespace>\`
 pub fn shm_base_dir() -> PathBuf {
-    let dir_name = format!("horus_{}", shm_namespace());
+    shm_base_dir_for(&shm_namespace())
+}
 
-    #[cfg(target_os = "linux")]
-    {
-        PathBuf::from("/dev/shm").join(&dir_name)
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        PathBuf::from("/tmp").join(&dir_name)
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        std::env::temp_dir().join(&dir_name)
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        PathBuf::from("/tmp").join(&dir_name)
-    }
+/// Base directory for a NAMED namespace, which need not be this process's.
+///
+/// The namespace a process uses is fixed at startup from `HORUS_NAMESPACE`, so
+/// `shm_base_dir()` can only ever name its own. A caller that knows another
+/// namespace by name — a parent that spawned a child under a private one, or
+/// `horus clean` sweeping the machine — had no way to name its directory except
+/// by restating the platform mapping, which is how two copies of one path drift
+/// apart.
+pub fn shm_base_dir_for(namespace: &str) -> PathBuf {
+    shm_parent_dir().join(format!("horus_{}", sanitize_namespace(namespace)))
 }
 
 /// Topics directory for shared memory message passing.
@@ -534,6 +526,60 @@ const REGION_NAME_MAX: usize = 512;
 /// A single embedded `/` remains legal: legacy hierarchical topic names rely on
 /// it, and `ShmRegion::new` creates the intermediate directory. Only traversal
 /// and absolute/rooted forms are rejected.
+#[cfg(test)]
+mod namespace_path_tests {
+    use super::*;
+
+    /// The finding: `shm_base_dir_for` interpolated its argument raw, and its
+    /// callers hand the result to `remove_dir_all`.
+    ///
+    /// The fix is not a new sanitizer — `sanitize_namespace` was already in
+    /// this module and already strict enough — it is that this path was the one
+    /// place that skipped it.
+    #[test]
+    fn a_namespace_can_never_escape_the_shm_parent() {
+        let parent = shm_parent_dir();
+        for hostile in [
+            "../../../../etc",
+            "..",
+            ".",
+            "a/../../b",
+            "a/b",
+            "a\\b",
+            "/absolute",
+        ] {
+            let dir = shm_base_dir_for(hostile);
+            assert_eq!(
+                dir.parent(),
+                Some(parent.as_path()),
+                "{hostile:?} produced {dir:?}, which is not directly under the SHM parent"
+            );
+            let leaf = dir
+                .file_name()
+                .expect("a leaf")
+                .to_string_lossy()
+                .to_string();
+            assert!(
+                !leaf.contains("..") && !leaf.contains('/') && !leaf.contains('\\'),
+                "{hostile:?} left a traversable leaf {leaf:?}"
+            );
+        }
+    }
+
+    /// The default namespace's directory is a compatibility contract: rewriting
+    /// it would strand every running deployment's shared memory.
+    #[test]
+    fn the_ordinary_namespaces_keep_their_paths() {
+        for ok in ["default", "test_a1b2", "robot_01"] {
+            assert_eq!(sanitize_namespace(ok), ok, "{ok:?} must not be rewritten");
+        }
+        assert_eq!(
+            shm_base_dir_for("default"),
+            shm_parent_dir().join("horus_default")
+        );
+    }
+}
+
 pub fn validate_region_name(name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!name.is_empty(), "SHM region name must not be empty");
     anyhow::ensure!(

@@ -280,11 +280,19 @@ impl Py{msg.name} {{
 
 
 def generate_messages_from_yaml(yaml_path: str, output_dir: Optional[Path] = None) -> List[str]:
-    if not _HAS_YAML:
-        raise ImportError("pyyaml is required for YAML message generation: pip install pyyaml")
-
     """
     Generate messages from a YAML definition file.
+
+    Emitter only: this calls ``generate_message`` for each entry and never
+    ``register_message``, so nothing reaches the build registry and
+    ``build_messages()`` will not compile the result. Omit ``output_dir`` and it
+    writes no files at all — it just returns the sources.
+
+    Do not point ``output_dir`` at ``horus_py/src/custom_messages``. That
+    directory is generator-owned: ``build_messages()`` rewrites its ``mod.rs``
+    to name only the registered messages, so a file dropped there is declared
+    by no ``mod`` statement, never compiled, and left behind by every later
+    build.
 
     YAML format:
     ```yaml
@@ -301,6 +309,15 @@ def generate_messages_from_yaml(yaml_path: str, output_dir: Optional[Path] = Non
             type: bool
     ```
     """
+    # After the docstring, not before it. This guard used to sit above the
+    # triple-quoted block, which made that block a no-op expression rather than
+    # a docstring: `generate_messages_from_yaml.__doc__` was None and `help()`
+    # showed none of the schema below. `python_api_docs.rs` states the standard
+    # this fails — "its docstrings are the only API reference a user gets at the
+    # prompt".
+    if not _HAS_YAML:
+        raise ImportError("pyyaml is required for YAML message generation: pip install pyyaml")
+
     with open(yaml_path) as f:
         data = yaml.safe_load(f)
 

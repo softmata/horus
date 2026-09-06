@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::mem;
 use std::mem::offset_of;
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use crate::error::{HorusError, HorusResult};
@@ -104,8 +104,41 @@ pub(crate) struct ParticipantEntry {
     /// 0 = local process (default). Non-zero = low byte of remote peer_id_hash.
     /// Set by horus_net ShmRingWriter when writing network-received data.
     pub(crate) source_host: AtomicU8,
-    /// Padding for alignment
-    pub(crate) _pad: [u8; 5],
+    /// Padding to align `generation` on a 2-byte boundary.
+    pub(crate) _pad0: [u8; 1],
+    /// Bumped every time this slot is CLAIMED by a new owner.
+    ///
+    /// A handle records (slot, generation) when it registers, so `Drop` can
+    /// tell its own registration from a later one that reused the same slot.
+    /// Without it a release has only the slot index to go on, and
+    /// `register_role`'s pass 3 can hand that index to another thread while
+    /// the old handle is still alive — charging the drop to somebody else's
+    /// registration. Under-counting is the dangerous direction:
+    /// `nothing_is_draining` lets a producer retire unread slots once
+    /// `sub_count()` reads 0, so a lost registration becomes silent message
+    /// loss on a subscriber that is still reading.
+    ///
+    /// Carved out of `_pad`, so no existing field moves and the entry is still
+    /// 24 bytes.
+    pub(crate) generation: AtomicU16,
+    /// How many live handles on this thread hold the PRODUCER role here.
+    ///
+    /// `register_role` keys an entry on (pid, thread), not on the handle, so
+    /// several `Topic` handles on one thread deliberately share one slot and
+    /// one increment of `publisher_count`. The role may only be given back
+    /// when the LAST of them goes, which a (slot, generation) match alone
+    /// cannot tell: the first handle to drop would clear an entry two others
+    /// are still using.
+    ///
+    /// Counted PER ROLE because one thread publishing and subscribing to the
+    /// same topic is a supported configuration — it is the `role = Both` fast
+    /// path. A single count could not express "the last subscriber left while a
+    /// publisher stays", and would hold `subscriber_count` up for as long as
+    /// the publisher lived.
+    pub(crate) pub_handles: AtomicU8,
+    /// How many live handles on this thread hold the CONSUMER role here.
+    /// See [`Self::pub_handles`].
+    pub(crate) sub_handles: AtomicU8,
     /// When this lease runs out, in [`current_time_ms`] milliseconds —
     /// MONOTONIC since boot, NOT since the Unix epoch. Written by the owning
     /// process and compared by any other process on the host; see
@@ -134,12 +167,30 @@ impl ParticipantEntry {
 
     /// Clear this entry (use atomic for thread safety)
     pub(crate) fn clear(&self) {
-        self.active.store(0, Ordering::Release);
+        // Clear the identity BEFORE publishing `active = 0`: that store is what
+        // makes the slot claimable — `claim_free_slot` scans for
+        // `active == 0` and CASes it to the initializing sentinel — so anything
+        // written after it could be overwriting a NEW owner's fields.
+        //
+        // The order used to be the other way round, which was harmless while
+        // the only non-test caller was `TopicHeader::initialize`: that runs
+        // single-threaded before `magic` is published, so nothing could be
+        // scanning. Giving a registration back on `Drop` made this reachable
+        // from a live process on every last-handle release.
+        //
+        // `reap_dead_participants_now` writes the same sequence inline and
+        // carries the same reasoning; this is the one place it belongs.
         self.lease_expires_ms.store(0, Ordering::Release);
         self.role.store(0, Ordering::Release);
         self.pid.store(0, Ordering::Release);
         self.thread_id_hash.store(0, Ordering::Release);
         self.source_host.store(0, Ordering::Release);
+        self.pub_handles.store(0, Ordering::Release);
+        self.sub_handles.store(0, Ordering::Release);
+        self.active.store(0, Ordering::Release);
+        // `generation` is deliberately NOT reset. Its whole purpose is to
+        // outlive the registration it identifies, so that a handle holding a
+        // stale (slot, generation) can be told apart from the current owner.
     }
 }
 
@@ -482,7 +533,10 @@ impl TopicHeader {
                 role: AtomicU8::new(0),
                 active: AtomicU8::new(0),
                 source_host: AtomicU8::new(0),
-                _pad: [0; 5],
+                _pad0: [0; 1],
+                generation: AtomicU16::new(0),
+                pub_handles: AtomicU8::new(0),
+                sub_handles: AtomicU8::new(0),
                 lease_expires_ms: AtomicU64::new(0),
             }),
         }
@@ -713,12 +767,12 @@ impl TopicHeader {
     }
 
     /// Register as a publisher (returns slot index or error)
-    pub fn register_producer(&self) -> HorusResult<usize> {
+    pub fn register_producer(&self) -> HorusResult<(usize, u16)> {
         self.register_role(1, &self.publisher_count)
     }
 
     /// Register as a subscriber (returns slot index or error)
-    pub fn register_consumer(&self) -> HorusResult<usize> {
+    pub fn register_consumer(&self) -> HorusResult<(usize, u16)> {
         self.register_role(2, &self.subscriber_count)
     }
 
@@ -736,7 +790,7 @@ impl TopicHeader {
         thread_hash: u32,
         now_ms: u64,
         timeout_ms: u64,
-    ) -> Option<usize> {
+    ) -> Option<(usize, u16)> {
         for (i, p) in self.participants.iter().enumerate() {
             if p.active.load(Ordering::Acquire) != 0 {
                 continue;
@@ -748,8 +802,9 @@ impl TopicHeader {
             {
                 continue;
             }
-            self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
-            return Some(i);
+            let generation =
+                self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
+            return Some((i, generation));
         }
         None
     }
@@ -766,7 +821,7 @@ impl TopicHeader {
         thread_hash: u32,
         now_ms: u64,
         timeout_ms: u64,
-    ) {
+    ) -> u16 {
         // The one place a thread takes ownership of a slot, so the one place to
         // record it as a live owner: the last-resort pass in `register_role`
         // refuses to reclaim an entry whose thread is still running.
@@ -779,13 +834,28 @@ impl TopicHeader {
         self.total_participants.fetch_add(1, Ordering::AcqRel);
         self.last_topology_change_ms
             .store(now_ms, Ordering::Release);
+        // A new owner, so a new generation: any handle still holding the
+        // previous (slot, generation) must not be able to release this one.
+        // Wrapping is fine — a release compares for equality, and 65536 claims
+        // of one slot would have to happen while a single stale handle lived.
+        let generation = p.generation.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        // Exactly one handle owns this role at this point; see
+        // `ParticipantEntry::pub_handles`.
+        if role_bit & 1 != 0 {
+            p.pub_handles.store(1, Ordering::Release);
+            p.sub_handles.store(0, Ordering::Release);
+        } else {
+            p.sub_handles.store(1, Ordering::Release);
+            p.pub_handles.store(0, Ordering::Release);
+        }
         // Finalize: transition from initializing (2) to active (1).
         // This makes the slot visible with all fields properly set.
         p.active.store(1, Ordering::Release);
+        generation
     }
 
     /// Shared registration logic for producer (role_bit=1) and consumer (role_bit=2).
-    fn register_role(&self, role_bit: u8, counter: &AtomicU32) -> HorusResult<usize> {
+    fn register_role(&self, role_bit: u8, counter: &AtomicU32) -> HorusResult<(usize, u16)> {
         let now_ms = current_time_ms();
         let pid = std::process::id();
         let thread_hash = hash_thread_id(std::thread::current().id()) as u32;
@@ -804,7 +874,26 @@ impl TopicHeader {
                         .store(now_ms, Ordering::Release);
                 }
                 p.refresh_lease(now_ms, timeout_ms);
-                return Ok(i);
+                // Count this handle against the role it is registering —
+                // unconditionally.
+                //
+                // `ensure_role` returns early when the CALLING HANDLE already
+                // holds the role, so reaching here means this handle is newly
+                // taking it. The entry's role bits say nothing about that: they
+                // are shared by every handle on this (pid, thread), so a
+                // sibling may have set the bit already. Gating on
+                // `old_role & role_bit == 0` therefore skipped the second
+                // handle to take a role, and the first `Drop` then handed back
+                // a role another live handle was still using — the under-count
+                // direction, where `nothing_is_draining` retires slots beneath
+                // a subscriber that is still reading.
+                let counter = if role_bit & 1 != 0 {
+                    &p.pub_handles
+                } else {
+                    &p.sub_handles
+                };
+                counter.fetch_add(1, Ordering::AcqRel);
+                return Ok((i, p.generation.load(Ordering::Acquire)));
             }
         }
 
@@ -828,10 +917,10 @@ impl TopicHeader {
 
         // Pass 1: genuinely free slots only. No counter decrement: nothing was
         // registered here.
-        if let Some(i) =
+        if let Some(claim) =
             self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
         {
-            return Ok(i);
+            return Ok(claim);
         }
 
         // Pass 2: nothing free — retire participants whose process is actually
@@ -845,10 +934,10 @@ impl TopicHeader {
         // be a new failure introduced by an optimisation. Registration is a
         // startup-shaped event, so the probes are affordable exactly here.
         let _ = self.reap_dead_participants_now(now_ms);
-        if let Some(i) =
+        if let Some(claim) =
             self.claim_free_slot(role_bit, counter, pid, thread_hash, now_ms, timeout_ms)
         {
-            return Ok(i);
+            return Ok(claim);
         }
 
         // Pass 3, last resort: a stale entry belonging to a thread of THIS
@@ -912,8 +1001,9 @@ impl TopicHeader {
                 decrement_to_floor(&self.subscriber_count);
             }
 
-            self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
-            return Ok(i);
+            let generation =
+                self.finish_claim(p, role_bit, counter, pid, thread_hash, now_ms, timeout_ms);
+            return Ok((i, generation));
         }
 
         // All 16 participant slots occupied by live processes.
@@ -925,13 +1015,94 @@ impl TopicHeader {
             .count();
         Err(HorusError::Communication(
             format!(
-                "No available participant slots ({}/{} active). \
-                 Consider reducing the number of concurrent publishers/subscribers \
-                 on this topic, or increasing lease timeout to allow faster reclamation.",
-                active, MAX_PARTICIPANTS
+                "No available participant slots ({}/{} active). Drop `Topic` \
+                 handles this process no longer uses — a registration is returned \
+                 when its last handle drops — or reduce the number of concurrent \
+                 publishers/subscribers on this topic. A slot held by a process \
+                 that has died is reclaimed once its {} ms lease expires.",
+                active,
+                MAX_PARTICIPANTS,
+                self.lease_timeout()
             )
             .into(),
         ))
+    }
+
+    /// Give back a registration this handle owns.
+    ///
+    /// Called from `Drop for RingTopic`. Until it existed, nothing inside a
+    /// LIVING process ever returned a registration: the only decrements were in
+    /// `reap_dead_participants_now`, which wants an expired lease AND a dead
+    /// pid, and in `register_role`'s last-resort pass, which only runs once all
+    /// 16 slots are occupied. So the counts only ever grew — and
+    /// `detect_optimal_backend` reads them, so a transient subscriber on a
+    /// fresh thread (a worker pool, a scoped task, a one-shot diagnostic read)
+    /// permanently converted a command topic from backpressured `SpscShm` to
+    /// overwrite-oldest `PodShm`, with nothing alive to justify it and no path
+    /// back for the life of the segment.
+    ///
+    /// Releasing is only safe with unambiguous ownership, which is why this
+    /// takes a generation as well as a slot. A slot is NOT owned for a handle's
+    /// lifetime: `register_role`'s pass 3 reclaims slots whose thread has
+    /// ended, so an index alone can name somebody else's registration by the
+    /// time it is given back. Under-counting is the dangerous direction —
+    /// `nothing_is_draining` lets a producer retire unread slots once
+    /// `sub_count()` reads 0, so a lost registration becomes silent message loss
+    /// on a subscriber that is still reading, which is strictly worse than the
+    /// over-count being fixed. Every check below refuses rather than guesses.
+    pub(crate) fn release_participant(
+        &self,
+        slot: usize,
+        generation: u16,
+        held_producer: bool,
+        held_consumer: bool,
+    ) {
+        let Some(p) = self.participants.get(slot) else {
+            return;
+        };
+        // Someone else's registration now, or already gone.
+        if p.active.load(Ordering::Acquire) != 1
+            || p.generation.load(Ordering::Acquire) != generation
+            || p.pid.load(Ordering::Acquire) != std::process::id()
+        {
+            return;
+        }
+
+        // Give back each role this handle actually held, and only when it was
+        // the last handle on this thread holding it. `checked_sub` refuses on a
+        // count already at zero — a double release — rather than wrapping and
+        // decrementing a shared counter twice.
+        let mut changed = false;
+        if held_producer
+            && p.pub_handles
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                == Ok(1)
+        {
+            p.role.fetch_and(!1, Ordering::AcqRel);
+            decrement_to_floor(&self.publisher_count);
+            changed = true;
+        }
+        if held_consumer
+            && p.sub_handles
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1))
+                == Ok(1)
+        {
+            p.role.fetch_and(!2, Ordering::AcqRel);
+            decrement_to_floor(&self.subscriber_count);
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+        self.last_topology_change_ms
+            .store(current_time_ms(), Ordering::Release);
+
+        // The slot itself is only free once no handle holds either role on it.
+        if p.pub_handles.load(Ordering::Acquire) == 0 && p.sub_handles.load(Ordering::Acquire) == 0
+        {
+            decrement_to_floor(&self.total_participants);
+            p.clear();
+        }
     }
 
     /// Drop the registrations of participants whose process no longer exists.
@@ -1237,6 +1408,34 @@ impl TopicHeader {
     /// is purely a function of topology (producer/consumer counts) and whether
     /// the message type is POD.
     pub fn detect_optimal_backend(&self) -> BackendMode {
+        let desired = self.topology_backend();
+        // Never NARROW a topic that is already running wider.
+        //
+        // Until participant registrations were given back on `Drop`, the counts
+        // could only grow, so this could not happen and nothing guarded it.
+        // Now that a departing subscriber really does decrement `sub_count`, a
+        // two-subscriber broadcast topic whose second subscriber exits would
+        // otherwise migrate back to `SpscShm` — and a backwards migration in
+        // the middle of a stream loses the messages already in the wider ring,
+        // because the migrator's drain does not actually drain: it has nothing
+        // to observe and always succeeds. Observed directly while building
+        // this: with the downgrade allowed, the SURVIVING subscriber of two
+        // received 198 of 200 messages and ended up back on `SpscShm`
+        // mid-stream.
+        //
+        // Widening on a join is safe and stays immediate. Narrowing has to wait
+        // for a drain that is real; until then the safe answer is the wider
+        // path, which is also the one the runtime took before the counts could
+        // fall at all.
+        let current = self.mode();
+        if backend_width(current) > backend_width(desired) {
+            return current;
+        }
+        desired
+    }
+
+    /// The backend this topology alone would choose, ignoring what is running.
+    fn topology_backend(&self) -> BackendMode {
         let pubs = self.pub_count();
         let subs = self.sub_count();
         let is_pod = self.is_pod_type();
@@ -1262,6 +1461,21 @@ impl TopicHeader {
             // Non-POD broadcast / MPMC → FanoutShm (contention-free SHM SPSC matrix).
             _ => BackendMode::FanoutShm,
         }
+    }
+}
+
+/// How wide a backend is, for the "never narrow a running topic" rule in
+/// [`TopicHeader::detect_optimal_backend`].
+///
+/// Only the ordering matters, not the numbers: a broadcast backend carries
+/// every message to every subscriber, a multi-producer ring admits several
+/// writers, and `SpscShm` is the narrowest real path.
+fn backend_width(mode: BackendMode) -> u8 {
+    match mode {
+        BackendMode::Unknown => 0,
+        BackendMode::SpscShm => 1,
+        BackendMode::MpscShm | BackendMode::SpmcShm => 2,
+        BackendMode::PodShm | BackendMode::FanoutShm => 3,
     }
 }
 
@@ -2034,6 +2248,24 @@ pub(crate) fn type_name_as_stored(name: &str) -> &str {
     &name[..end]
 }
 
+/// The message type an existing topic's ring already holds, by topic NAME.
+///
+/// Reads only the header — it never constructs a `Topic`, which is the point.
+/// Asking "what type is this ring?" by opening it is circular: opening requires
+/// choosing a type, and choosing the wrong one is refused by the size check in
+/// `RingTopic::new` (correctly — a name-based exemption once let a
+/// `Topic<GenericMessage>` join a `Topic<CmdVel>` ring and write megabytes past
+/// the end of the mapping). So a caller that wants to pick the type from the
+/// ring has to read the header without attaching, and this is that.
+///
+/// `None` if the topic does not exist, the name is not a legal region name, the
+/// region has no valid header, or the header records no type.
+pub fn peek_topic_type_name(name: &str) -> Option<String> {
+    let path = horus_sys::shm::topic_shm_path_checked(name)?;
+    let info = read_topic_header_info(&path)?;
+    (!info.type_name.is_empty()).then_some(info.type_name)
+}
+
 pub fn read_topic_header_info(path: &std::path::Path) -> Option<TopicHeaderInfo> {
     let mmap = map_topic_region(path)?;
     let base = mmap.as_ptr();
@@ -2536,7 +2768,10 @@ mod tests {
             role: AtomicU8::new(0),
             active: AtomicU8::new(0),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(0),
         };
         assert!(p.is_lease_expired(1000));
@@ -2550,7 +2785,10 @@ mod tests {
             role: AtomicU8::new(0),
             active: AtomicU8::new(0),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(5000),
         };
         assert!(!p.is_lease_expired(4999));
@@ -2564,7 +2802,10 @@ mod tests {
             role: AtomicU8::new(0),
             active: AtomicU8::new(0),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(5000),
         };
         assert!(p.is_lease_expired(5001));
@@ -2578,7 +2819,10 @@ mod tests {
             role: AtomicU8::new(0),
             active: AtomicU8::new(0),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(5000),
         };
         // now_ms == expires → not expired (> check, not >=)
@@ -2593,7 +2837,10 @@ mod tests {
             role: AtomicU8::new(0),
             active: AtomicU8::new(0),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(0),
         };
         p.refresh_lease(1000, 5000);
@@ -2610,7 +2857,10 @@ mod tests {
             role: AtomicU8::new(3),
             active: AtomicU8::new(1),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(99999),
         };
         p.clear();
@@ -2623,10 +2873,70 @@ mod tests {
 
     // ── Registration ────────────────────────────────────────────────────
 
+    /// A topic already running a wider backend must not narrow when a
+    /// participant leaves.
+    ///
+    /// Before registrations were given back on `Drop`, the counts could only
+    /// grow, so nothing could narrow and nothing guarded it. Now a departing
+    /// subscriber really does decrement `sub_count`, and a backwards migration
+    /// mid-stream loses whatever is already in the wider ring — the migrator's
+    /// drain has nothing to observe and always succeeds. Measured while
+    /// building this: with the downgrade allowed, the surviving subscriber of
+    /// two received 198 of 200 messages and ended up back on `SpscShm`.
+    #[test]
+    fn a_running_topic_never_narrows_when_a_participant_leaves() {
+        let h = make_header(8, 8, true, 16);
+        h.publisher_count.store(1, Ordering::Release);
+        h.subscriber_count.store(2, Ordering::Release);
+
+        let wide = h.detect_optimal_backend();
+        assert_eq!(
+            wide,
+            BackendMode::PodShm,
+            "two subscribers on a POD topic is a broadcast topology"
+        );
+        // Publish it, the way a migration would.
+        h.backend_mode.store(wide as u8, Ordering::Release);
+
+        // One subscriber leaves. The topology alone would now say SpscShm.
+        h.subscriber_count.store(1, Ordering::Release);
+        assert_eq!(
+            h.topology_backend(),
+            BackendMode::SpscShm,
+            "precondition: the topology really has narrowed, so this test is \
+             not asserting a no-op"
+        );
+        assert_eq!(
+            h.detect_optimal_backend(),
+            BackendMode::PodShm,
+            "the running topic must stay on the wider backend — narrowing \
+             mid-stream drops the messages already in the wider ring for the \
+             subscriber that is still reading"
+        );
+    }
+
+    /// Widening on a join stays immediate — the rule is one-directional.
+    #[test]
+    fn a_running_topic_still_widens_when_a_participant_joins() {
+        let h = make_header(8, 8, true, 16);
+        h.publisher_count.store(1, Ordering::Release);
+        h.subscriber_count.store(1, Ordering::Release);
+        let narrow = h.detect_optimal_backend();
+        assert_eq!(narrow, BackendMode::SpscShm);
+        h.backend_mode.store(narrow as u8, Ordering::Release);
+
+        h.subscriber_count.store(2, Ordering::Release);
+        assert_eq!(
+            h.detect_optimal_backend(),
+            BackendMode::PodShm,
+            "a second subscriber must widen the path immediately"
+        );
+    }
+
     #[test]
     fn register_producer_increments_pub_count() {
         let h = make_header(8, 8, true, 16);
-        let slot = h.register_producer().unwrap();
+        let slot = h.register_producer().unwrap().0;
         assert!(slot < MAX_PARTICIPANTS);
         assert_eq!(h.pub_count(), 1);
         assert_eq!(h.sub_count(), 0);
@@ -2636,7 +2946,7 @@ mod tests {
     #[test]
     fn register_consumer_increments_sub_count() {
         let h = make_header(8, 8, true, 16);
-        let slot = h.register_consumer().unwrap();
+        let slot = h.register_consumer().unwrap().0;
         assert!(slot < MAX_PARTICIPANTS);
         assert_eq!(h.sub_count(), 1);
         assert_eq!(h.pub_count(), 0);
@@ -2934,12 +3244,15 @@ mod tests {
         }
         assert_eq!(h.sub_count(), MAX_PARTICIPANTS as u32);
 
-        let slot = h.register_producer().expect(
-            "registration must sweep unconditionally: every slot is held by a \
+        let slot = h
+            .register_producer()
+            .expect(
+                "registration must sweep unconditionally: every slot is held by a \
              process that no longer exists, and refusing the node's start \
              because another process swept the table moments ago would be a \
              failure the throttle invented",
-        );
+            )
+            .0;
         assert!(slot < MAX_PARTICIPANTS);
         assert_eq!(
             h.pub_count(),
@@ -3077,8 +3390,8 @@ mod tests {
     #[test]
     fn register_same_thread_reuses_slot() {
         let h = make_header(8, 8, true, 16);
-        let slot1 = h.register_producer().unwrap();
-        let slot2 = h.register_consumer().unwrap();
+        let slot1 = h.register_producer().unwrap().0;
+        let slot2 = h.register_consumer().unwrap().0;
         assert_eq!(
             slot1, slot2,
             "Same thread should reuse same participant slot"
@@ -3093,8 +3406,8 @@ mod tests {
     #[test]
     fn register_producer_twice_same_thread_no_double_count() {
         let h = make_header(8, 8, true, 16);
-        let s1 = h.register_producer().unwrap();
-        let s2 = h.register_producer().unwrap();
+        let s1 = h.register_producer().unwrap().0;
+        let s2 = h.register_producer().unwrap().0;
         assert_eq!(s1, s2);
         assert_eq!(
             h.pub_count(),
@@ -3106,14 +3419,14 @@ mod tests {
     #[test]
     fn register_from_different_threads_uses_different_slots() {
         let h = make_header(8, 8, true, 16);
-        let slot1 = h.register_producer().unwrap();
+        let slot1 = h.register_producer().unwrap().0;
 
         let header_ptr = &h as *const TopicHeader as usize;
         let slot2 = std::thread::spawn(move || {
             // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
             // outlives this thread (main thread joins before h is dropped).
             let h = unsafe { &*(header_ptr as *const TopicHeader) };
-            h.register_producer().unwrap()
+            h.register_producer().unwrap().0
         })
         .join()
         .unwrap();
@@ -3135,7 +3448,7 @@ mod tests {
                     // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
                     // outlives all spawned threads (main thread joins before h is dropped).
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
-                    h.register_producer().unwrap()
+                    h.register_producer().unwrap().0
                 })
             })
             .collect();
@@ -3163,7 +3476,7 @@ mod tests {
                     // SAFETY: header_ptr was derived from a valid stack-allocated TopicHeader that
                     // outlives all spawned threads (main thread joins before h is dropped).
                     let h = unsafe { &*(header_ptr as *const TopicHeader) };
-                    h.register_producer().unwrap()
+                    h.register_producer().unwrap().0
                 })
             })
             .collect();
@@ -3215,7 +3528,7 @@ mod tests {
             // is no doubt it is still there.
             let header = &h;
             s.spawn(move || {
-                let slot = header.register_consumer().expect("subscriber registers");
+                let slot = header.register_consumer().expect("subscriber registers").0;
                 let hash = hash_thread_id(std::thread::current().id()) as u32;
                 registered_tx.send((slot, hash)).unwrap();
                 release_rx.recv().ok();
@@ -3668,7 +3981,7 @@ mod tests {
         // subscriber. Registration now takes a genuinely FREE slot first and
         // leaves the expired entry alone; an expired slot is considered only
         // when no free one remains, and then only if its owner is really gone.
-        let slot = h.register_producer().unwrap();
+        let slot = h.register_producer().unwrap().0;
         assert_ne!(
             slot, 0,
             "must not evict an expired slot while others are free"
@@ -3709,7 +4022,10 @@ mod tests {
             role: AtomicU8::new(0),
             active: AtomicU8::new(0),
             source_host: AtomicU8::new(0),
-            _pad: [0; 5],
+            _pad0: [0; 1],
+            generation: AtomicU16::new(0),
+            pub_handles: AtomicU8::new(0),
+            sub_handles: AtomicU8::new(0),
             lease_expires_ms: AtomicU64::new(0),
         };
         // Realistic large timestamp (year ~2100 in ms) + large timeout

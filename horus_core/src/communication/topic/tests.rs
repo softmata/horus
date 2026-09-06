@@ -15,7 +15,7 @@
 use super::header::ParticipantEntry;
 use super::*;
 use std::mem;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -4176,7 +4176,7 @@ fn detect_backend_cross_process_multi_p_0c_mpsc_shm() {
 fn register_producer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot = h.register_producer().expect("should succeed");
+    let slot = h.register_producer().expect("should succeed").0;
     assert!(slot < 16, "Slot index must be < MAX_PARTICIPANTS");
     assert_eq!(h.pub_count(), 1);
     assert_eq!(h.sub_count(), 0);
@@ -4186,7 +4186,7 @@ fn register_producer_returns_slot_index() {
 fn register_consumer_returns_slot_index() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot = h.register_consumer().expect("should succeed");
+    let slot = h.register_consumer().expect("should succeed").0;
     assert!(slot < 16);
     assert_eq!(h.sub_count(), 1);
     assert_eq!(h.pub_count(), 0);
@@ -4196,8 +4196,8 @@ fn register_consumer_returns_slot_index() {
 fn register_both_roles_same_thread_reuses_slot() {
     let mut h = TopicHeader::zeroed();
     h.init(8, 4, true, 64, 8, "TestType", 0);
-    let slot_pub = h.register_producer().expect("producer");
-    let slot_sub = h.register_consumer().expect("consumer");
+    let slot_pub = h.register_producer().expect("producer").0;
+    let slot_sub = h.register_consumer().expect("consumer").0;
     // Same thread should reuse the same participant entry
     assert_eq!(
         slot_pub, slot_sub,
@@ -4249,7 +4249,10 @@ fn participant_entry_lease_not_expired_when_fresh() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(current_time_ms() + 60_000),
     };
     assert!(!p.is_lease_expired(current_time_ms()));
@@ -4263,7 +4266,10 @@ fn participant_entry_lease_expired_after_timeout() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(current_time_ms().saturating_sub(1000)),
     };
     assert!(p.is_lease_expired(current_time_ms()));
@@ -4277,7 +4283,10 @@ fn participant_entry_zero_lease_is_expired() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(0),
     };
     assert!(p.is_lease_expired(current_time_ms()));
@@ -4291,7 +4300,10 @@ fn participant_entry_refresh_extends_lease() {
         role: AtomicU8::new(1),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(current_time_ms().saturating_sub(1000)),
     };
     assert!(p.is_lease_expired(current_time_ms()));
@@ -4327,7 +4339,8 @@ fn expired_slot_reclaimed_by_new_registration() {
     // subscribers. A new registration must take a free slot while one exists.
     let slot = h
         .register_producer()
-        .expect("a free slot is available, so registration must succeed");
+        .expect("a free slot is available, so registration must succeed")
+        .0;
     assert_ne!(slot, 0, "must not evict slot 0 while free slots remain");
     assert_eq!(
         p.pid.load(Ordering::Acquire),
@@ -4415,7 +4428,10 @@ fn participant_clear_resets_all_fields() {
         role: AtomicU8::new(3),
         active: AtomicU8::new(1),
         source_host: AtomicU8::new(0),
-        _pad: [0; 5],
+        _pad0: [0; 1],
+        generation: AtomicU16::new(0),
+        pub_handles: AtomicU8::new(0),
+        sub_handles: AtomicU8::new(0),
         lease_expires_ms: AtomicU64::new(999999),
     };
 
@@ -9834,7 +9850,6 @@ fn migration_metrics_default_all_zero() {
     assert_eq!(m.messages_sent.load(Ordering::Relaxed), 0);
     assert_eq!(m.messages_received.load(Ordering::Relaxed), 0);
     assert_eq!(m.send_failures.load(Ordering::Relaxed), 0);
-    assert_eq!(m.recv_failures.load(Ordering::Relaxed), 0);
     assert_eq!(m.migrations.load(Ordering::Relaxed), 0);
 }
 
@@ -9845,13 +9860,11 @@ fn migration_metrics_atomic_increments() {
     m.messages_sent.fetch_add(5, Ordering::Relaxed);
     m.messages_received.fetch_add(3, Ordering::Relaxed);
     m.send_failures.fetch_add(2, Ordering::Relaxed);
-    m.recv_failures.fetch_add(1, Ordering::Relaxed);
     m.migrations.fetch_add(4, Ordering::Relaxed);
 
     assert_eq!(m.messages_sent.load(Ordering::Relaxed), 5);
     assert_eq!(m.messages_received.load(Ordering::Relaxed), 3);
     assert_eq!(m.send_failures.load(Ordering::Relaxed), 2);
-    assert_eq!(m.recv_failures.load(Ordering::Relaxed), 1);
     assert_eq!(m.migrations.load(Ordering::Relaxed), 4);
 }
 
@@ -9896,17 +9909,59 @@ fn migration_metrics_manual_increment_visible_in_snapshot() {
     let t: Topic<u64> = Topic::new(unique("metrics_manual")).expect("create");
     let mig = t.migration_metrics();
 
-    // Manually increment (as would happen if hot-path tracking were enabled)
     mig.messages_sent.fetch_add(10, Ordering::Relaxed);
     mig.messages_received.fetch_add(7, Ordering::Relaxed);
     mig.send_failures.fetch_add(2, Ordering::Relaxed);
-    mig.recv_failures.fetch_add(1, Ordering::Relaxed);
 
     let snap = t.metrics();
     assert_eq!(snap.messages_sent(), 10);
     assert_eq!(snap.messages_received(), 7);
     assert_eq!(snap.send_failures(), 2);
-    assert_eq!(snap.recv_failures(), 1);
+    assert_eq!(
+        snap.recv_failures(),
+        0,
+        "the real transport has no recv-failure notion — a recv() that returns \
+         None is an empty ring. Only MockTopic reports one, from its fault \
+         injection."
+    );
+}
+
+/// The counters behind `TopicMetrics` must move on the ORDINARY paths.
+///
+/// `messages_sent` and `messages_received` were incremented only inside
+/// `send_with_content_logging` / `recv_with_content_logging` — both `#[cold]`,
+/// both reached only while the `horus monitor` TUI has set the topic's verbose
+/// flag. So a public accessor documented as "Messages sent through this topic"
+/// read 0 in every normal run, however much traffic the topic carried.
+///
+/// `MockTopic` — the stand-in users write their tests against — maintained both
+/// faithfully all along, and its own tests assert on them. A double that
+/// reports what the real transport does not is the one defect a double cannot
+/// have.
+#[test]
+fn topic_metrics_count_traffic_without_the_monitor_attached() {
+    let t: Topic<u64> = Topic::new(unique("metrics_ordinary")).expect("create");
+
+    for i in 0..5u64 {
+        t.send(i);
+    }
+    let mut received = 0u64;
+    while t.recv().is_some() {
+        received += 1;
+    }
+
+    let snap = t.metrics();
+    assert_eq!(
+        snap.messages_sent(),
+        5,
+        "five ordinary send() calls must read as five"
+    );
+    assert!(received > 0, "precondition: the topic delivered something");
+    assert_eq!(
+        snap.messages_received(),
+        received,
+        "every message recv() handed back must be counted"
+    );
 }
 
 // ============================================================================
@@ -12481,10 +12536,6 @@ fn no_message_is_lost_without_being_counted() {
                      is single-threaded, so there is nothing to contend with — \
                      treat this as a real failure, not a skip."
                 );
-            }
-            MigrationResult::Failed => {
-                eprintln!("skipping {mode:?}: not available in this build");
-                continue;
             }
         }
         backends_checked += 1;

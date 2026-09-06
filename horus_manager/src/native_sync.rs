@@ -312,9 +312,7 @@ fn deps_equal(a: &DependencyValue, b: &DependencyValue) -> bool {
 /// normal dependency. Only package drivers generate Cargo deps.
 fn collect_driver_crates(manifest: &HorusManifest) -> Vec<String> {
     let mut crates = Vec::new();
-    // Check both [hardware] and legacy [drivers]
-    let all_drivers = manifest.hardware.values().chain(manifest.drivers.values());
-    for driver_val in all_drivers {
+    for driver_val in manifest.hardware_entries().into_values() {
         if let crate::manifest::DriverValue::Config(cfg) = driver_val {
             if let Some(package) = &cfg.package {
                 crates.push(package.clone());

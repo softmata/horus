@@ -116,7 +116,7 @@ static PENDING_LOCAL_ESTOP: std::sync::Mutex<Option<String>> = std::sync::Mutex:
 static ESTOP_QUEUE_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
-fn estop_queue_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn estop_queue_guard() -> std::sync::MutexGuard<'static, ()> {
     ESTOP_QUEUE_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -532,9 +532,11 @@ pub(crate) struct NodeTimingReport {
 ///
 /// Correctness here rests on one invariant: a node is owned by exactly one
 /// executor, so exactly one thread ever WRITES its state. That is what makes
-/// `record_tick`'s `store(0)` on `consecutive_misses` safe against
+/// `record_deadline_met`'s `store(0)` on `consecutive_misses` safe against
 /// `record_miss`'s increment — they are the same thread, one tick apart, and
-/// cannot interleave.
+/// cannot interleave. (The store used to live in `record_tick`, which reset the
+/// run on any tick that made its BUDGET; a node can make its budget and still
+/// miss its deadline, so a met deadline is what ends the run.)
 ///
 /// The counters use `fetch_add`/`fetch_max` anyway, so a second writer would
 /// not lose a count; what it would break is the reset, which could be clobbered
@@ -634,16 +636,22 @@ impl NodeTimingState {
             }
         }
 
-        // Reset the consecutive-miss run only on a tick that did NOT violate.
+        // The consecutive-miss run is NOT cleared here.
         //
-        // This used to run unconditionally at the TOP of the function, before
-        // the budget check. For a node that overruns its budget and misses its
-        // deadline on the same tick — the common case, since an overrunning
-        // tick is exactly what blows the deadline — the sequence was: clear to
-        // 0 here, then `record_miss` increments to 1. Pinned at 1 forever, so
-        // `evaluate_degradation`, whose ladder starts at 3 consecutive misses,
-        // could never fire for the nodes in the worst trouble.
-        self.consecutive_misses.store(0, Ordering::Release);
+        // It counts missed DEADLINES; this function knows only about the
+        // BUDGET, and the two are independent -- a node released late executes
+        // well inside its budget and still misses. Clearing from the budget
+        // check therefore zeroed the run on the very ticks it needed to count:
+        // such a node was reset to 0 here, incremented to 1 by `record_miss`,
+        // and pinned at 1 forever, so the ladder starting at 3 could never fire
+        // for exactly the node in the worst trouble.
+        //
+        // Moving the reset below the budget check (rather than removing it)
+        // only narrows that to the ticks that also overran, which is not the
+        // dominant case. A met deadline is the only thing that ends a run of
+        // missed deadlines, so `SafetyMonitor::record_deadline_met` owns it --
+        // called from rt_executor.rs and scheduler/mod.rs on every tick that
+        // met one. See `check_deadline_from_release`.
         None
     }
 
@@ -675,7 +683,9 @@ pub(crate) struct DegradationPolicy {
     pub(crate) reduce_after: u64,
     /// Consecutive misses before isolating node (default: 10)
     pub(crate) isolate_after: u64,
-    /// Consecutive misses before killing node — permanently removing from execution (default: 20)
+    /// Consecutive misses before killing node — permanently removing from
+    /// execution (default: 20, raised to `max_deadline_misses` when that
+    /// ceiling is higher, so the ceiling stays reachable — see `reaching`)
     pub(crate) kill_after: u64,
     /// Successful ticks at reduced rate before restoring original (default: 100)
     pub(crate) recovery_ticks: u64,
@@ -689,6 +699,32 @@ impl Default for DegradationPolicy {
             isolate_after: 10,
             kill_after: 20,
             recovery_ticks: 100,
+        }
+    }
+}
+
+impl DegradationPolicy {
+    /// The default ladder, with its terminal rung moved out of the way of a
+    /// configured `max_deadline_misses` ceiling.
+    ///
+    /// `Kill` is permanent — it sets `is_stopped`, and a stopped node is
+    /// skipped forever — so a node killed at 20 consecutive misses can never
+    /// tick again, and its consecutive count can never climb any higher. With
+    /// `kill_after` fixed at 20 and `max_deadline_misses` defaulting to 100,
+    /// the documented emergency stop was unreachable in every shipped
+    /// configuration: the ladder always retired the node first. Nothing warned,
+    /// because the only setter for the ladder is `#[cfg(test)]`, so no user
+    /// build could raise the rung either.
+    ///
+    /// A hardcoded constant must not silently cap a documented safety
+    /// threshold, so the rung moves instead. Where the two now coincide the
+    /// e-stop wins, because both dispatch paths record the miss — which
+    /// evaluates the ceiling — before evaluating the ladder.
+    fn reaching(max_deadline_misses: u64) -> Self {
+        let base = Self::default();
+        Self {
+            kill_after: base.kill_after.max(max_deadline_misses),
+            ..base
         }
     }
 }
@@ -835,6 +871,17 @@ impl BudgetEnforcer {
     pub(crate) fn check_budget(&self, node: &str, actual: Duration) -> Result<(), BudgetViolation> {
         let state = self.handle(node);
         self.check_budget_of(node, &state, actual)
+    }
+
+    /// Record that a node MET its deadline, clearing its consecutive-miss run.
+    ///
+    /// No allocation and no insert on the miss of the map: a node with no entry
+    /// has no run to clear, and this runs on the RT thread on every healthy
+    /// tick — by far the hottest of these paths.
+    pub(crate) fn record_deadline_met(&self, node: &str) {
+        if let Some(state) = self.node_timing.read().get(node) {
+            state.consecutive_misses.store(0, Ordering::Release);
+        }
     }
 
     /// Get timing stats for a specific node.
@@ -1019,7 +1066,7 @@ impl SafetyMonitor {
             deadline_misses: AtomicU64::new(0),
             max_deadline_misses,
             degrade_activations: AtomicU64::new(0),
-            degradation_policy: DegradationPolicy::default(),
+            degradation_policy: DegradationPolicy::reaching(max_deadline_misses),
             degradation_states: Mutex::new(HashMap::new()),
             degraded_nodes: AtomicUsize::new(0),
             external_safe_state_pending: AtomicBool::new(false),
@@ -1303,11 +1350,36 @@ impl SafetyMonitor {
         result
     }
 
+    /// Record that a node met its deadline, clearing its consecutive-miss run.
+    ///
+    /// The counterpart to `record_deadline_miss`, and the ONLY thing that
+    /// clears the run. Call it on every tick whose deadline check came back
+    /// clean, from both dispatch paths.
+    ///
+    /// This used to be a side effect of `check_budget`, which is the wrong
+    /// contract twice over. A budget overrun and a deadline miss are different
+    /// failures — a node woken late can blow its deadline having executed in a
+    /// tenth of its budget — so an in-budget tick is no evidence the deadline
+    /// was met. And neither production caller ran it on a healthy tick anyway:
+    /// the main loop calls `check_tick_budget` only from inside the
+    /// budget-violation branch, and a node with a deadline and no budget skips
+    /// that block entirely, so on those two paths nothing ever cleared the
+    /// count and `max_deadline_misses` was a lifetime total wearing the name of
+    /// a consecutive one.
+    pub(crate) fn record_deadline_met(&self, node_name: &str) {
+        self.budget_enforcer.record_deadline_met(node_name);
+    }
+
     /// Record a deadline miss with severity tracking.
     ///
     /// Tracks per-node: total misses, consecutive misses, worst miss duration.
-    /// Triggers emergency stop only when the process-wide total crosses
-    /// `max_deadline_misses`.
+    /// Triggers an emergency stop only when THIS node's CONSECUTIVE run reaches
+    /// `max_deadline_misses`; the run is cleared by `record_deadline_met` on
+    /// any tick that met its deadline. The process-wide `deadline_misses` total
+    /// is kept for the timing report and triggers nothing — it used to be the
+    /// e-stop trigger, and as a lifetime count across every node that was
+    /// indefensible on a real robot. See the note in
+    /// `record_deadline_miss_with_severity`.
     pub(crate) fn record_deadline_miss(&self, node_name: &str) {
         self.record_deadline_miss_with_severity(node_name, 0);
     }
@@ -1338,7 +1410,8 @@ impl SafetyMonitor {
         // is not keeping up right now. A run of misses is a node in trouble; a
         // scattered few that each recover are jitter, and jitter on a stock
         // kernel is not a reason to stop a robot. `consecutive_misses` is reset
-        // by `check_budget` on any tick that did not violate, so recovery
+        // by `record_deadline_met` on any tick that MET its deadline, on both
+        // dispatch paths and whether or not the node has a budget, so recovery
         // genuinely clears the count.
         let consecutive = {
             let state = self.budget_enforcer.handle(node_name);
@@ -1413,6 +1486,15 @@ impl SafetyMonitor {
         let state = states
             .get_mut(node_name)
             .expect("inserted immediately above");
+
+        // Every caller reaches this only after recording a deadline miss, so
+        // the run of recovery ticks is over. `record_successful_tick` means
+        // "the tick did not panic" and both callers reach it on a tick already
+        // recorded as a miss in the same pass; without this, a node that missed
+        // EVERY deadline still accumulated `recovery_ticks` of "success" and
+        // was restored to the rate it had just proved it could not hold. The
+        // field's own comment already claimed to be a consecutive run.
+        state.recovery_counter = 0;
 
         let action = if consecutive_misses >= policy.kill_after
             && state.stage != DegradationStage::Killed
@@ -2322,9 +2404,17 @@ mod tests {
         assert_eq!(state.consecutive_misses(), 3);
         assert!(state.is_chronic());
 
-        // Successful tick resets consecutive counter
+        // A tick inside budget is NOT a reset: this state knows only about the
+        // budget, and a node released late misses its deadline having executed
+        // well inside it. Clearing here pinned the run at 1 for exactly that
+        // node. Only a met DEADLINE ends the run, via `record_deadline_met`.
         state.record_tick(10_u64.us());
-        assert_eq!(state.consecutive_misses(), 0);
+        assert_eq!(state.consecutive_misses(), 3);
+        assert!(state.is_chronic());
+
+        // What `record_deadline_met` does, which is the only thing that ends
+        // the run.
+        state.consecutive_misses.store(0, Ordering::Release);
         assert!(!state.is_chronic());
         // But total misses persist
         assert_eq!(state.total_deadline_misses(), 3);
@@ -2873,6 +2963,81 @@ mod tests {
     /// there eventually whatever its health. That is a timer wearing a safety
     /// threshold's name.
     ///
+    /// The configured `max_deadline_misses` ceiling must be reachable.
+    ///
+    /// `DegradationAction::Kill` sets `is_stopped`, and a stopped node is
+    /// skipped forever on both dispatch paths — so a node the ladder kills at
+    /// 20 consecutive misses can never tick again, and its consecutive count
+    /// can never climb any higher. With `kill_after` hardcoded at 20 and the
+    /// ceiling defaulting to 100, the emergency stop this knob names could not
+    /// fire in ANY shipped configuration, and the ladder's only setter is
+    /// `#[cfg(test)]`, so no user build could raise the rung either.
+    ///
+    /// The assertion is on the ORDER of the two terminal events, not on the
+    /// counter: at this level nothing removes the node, so the count keeps
+    /// climbing and the e-stop would fire on its own. What made the ceiling
+    /// dead is the `Kill` that lands first.
+    #[test]
+    fn the_ladder_does_not_retire_a_node_before_its_configured_ceiling() {
+        let _estop_serial = super::estop_queue_guard();
+        // Above the ladder's default terminal rung of 20 — as the shipped
+        // default of 100 also is.
+        let ceiling = 25u64;
+        let monitor = SafetyMonitor::new(ceiling);
+
+        for i in 1..=ceiling {
+            monitor.record_deadline_miss("arm_controller");
+            let consecutive = monitor.consecutive_misses("arm_controller");
+            let action = monitor.evaluate_degradation("arm_controller", consecutive, Some(100.0));
+
+            if !monitor.is_emergency_stop() {
+                assert!(
+                    !matches!(action, DegradationAction::Kill(_)),
+                    "the ladder killed the node at {} consecutive misses. It can \
+                     never tick again, so it can never reach the configured \
+                     ceiling of {} and the emergency stop that number names is \
+                     unreachable",
+                    i,
+                    ceiling
+                );
+            }
+        }
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "{} consecutive misses is the configured ceiling — the emergency \
+             stop must fire",
+            ceiling
+        );
+    }
+
+    /// The same thing at the value users actually ship: the documented default.
+    #[test]
+    fn the_default_ceiling_is_reachable() {
+        let _estop_serial = super::estop_queue_guard();
+        let default_ceiling = super::super::config::SchedulerConfig::default()
+            .realtime
+            .max_deadline_misses;
+        let monitor = SafetyMonitor::new(default_ceiling);
+
+        for i in 1..=default_ceiling {
+            monitor.record_deadline_miss("arm_controller");
+            let consecutive = monitor.consecutive_misses("arm_controller");
+            let action = monitor.evaluate_degradation("arm_controller", consecutive, Some(100.0));
+            if !monitor.is_emergency_stop() {
+                assert!(
+                    !matches!(action, DegradationAction::Kill(_)),
+                    "the default ladder retired the node at {} of the default \
+                     ceiling's {} consecutive misses",
+                    i,
+                    default_ceiling
+                );
+            }
+        }
+
+        assert!(monitor.is_emergency_stop());
+    }
+
     /// Here one node misses ten times the ceiling, recovering between each. It
     /// must not stop the robot.
     #[test]
@@ -2884,8 +3049,12 @@ mod tests {
 
         for _ in 0..(ceiling * 10) {
             monitor.record_deadline_miss("wheel_controller");
-            // A tick inside budget: `check_budget` clears the consecutive run.
-            let _ = monitor.check_tick_budget("wheel_controller", Duration::from_micros(100));
+            // The next tick MET its deadline, which is what ends the run. This
+            // used to be spelled `check_tick_budget(.., in_budget_duration)`,
+            // asserting a contract the runtime does not hold: an in-budget tick
+            // is not a met deadline, and neither production caller reached that
+            // call on a healthy tick anyway.
+            monitor.record_deadline_met("wheel_controller");
         }
 
         assert!(
@@ -2930,6 +3099,124 @@ mod tests {
         // Its third consecutive miss reaches the ceiling.
         monitor.record_deadline_miss("balance_controller");
         assert!(monitor.is_emergency_stop());
+    }
+
+    /// The consecutive-miss run must count DEADLINE misses, not budget overruns.
+    ///
+    /// This is the RT executor's exact call order for the failure mode
+    /// `check_deadline_from_release` was written to catch: a node woken late
+    /// that then executes well inside its budget. `rt_executor.rs` calls
+    /// `check_tick_budget` unconditionally (:1273) and the deadline check
+    /// afterwards (:1356), so every one of these ticks is in budget and every
+    /// one misses its deadline.
+    ///
+    /// The reset used to live in `check_budget`, so the in-budget tick cleared
+    /// the run the deadline miss had just started: the counter was pinned at 1
+    /// forever. Neither `warn_after: 3` nor the `max_deadline_misses` ceiling
+    /// could ever fire for the failure mode that, by `primitives.rs`'s own
+    /// account, "actually dominates".
+    #[test]
+    fn an_in_budget_tick_does_not_clear_a_deadline_miss_run() {
+        let monitor = SafetyMonitor::new(1000);
+        monitor.set_tick_budget("arm_controller".to_string(), Duration::from_millis(1));
+
+        for _ in 0..10 {
+            // Well inside the 1 ms budget — the budget check sees nothing wrong.
+            let _ = monitor.check_tick_budget("arm_controller", Duration::from_micros(100));
+            // ...and yet the deadline, measured from the scheduled release, was missed.
+            monitor.record_deadline_miss("arm_controller");
+        }
+
+        assert_eq!(
+            monitor.consecutive_misses("arm_controller"),
+            10,
+            "ten consecutive deadline misses must read as ten; a tick that stayed \
+             inside its BUDGET says nothing about whether it met its DEADLINE"
+        );
+    }
+
+    /// The other half of the contract: a tick that meets its deadline clears
+    /// the run, for a node that has a deadline and no budget at all.
+    ///
+    /// `node_builder.rs` derives a deadline from a budget and never the
+    /// reverse, so this node's `tick_budget` is `None` and the main loop's
+    /// whole `if let Some(tick_budget)` block — the only place that used to
+    /// clear the counter — is skipped. Before `record_deadline_met` existed
+    /// there was no path that cleared it, and the count was a lifetime total:
+    /// a node missing once an hour reached any ceiling eventually.
+    #[test]
+    fn a_tick_that_meets_its_deadline_clears_the_run_without_any_budget() {
+        let monitor = SafetyMonitor::new(1000);
+        // Deliberately no `set_tick_budget`.
+
+        for _ in 0..10 {
+            monitor.record_deadline_miss("wheel_controller");
+            monitor.record_deadline_met("wheel_controller");
+        }
+
+        assert_eq!(
+            monitor.consecutive_misses("wheel_controller"),
+            0,
+            "a node that misses and immediately recovers, ten times over, is \
+             jitter — its consecutive run is zero, not ten"
+        );
+    }
+
+    /// A tick that missed its deadline is not evidence of recovery.
+    ///
+    /// `record_successful_tick` means "did not panic", and both callers reach
+    /// it on a tick already recorded as a deadline miss in the same pass. With
+    /// nothing clearing `recovery_counter` on a miss, a node at `RateReduced`
+    /// that missed EVERY deadline still accumulated `recovery_ticks` of
+    /// "success" and was restored to the rate it had just demonstrated it
+    /// could not hold.
+    #[test]
+    fn a_node_that_never_meets_a_deadline_is_never_declared_recovered() {
+        let mut monitor = SafetyMonitor::new(10_000);
+        // isolate_after is out of reach so the node stays at RateReduced and
+        // the test observes recovery, not a stage transition.
+        monitor.set_degradation_policy(DegradationPolicy {
+            warn_after: 3,
+            reduce_after: 5,
+            isolate_after: 10_000,
+            kill_after: 20_000,
+            recovery_ticks: 10,
+        });
+
+        let miss_tick = |m: &SafetyMonitor| {
+            m.record_deadline_miss("arm_controller");
+            let consecutive = m.consecutive_misses("arm_controller");
+            m.evaluate_degradation("arm_controller", consecutive, Some(100.0));
+            // The RT executor reaches this on any tick whose closure returned
+            // `Ok` — including the one just recorded as a miss.
+            m.record_successful_tick("arm_controller")
+        };
+
+        for _ in 0..5 {
+            miss_tick(&monitor);
+        }
+        assert_eq!(
+            monitor.degradation_stage("arm_controller"),
+            DegradationStage::RateReduced,
+            "five consecutive misses must reduce the rate"
+        );
+
+        // Keep missing, for twice the recovery window.
+        for i in 0..(10 * 2) {
+            let action = miss_tick(&monitor);
+            assert!(
+                !matches!(action, DegradationAction::RestoreRate { .. }),
+                "tick {} missed its deadline like every tick before it — \
+                 restoring its full rate says it recovered when it never did",
+                i
+            );
+        }
+
+        assert_eq!(
+            monitor.degradation_stage("arm_controller"),
+            DegradationStage::RateReduced,
+            "a node that has not met a deadline yet must still be degraded"
+        );
     }
 
     // ========================================================================
@@ -4241,7 +4528,7 @@ mod budget_atomics_correctness {
     /// counter, so a dropped sample leaves it stale-high and the NEXT miss can
     /// cross a ceiling it had no business crossing.
     #[test]
-    fn a_clean_tick_clears_the_miss_run_and_prevents_a_spurious_stop() {
+    fn a_met_deadline_clears_the_miss_run_and_prevents_a_spurious_stop() {
         let m = SafetyMonitor::new(3);
         m.set_tick_budget("servo".to_string(), Duration::from_micros(800));
         let state = m.tick_budget_handle("servo");
@@ -4252,13 +4539,26 @@ mod budget_atomics_correctness {
         }
         assert_eq!(state.consecutive_misses(), 2);
 
-        // A tick well inside budget, taken the way the RT loop takes it.
+        // A tick well inside BUDGET does not end a run of missed DEADLINES.
+        // The two are independent: a node released late executes well inside
+        // its budget and still misses. Clearing here is what pinned such a
+        // node's run at 1 and kept the ladder, which starts at 3, from ever
+        // firing for exactly the node in the worst trouble.
         m.check_tick_budget_of("servo", &state, Duration::from_micros(10))
             .expect("10us is inside an 800us budget");
         assert_eq!(
             state.consecutive_misses(),
+            2,
+            "a tick inside budget is not evidence the deadline was met"
+        );
+
+        // Met deadline, the way both loops report one (rt_executor.rs:1462,
+        // scheduler/mod.rs:5715). This is the only thing that ends the run.
+        m.record_deadline_met("servo");
+        assert_eq!(
+            state.consecutive_misses(),
             0,
-            "a clean tick must clear the run"
+            "a met deadline must clear the run"
         );
 
         // So the next two misses must NOT reach the ceiling.

@@ -54,6 +54,15 @@ impl AsyncExecutor {
     ) -> Self {
         nodes.sort_by_key(|n| n.priority);
 
+        // `honor_safe_state_request` reports through `rt_diag`, so this
+        // executor needs the drain thread as much as the RT one does — without
+        // it, a safe-state panic on a async I/O node is queued into a ring nothing
+        // reads. Idempotent, and on the caller's thread.
+        super::rt_executor::start_rt_diag_drain();
+
+        // `spawn_best_effort`, not a bare `Builder`: this executor runs
+        // non-real-time node classes, so it must not inherit the tick thread's
+        // policy or its reserved-core mask.
         let handle = crate::scheduling::rt::spawn_best_effort("horus-async-io", 0, move || {
             Self::async_thread_main(nodes, running, tick_period, monitors)
         })
@@ -87,12 +96,16 @@ impl AsyncExecutor {
         // node blocked inside `tick()`, because this loop only re-checks
         // `running` between ticks — and `run_with_filter` calls this before it
         // shuts down or safes any other node.
-        super::primitives::join_with_timeout(
+        let nodes = super::primitives::join_with_timeout(
             handle,
             "Async I/O",
             super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        // The last diagnostics a torn-down executor queued are the ones worth
+        // having; the background drainer only wakes every RT_DIAG_POLL.
+        super::rt_executor::flush_rt_diag();
+        nodes
     }
 
     /// Main function for the async I/O thread.
@@ -140,12 +153,38 @@ impl AsyncExecutor {
                 // is precisely one that is not in `ready_indices`.
                 for node in nodes.iter_mut() {
                     super::primitives::honor_safe_state_request(node, &monitors);
+                    super::primitives::honor_restart_request(node, &monitors);
+                }
+
+                // Operator commands reach every executor through the shared
+                // node_controls map: `horus node kill` sets stopped, `horus node
+                // pause` sets paused. Only the RT executor used to read them, so
+                // pausing or killing a async I/O node from the CLI printed success and
+                // then did nothing at all -- while `should_tick_node` says it is
+                // "honored the same way the executor threads do" and the control
+                // handler says the pause holds "for ALL node classes".
+                //
+                // A pause does not latch -- it is re-read every pass, so ResumeNode
+                // takes effect on the next one. That is the half the CLI actually
+                // drives: ControlCommand::PauseNode/ResumeNode set this flag.
+                //
+                // The `stopped` half latches into `is_stopped` the way the RT
+                // executor does. Nothing in the CLI sets it today (`set_stopped` is
+                // `#[allow(dead_code)]`, and `horus node kill` goes through the
+                // launch supervisor instead), so this is parity with the RT
+                // executor rather than a second user-facing fix -- but a flag two
+                // of five tick gates honour is exactly how the pause bug started.
+                for node in nodes.iter_mut() {
+                    if monitors.node_controls.is_stopped(node.name.as_ref()) {
+                        node.is_stopped = true;
+                    }
                 }
 
                 for (i, node) in nodes.iter().enumerate() {
                     if !node.initialized
                         || node.is_stopped
                         || node.is_paused
+                        || monitors.node_controls.is_paused(node.name.as_ref())
                         || !node.failure_policy_allows_tick()
                     {
                         continue;
@@ -472,6 +511,70 @@ mod tests {
             self.count.fetch_add(1, Ordering::Relaxed);
             std::thread::sleep(self.sleep_ms.ms());
         }
+    }
+
+    /// `horus node pause` must reach a async I/O node.
+    ///
+    /// Operator commands travel through the shared `node_controls` map. Only
+    /// the RT executor read it, so pausing or killing a async I/O node from the
+    /// CLI reported success and changed nothing -- while `should_tick_node`
+    /// says the flag is "honored the same way the executor threads do" and the
+    /// control handler says an operator pause holds "for ALL node classes".
+    ///
+    /// Counts, not flags: the question is whether the node stopped running.
+    /// The `stopped` half is checked for parity with the RT executor; no CLI
+    /// path sets it today.
+    #[test]
+    fn an_operator_pause_and_kill_reach_an_async_node() {
+        let count = Arc::new(AtomicU64::new(0));
+        let monitors = test_monitors();
+        monitors.node_controls.register("paused_async");
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = AsyncExecutor::start(
+            vec![make_async_node("paused_async", count.clone())],
+            running.clone(),
+            1_u64.ms(),
+            monitors.clone(),
+        );
+
+        let ticked = |from: u64| {
+            for _ in 0..200 {
+                if count.load(Ordering::Relaxed) > from {
+                    return true;
+                }
+                std::thread::sleep(5_u64.ms());
+            }
+            false
+        };
+
+        assert!(ticked(0), "the node never ticked at all");
+
+        monitors.node_controls.set_paused("paused_async", true);
+        std::thread::sleep(30_u64.ms());
+        let frozen = count.load(Ordering::Relaxed);
+        std::thread::sleep(60_u64.ms());
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            frozen,
+            "the node kept ticking through an operator pause"
+        );
+
+        monitors.node_controls.set_paused("paused_async", false);
+        assert!(ticked(frozen), "the node never resumed after ResumeNode");
+
+        monitors.node_controls.set_stopped("paused_async");
+        std::thread::sleep(30_u64.ms());
+        let killed_at = count.load(Ordering::Relaxed);
+        std::thread::sleep(60_u64.ms());
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            killed_at,
+            "the node kept ticking after an operator kill"
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
     }
 
     fn make_async_node(name: &str, count: Arc<AtomicU64>) -> RegisteredNode {

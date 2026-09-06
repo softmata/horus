@@ -509,6 +509,15 @@ impl ComputeExecutor {
     ) -> Self {
         nodes.sort_by_key(|n| n.priority);
 
+        // `honor_safe_state_request` reports through `rt_diag`, so this
+        // executor needs the drain thread as much as the RT one does — without
+        // it, a safe-state panic on a compute node is queued into a ring nothing
+        // reads. Idempotent, and on the caller's thread.
+        super::rt_executor::start_rt_diag_drain();
+
+        // `spawn_best_effort`, not a bare `Builder`: this executor runs
+        // non-real-time node classes, so it must not inherit the tick thread's
+        // policy or its reserved-core mask.
         let handle = crate::scheduling::rt::spawn_best_effort("horus-compute", 0, move || {
             Self::compute_thread_main(nodes, running, tick_period, monitors)
         })
@@ -542,12 +551,16 @@ impl ComputeExecutor {
         // node blocked inside `tick()`, because this loop only re-checks
         // `running` between ticks — and `run_with_filter` calls this before it
         // shuts down or safes any other node.
-        super::primitives::join_with_timeout(
+        let nodes = super::primitives::join_with_timeout(
             handle,
             "Compute",
             super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD,
         )
-        .unwrap_or_default()
+        .unwrap_or_default();
+        // The last diagnostics a torn-down executor queued are the ones worth
+        // having; the background drainer only wakes every RT_DIAG_POLL.
+        super::rt_executor::flush_rt_diag();
+        nodes
     }
 
     /// Main function for the compute coordinator thread.
@@ -585,12 +598,37 @@ impl ComputeExecutor {
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
+            // Operator commands reach every executor through the shared
+            // node_controls map: `horus node kill` sets stopped, `horus node
+            // pause` sets paused. Only the RT executor used to read them, so
+            // pausing or killing a compute node from the CLI printed success and
+            // then did nothing at all -- while `should_tick_node` says it is
+            // "honored the same way the executor threads do" and the control
+            // handler says the pause holds "for ALL node classes".
+            //
+            // A pause does not latch -- it is re-read every pass, so ResumeNode
+            // takes effect on the next one. That is the half the CLI actually
+            // drives: ControlCommand::PauseNode/ResumeNode set this flag.
+            //
+            // The `stopped` half latches into `is_stopped` the way the RT
+            // executor does. Nothing in the CLI sets it today (`set_stopped` is
+            // `#[allow(dead_code)]`, and `horus node kill` goes through the
+            // launch supervisor instead), so this is parity with the RT
+            // executor rather than a second user-facing fix -- but a flag two
+            // of five tick gates honour is exactly how the pause bug started.
+            for node in nodes.iter_mut() {
+                if monitors.node_controls.is_stopped(node.name.as_ref()) {
+                    node.is_stopped = true;
+                }
+            }
+
             // Classify which nodes should tick this cycle
             ready_indices.clear();
             for (i, node) in nodes.iter().enumerate() {
                 if !node.initialized
                     || node.is_stopped
                     || node.is_paused
+                    || monitors.node_controls.is_paused(node.name.as_ref())
                     || !node.failure_policy_allows_tick()
                 {
                     continue;
@@ -614,6 +652,23 @@ impl ComputeExecutor {
                 ready_indices.push(i);
             }
 
+            // Safing requested by the main thread's watchdog ladder. Applied
+            // to EVERY node this executor owns, not just the ones ticking this
+            // pass — an Isolated node is precisely one that is not ticking.
+            //
+            // ABOVE the `ready_indices.is_empty()` early-continue, not below
+            // it. Below, this loop was skipped on exactly the pass the comment
+            // describes: when nothing is ready, which is the state a set of
+            // isolated or rate-limited nodes is permanently in. A link-loss
+            // `request_safe_state_all()` under `safety.on_link_lost =
+            // "safe_state"` — the path that deliberately does not latch an
+            // e-stop and leaves the scheduler running — would then never be
+            // consumed by this executor's nodes at all.
+            for node in nodes.iter_mut() {
+                super::primitives::honor_safe_state_request(node, &monitors);
+                super::primitives::honor_restart_request(node, &monitors);
+            }
+
             if ready_indices.is_empty() {
                 // Nothing to do — sleep and check again
                 let elapsed = loop_start.elapsed();
@@ -621,13 +676,6 @@ impl ComputeExecutor {
                     std::thread::sleep(tick_period - elapsed);
                 }
                 continue;
-            }
-
-            // Safing requested by the main thread's watchdog ladder. Applied
-            // to EVERY node this executor owns, not just the ones ticking this
-            // pass — an Isolated node is precisely one that is not ticking.
-            for node in nodes.iter_mut() {
-                super::primitives::honor_safe_state_request(node, &monitors);
             }
 
             // Update last_tick for rate-limited nodes
@@ -909,6 +957,151 @@ mod tests {
             self.count
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
+    }
+
+    /// `horus node pause` must reach a compute node.
+    ///
+    /// Operator commands travel through the shared `node_controls` map. Only
+    /// the RT executor read it, so pausing or killing a compute node from the
+    /// CLI reported success and changed nothing -- while `should_tick_node`
+    /// says the flag is "honored the same way the executor threads do" and the
+    /// control handler says an operator pause holds "for ALL node classes".
+    ///
+    /// Counts, not flags: the question is whether the node stopped running.
+    /// The `stopped` half is checked for parity with the RT executor; no CLI
+    /// path sets it today.
+    #[test]
+    fn an_operator_pause_and_kill_reach_a_compute_node() {
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let monitors = test_monitors();
+        monitors.node_controls.register("paused_compute");
+        let running = Arc::new(AtomicBool::new(true));
+
+        let executor = ComputeExecutor::start(
+            vec![make_compute_node("paused_compute", count.clone())],
+            running.clone(),
+            1_u64.ms(),
+            monitors.clone(),
+        );
+
+        let ticked = |from: u64| {
+            for _ in 0..200 {
+                if count.load(Ordering::Relaxed) > from {
+                    return true;
+                }
+                std::thread::sleep(5_u64.ms());
+            }
+            false
+        };
+
+        assert!(ticked(0), "the node never ticked at all");
+
+        // Pause: the count must stop moving.
+        monitors.node_controls.set_paused("paused_compute", true);
+        std::thread::sleep(30_u64.ms()); // let any in-flight pass finish
+        let frozen = count.load(Ordering::Relaxed);
+        std::thread::sleep(60_u64.ms());
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            frozen,
+            "the node kept ticking through an operator pause"
+        );
+
+        // Resume: it must move again.
+        monitors.node_controls.set_paused("paused_compute", false);
+        assert!(ticked(frozen), "the node never resumed after ResumeNode");
+
+        // Kill: the count must stop, and stay stopped.
+        monitors.node_controls.set_stopped("paused_compute");
+        std::thread::sleep(30_u64.ms());
+        let killed_at = count.load(Ordering::Relaxed);
+        std::thread::sleep(60_u64.ms());
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            killed_at,
+            "the node kept ticking after an operator kill"
+        );
+
+        running.store(false, Ordering::SeqCst);
+        let _ = executor.stop();
+    }
+
+    /// A safing diagnostic from a non-RT executor must actually be printed.
+    ///
+    /// `honor_safe_state_request` reports through `rt_diag`, which only queues
+    /// into a static ring — a separate drain thread does the printing, and it
+    /// used to be started by `RtExecutor::start_pool` alone. A program whose
+    /// nodes are all Compute (or Async, or Event) therefore started no drainer,
+    /// so every safing line it queued sat in the ring until a later line
+    /// overwrote it. Nothing was printed and nothing said so.
+    ///
+    /// The drain writes to the process's real stdout, which libtest cannot
+    /// capture in-process, so this re-runs itself as a child and reads what the
+    /// child printed.
+    #[test]
+    fn a_compute_only_program_still_prints_its_safing_diagnostics() {
+        const CHILD: &str = "HORUS_COMPUTE_DIAG_CHILD";
+        const MARKER: &str = "compute-drain-marker";
+
+        if std::env::var_os(CHILD).is_some() {
+            // In the child: start a compute executor, which is the only thing
+            // that should be needed for a queued diagnostic to reach stdout.
+            let running = Arc::new(AtomicBool::new(true));
+            let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let exec = ComputeExecutor::start(
+                vec![make_compute_node("diag_node", count)],
+                running.clone(),
+                Duration::from_millis(5),
+                test_monitors(),
+            );
+
+            super::super::rt_executor::rt_diag(format_args!("{MARKER}"));
+
+            // No sleep. This used to wait out an RT_DIAG_POLL so the background
+            // drainer would have emitted the line, which made the test depend
+            // on that thread being scheduled inside a 200 ms window -- and on a
+            // loaded CI runner it was not, so the run failed with "never
+            // reached stdout" against code that was working. `stop()` now
+            // flushes the ring itself, so the line is emitted synchronously
+            // before this returns and no timing window is involved.
+            running.store(false, Ordering::SeqCst);
+            let _ = exec.stop();
+            return;
+        }
+
+        let exe = std::env::current_exe().expect("test binary path");
+        let out = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "scheduling::compute_executor::tests::a_compute_only_program_still_prints_its_safing_diagnostics",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("re-running the test binary should work");
+
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test — was this test renamed?\n{stdout}"
+        );
+        // Asserts only that the line reaches stdout, which is what this test is
+        // named for. It deliberately does NOT try to prove the line came from
+        // the flush in `stop()` rather than from the background drainer: the
+        // drainer's FIRST poll happens when its thread starts, which is inside
+        // the same few microseconds as the `rt_diag` above, so an ordering
+        // assertion here passes whether or not `stop()` flushes. Isolating the
+        // flush would need a way to keep that thread from running at all, and a
+        // guard that cannot fail for the reason it states is worse than no
+        // guard. What the flush buys is covered by the argument at
+        // `flush_rt_diag`, not by this assertion.
+        assert!(
+            stdout.contains(MARKER),
+            "a diagnostic queued by a compute-only program never reached \
+             stdout.\n{stdout}"
+        );
     }
 
     fn make_compute_node(name: &str, count: Arc<std::sync::atomic::AtomicU64>) -> RegisteredNode {

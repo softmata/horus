@@ -178,6 +178,9 @@ static RT_DIAG_TRUNCATED: AtomicU64 = AtomicU64::new(0);
 /// diagnostic can never wait on a drainer, which is the priority inversion the
 /// blocking `print_line` had.
 static RT_DIAG_TAIL: Mutex<u64> = Mutex::new(0);
+/// The index a drain last stopped on because its producer had not finished
+/// writing. Guarded by `RT_DIAG_TAIL`, so plain `Relaxed` is enough.
+static RT_DIAG_STALLED_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 
 static RT_DIAG_DRAIN_STARTED: Once = Once::new();
 
@@ -265,11 +268,36 @@ pub(crate) fn rt_diag(args: fmt::Arguments<'_>) {
 /// The seqlock check is the whole safety argument: `idx` names a *generation*,
 /// not just a slot, so a reader can always tell "the line I asked for" from
 /// "some newer line that happens to live here now".
-fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> Option<usize> {
+/// What a reader found in a slot it asked for.
+///
+/// The two failure cases used to be one `None`, and the drain treated both the
+/// same way: skip the index and advance the tail past it. They are opposites.
+/// A LAPPED slot is genuinely gone. An IN-FLIGHT slot belongs to a producer
+/// that has claimed the index and is still writing it -- it will be complete
+/// microseconds later, and skipping it throws away a line that was never lost.
+enum SlotRead {
+    Ready(usize),
+    /// Claimed, not finished. `seq` is behind the value this index will carry.
+    InFlight,
+    /// A later producer has already recycled this slot; the line is gone.
+    Lapped,
+}
+
+fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> SlotRead {
     let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
     let want = idx.wrapping_mul(2).wrapping_add(2);
-    if slot.seq.load(Ordering::Acquire) != want {
-        return None;
+    let classify = |seq: u64| {
+        // `seq` is derived from a monotonic claim index, so "behind" is a plain
+        // comparison; u64 does not wrap in any reachable lifetime.
+        if seq < want {
+            SlotRead::InFlight
+        } else {
+            SlotRead::Lapped
+        }
+    };
+    let seq = slot.seq.load(Ordering::Acquire);
+    if seq != want {
+        return classify(seq);
     }
     let len = (slot.len.load(Ordering::Relaxed) as usize).min(RT_DIAG_LINE_CAP);
     for (i, dst) in out[..len].iter_mut().enumerate() {
@@ -280,10 +308,11 @@ fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> Option<usize> {
     // being reordered past this load — an `Acquire` *load* would only order
     // what comes after it.
     std::sync::atomic::fence(Ordering::Acquire);
-    if slot.seq.load(Ordering::Relaxed) != want {
-        return None;
+    let seq = slot.seq.load(Ordering::Relaxed);
+    if seq != want {
+        return classify(seq);
     }
-    Some(len)
+    SlotRead::Ready(len)
 }
 
 /// Print every queued diagnostic through `emit`, then report what was lost.
@@ -306,16 +335,52 @@ fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
 
     let mut line = [0u8; RT_DIAG_LINE_CAP];
     let mut printed = 0usize;
+    let mut next = *tail;
     for idx in *tail..head {
-        let Some(len) = read_slot(idx, &mut line) else {
-            continue;
-        };
-        if let Ok(text) = std::str::from_utf8(&line[..len]) {
-            emit(text);
-            printed += 1;
+        match read_slot(idx, &mut line) {
+            SlotRead::Ready(len) => {
+                if let Ok(text) = std::str::from_utf8(&line[..len]) {
+                    emit(text);
+                    printed += 1;
+                }
+                next = idx + 1;
+            }
+            SlotRead::Lapped => {
+                RT_DIAG_DROPPED.fetch_add(1, Ordering::Relaxed);
+                next = idx + 1;
+            }
+            SlotRead::InFlight => {
+                // The producer bumped `head` and has not finished its store
+                // yet. Stopping here and retrying leaves the line to the next
+                // drain, 25 ms away; advancing past it -- which is what this
+                // loop used to do for every unreadable slot -- discarded a line
+                // that was in the middle of being written. That is a race the
+                // producer always loses on a contended machine, and it is how a
+                // one-line diagnostic followed by an immediate shutdown went
+                // missing on CI while passing everywhere else.
+                //
+                // Bounded, because a producer that panics between claiming the
+                // index and completing the store would otherwise wedge the ring
+                // for the life of the process and cost every LATER line too.
+                // Stalling twice on the same index is taken as a dead producer:
+                // give up that one line and keep going.
+                if RT_DIAG_STALLED_AT.swap(idx, Ordering::Relaxed) == idx {
+                    RT_DIAG_DROPPED.fetch_add(1, Ordering::Relaxed);
+                    next = idx + 1;
+                    continue;
+                }
+                break;
+            }
         }
     }
-    *tail = head;
+    // Only a drain that consumed the whole range clears the marker. `next >
+    // *tail` would also be true of a drain that emitted three lines and then
+    // stalled on the fourth -- clearing it there would reset the counter every
+    // round and the bounded skip could never fire.
+    if next == head {
+        RT_DIAG_STALLED_AT.store(u64::MAX, Ordering::Relaxed);
+    }
+    *tail = next;
     drop(tail);
 
     let dropped = RT_DIAG_DROPPED.swap(0, Ordering::Relaxed);
@@ -336,15 +401,44 @@ fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
 
 /// Start the diagnostic drain thread, once per process.
 ///
-/// Called from `start_pool`, on the CALLER's thread. Never from an RT thread:
-/// spawning is a `clone(2)` plus a stack mapping, which is exactly the class of
-/// cost this whole mechanism exists to keep off the tick loop.
+/// Called from every executor's `start`, on the CALLER's thread. Never from an
+/// RT thread: spawning is a `clone(2)` plus a stack mapping, which is exactly
+/// the class of cost this whole mechanism exists to keep off the tick loop.
+///
+/// Not just `start_pool`. `honor_safe_state_request` reports through `rt_diag`
+/// and every executor calls it, so a program with no RT nodes at all queued
+/// safing diagnostics -- including "PANICKED in enter_safe_state" -- into a
+/// ring that nothing ever read. They were overwritten after `RT_DIAG_SLOTS`
+/// lines and never printed.
 ///
 /// The thread runs for the life of the process. It is one wakeup every
 /// `RT_DIAG_POLL` and it must outlive any individual executor, because an
 /// executor that is being torn down is precisely when its last diagnostics
 /// matter.
-fn start_rt_diag_drain() {
+/// Drain whatever is still in the diagnostic ring, now, on the calling thread.
+///
+/// Every executor's `stop()` owes its nodes this. The background drainer wakes
+/// only every `RT_DIAG_POLL`, so a program that queues a diagnostic and then
+/// shuts down inside that window exits with the line still in the ring — and
+/// the lines that arrive in the last milliseconds before a shutdown are the
+/// ones worth having: "PANICKED in enter_safe_state", a final deadline miss.
+///
+/// `RtExecutor::stop` has done this since the ring existed. Compute, Event and
+/// AsyncIo did not, though all three call `start_rt_diag_drain` and all three
+/// queue through `honor_safe_state_request` — so for a compute-only, event-only
+/// or async-only program the guarantee simply did not hold. Same class
+/// partition that keeps catching this code: fixed on the RT path, left on the
+/// other three.
+///
+/// It also makes the spawn-failure warning in `start_rt_diag_drain` true. That
+/// warning tells the operator diagnostics "will only be flushed at shutdown";
+/// with no shutdown flush on three of the four executors, they were not
+/// flushed at all.
+pub(crate) fn flush_rt_diag() {
+    rt_diag_drain(print_line);
+}
+
+pub(crate) fn start_rt_diag_drain() {
     RT_DIAG_DRAIN_STARTED.call_once(|| {
         let spawned = super::rt::spawn_best_effort("horus-rt-diag", 5, || loop {
             rt_diag_drain(print_line);
@@ -1309,7 +1403,7 @@ impl RtExecutor {
         // run shorter than `RT_DIAG_POLL` — or one whose last deadline miss came
         // in the final milliseconds, which is the interesting case — would exit
         // with its diagnostics still sitting in the ring.
-        rt_diag_drain(print_line);
+        flush_rt_diag();
         // Same reason: a run shorter than one drain poll must not exit with its
         // RT log lines still sitting in the ring.
         crate::core::hlog_rt::flush();
@@ -1330,7 +1424,14 @@ impl RtExecutor {
         name_hash: u64,
         timing: Option<&super::safety_monitor::NodeTimingState>,
         watchdog: Option<&super::safety_monitor::Watchdog>,
+        control: Option<&super::types::NodeControl>,
     ) {
+        // A pending `horus node restart` for a node this executor owns. At the
+        // top of the single per-node entry point, so every caller honours it
+        // and a suppressed node is still restartable — the whole point of
+        // restarting one is that it is not currently running well.
+        super::primitives::honor_restart_request_via(node, control, monitors);
+
         // Failure-policy backoff (Restart) / cooldown (Skip): skip this tick
         // while the node is suppressed.
         if !node.failure_policy_allows_tick() {
@@ -1465,8 +1566,18 @@ impl RtExecutor {
                                 "[RT-thread] BUDGET ENFORCE: '{}' exceeded 2x budget ({:?} > {:?}) — node stopped",
                                 node.name, tr.duration, tick_budget * 2
                             ));
-                            let _ = node.node.shutdown();
-                            node.is_stopped = true;
+                            // Guarded: an unwind out of a node's own shutdown
+                            // would otherwise escape into the loop's outer
+                            // catch_unwind and skip everything after it.
+                            let target = &mut node.node;
+                            let panicked = super::primitives::guard_fault_callback(|| {
+                                let _ = target.shutdown();
+                            });
+                            if panicked {
+                                super::primitives::note_safing_failure(node, monitors, "shutdown");
+                            } else {
+                                node.is_stopped = true;
+                            }
                         }
                     }
                     BudgetPolicy::EmergencyStop => {
@@ -1475,15 +1586,21 @@ impl RtExecutor {
                             "[RT-thread] BUDGET E-STOP: '{}' budget violation ({:?} > {:?})",
                             node.name, tr.duration, tick_budget
                         ));
-                        let _ = node.node.shutdown();
-                        node.is_stopped = true;
-                        // Latch the SafetyMonitor before signalling the thread to
-                        // exit. `running.store(false)` alone is a plain shutdown
-                        // flag: it leaves get_state() reporting Normal, writes no
+                        // Latch the SafetyMonitor BEFORE calling into the node.
+                        // `running.store(false)` alone is a plain shutdown flag:
+                        // it leaves get_state() reporting Normal, writes no
                         // blackbox EmergencyStop, and never populates
                         // PENDING_LOCAL_ESTOP — so horus_net had nothing to
                         // broadcast and peer robots were never told this one
                         // emergency-stopped.
+                        //
+                        // Ordering matters as much as the latch. `shutdown()` is
+                        // user code on a node that is already failing; it used to
+                        // run first and unguarded, so a panic in it unwound past
+                        // the latch, the running flag and everything else into
+                        // the loop's outer catch_unwind — whose only action is to
+                        // stop the node. The e-stop this policy exists to fire
+                        // was silently cancelled by the callback it fired.
                         if let Some(ref estop) = monitors.estop {
                             estop.trigger_fmt(format_args!(
                                 "RT node '{}' budget violation ({:?} > {:?}) with BudgetPolicy::EmergencyStop",
@@ -1492,6 +1609,11 @@ impl RtExecutor {
                         }
                         // Signal stop via running flag — RT thread will exit
                         running.store(false, Ordering::SeqCst);
+                        node.is_stopped = true;
+                        let target = &mut node.node;
+                        let _ = super::primitives::guard_fault_callback(|| {
+                            let _ = target.shutdown();
+                        });
                     }
                 }
             }
@@ -1510,6 +1632,15 @@ impl RtExecutor {
                 deadline,
                 node.miss_policy,
             );
+            if miss.is_none() {
+                // The tick met its deadline: end the consecutive-miss run.
+                // `check_tick_budget` above must not do this — it is measuring
+                // a different thing, and a node released late misses its
+                // deadline while sitting comfortably inside its budget.
+                if let Some(ref monitor) = monitors.safety {
+                    monitor.record_deadline_met(&node.name);
+                }
+            }
             if miss.is_none() && node.in_safe_mode {
                 // Met the deadline again: clear the latch so a node that
                 // recovers can be safed once more if it degrades later.
@@ -1625,7 +1756,18 @@ impl RtExecutor {
                                     SuppressedSuffix(hidden)
                                 ));
                             }
-                            node.node.enter_safe_state();
+                            let target = &mut node.node;
+                            if super::primitives::guard_fault_callback(|| target.enter_safe_state())
+                            {
+                                // A critical node that cannot reach a safe state
+                                // is a system safety failure, not a node-local
+                                // one — the same escalation the main loop makes.
+                                super::primitives::note_safing_failure(
+                                    node,
+                                    monitors,
+                                    "enter_safe_state",
+                                );
+                            }
                         }
                     }
                     DeadlineAction::EmergencyStop => {
@@ -2135,7 +2277,9 @@ impl RtExecutor {
             let loop_start = Instant::now();
 
             for (idx, node) in nodes.iter_mut().enumerate() {
-                if !node.initialized || node.is_stopped {
+                // An uninitialized node has never run, so it has nothing to
+                // safe and no state to leave behind.
+                if !node.initialized {
                     continue;
                 }
 
@@ -2144,7 +2288,21 @@ impl RtExecutor {
                 // Safing requested by the main thread's watchdog ladder. Runs
                 // before the pause/stop gates: an Isolated node must reach its
                 // safe state even if it is also about to be stopped.
+                //
+                // `is_stopped` used to be part of the guard at the top of this
+                // loop, which made that sentence false for the case it was
+                // written for: a node already stopped — by `BudgetPolicy::
+                // Enforce`, by the kill rung, by `horus node kill` — was
+                // skipped before ever reaching this call, so it kept holding
+                // whatever setpoint it last commanded. Stopping a node halts
+                // its ticks; it does not put its actuator anywhere. The sibling
+                // executors safe every node they own regardless of stop state,
+                // and so does the main loop.
                 super::primitives::honor_safe_state_request_via(node, control, &monitors);
+
+                if node.is_stopped {
+                    continue;
+                }
 
                 // Check shared control flags (set by CLI: horus node pause/kill).
                 // Unregistered node (`None`) reads as neither stopped nor
@@ -2209,6 +2367,7 @@ impl RtExecutor {
                         name_hashes[idx],
                         timings[idx].as_deref(),
                         watchdogs[idx].as_deref(),
+                        control,
                     )
                 }));
                 warmed[idx] = true;
@@ -2265,6 +2424,95 @@ impl Drop for RtExecutor {
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod diag_ring_inflight {
+    use super::*;
+
+    /// Both tests below drive the one process-global ring by hand, and the
+    /// second one's repeated drains perform the bounded skip -- which steps
+    /// past the first one's deliberately in-flight slot. Run in parallel they
+    /// fail each other; the lock is what keeps each in sole possession.
+    static RING_TESTS: Mutex<()> = Mutex::new(());
+
+    /// A drain must not step over a line that is still being written.
+    ///
+    /// `rt_diag` bumps `RT_DIAG_HEAD` first and only then marks the slot
+    /// complete. A drain landing in that window used to get `None` from
+    /// `read_slot`, `continue`, and then set `tail = head` -- stepping over the
+    /// line permanently. The producer had done nothing wrong and the line was
+    /// never recoverable, so neither the 25 ms drainer nor the flush in
+    /// `stop()` could ever print it.
+    ///
+    /// Nanoseconds wide on an idle machine, which is why it showed up as a CI
+    /// failure on a contended runner and nowhere else.
+    ///
+    /// Asserts on the tail rather than on what got emitted: the background
+    /// drainer may be running in this process and would race a
+    /// "the next drain emits it" assertion.
+    #[test]
+    fn a_drain_does_not_step_over_a_line_still_being_written() {
+        let _guard = RING_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        const MARKER: &str = "inflight-slot-marker";
+
+        // Claim an index and stop where a preempted producer stops: head bumped,
+        // sequence odd, payload not yet written.
+        let idx = RT_DIAG_HEAD.fetch_add(1, Ordering::Relaxed);
+        let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+        slot.seq
+            .store(idx.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+
+        rt_diag_drain(|_| {});
+
+        let tail_now = *RT_DIAG_TAIL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            tail_now <= idx,
+            "a drain advanced the tail to {tail_now}, past index {idx}, whose \
+             producer had not finished writing. That line can never be emitted \
+             by anyone: the slot is skipped now and the tail never goes back."
+        );
+
+        // Finish the write and drain, so the ring is not left blocked for the
+        // rest of this test binary.
+        for (i, b) in MARKER.as_bytes().iter().enumerate() {
+            slot.bytes[i].store(*b, Ordering::Relaxed);
+        }
+        slot.len.store(MARKER.len() as u32, Ordering::Relaxed);
+        slot.seq
+            .store(idx.wrapping_mul(2).wrapping_add(2), Ordering::Release);
+        rt_diag_drain(|_| {});
+    }
+
+    /// ...but a producer that dies mid-write must not wedge the ring forever.
+    ///
+    /// Retrying an in-flight slot is only safe if it is bounded. A panic
+    /// between the head bump and the completing store leaves a slot odd for
+    /// good; without a bound every later diagnostic in the process would queue
+    /// behind it. The second stall on the same index gives up that one line.
+    #[test]
+    fn a_producer_that_dies_mid_write_does_not_wedge_the_ring() {
+        let _guard = RING_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let idx = RT_DIAG_HEAD.fetch_add(1, Ordering::Relaxed);
+        let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+        slot.seq
+            .store(idx.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+
+        // First drain stalls on it, second gives up on it.
+        rt_diag_drain(|_| {});
+        rt_diag_drain(|_| {});
+        rt_diag_drain(|_| {});
+
+        let tail_now = *RT_DIAG_TAIL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            tail_now > idx,
+            "the ring is still stuck at {idx} after repeated drains: a producer \
+             that never completes its write would block every later diagnostic \
+             for the life of the process."
+        );
     }
 }
 
@@ -2356,6 +2604,167 @@ mod tests {
             estop: None,
             safety: None,
         }
+    }
+
+    /// A node whose init counts, so a restart is observable.
+    struct ReinitNode {
+        name: String,
+        inits: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl Node for ReinitNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn init(&mut self) -> crate::error::HorusResult<()> {
+            self.inits
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(())
+        }
+        fn tick(&mut self) {}
+    }
+
+    /// `horus node restart` must reach a node living on an executor.
+    ///
+    /// The control-command handler searches `Scheduler::nodes`, and the class
+    /// partition leaves only the main-thread group in there. So restart reached
+    /// BestEffort nodes and reported every RT, Compute, Event and AsyncIo node
+    /// as unknown — that is, every node with a `.rate()`, which is exactly what
+    /// an operator restarts. `init()` needs `&mut dyn Node`, owned by the
+    /// executor, so the request crosses through the shared control map the same
+    /// way the watchdog ladder's safing request does.
+    #[test]
+    fn a_restart_request_reaches_a_node_on_an_executor() {
+        use crate::core::NodeInfo;
+        use std::sync::atomic::Ordering as AOrd;
+
+        let inits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered(
+            "executor_node",
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
+        node.node = super::super::types::NodeKind::new(Box::new(ReinitNode {
+            name: "executor_node".to_string(),
+            inits: inits.clone(),
+        }));
+        node.context = Some(NodeInfo::new("executor_node".to_string()));
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("executor_node");
+        let running = Arc::new(AtomicBool::new(true));
+        // The cached control block, the way the executor loop resolves it.
+        // Passing `None` here would leave the restart flag unread and the
+        // assertions below trivially satisfied.
+        let control = monitors.node_controls.handle("executor_node");
+
+        // No request pending: ticking must not re-initialise anything.
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
+        assert_eq!(
+            inits.load(AOrd::Relaxed),
+            0,
+            "a tick with no restart pending must not re-init"
+        );
+
+        // The main thread raises the request for a node it does not own.
+        assert!(
+            monitors.node_controls.request_restart("executor_node"),
+            "the control map is registered for all five groups, so the node is known"
+        );
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
+        assert_eq!(
+            inits.load(AOrd::Relaxed),
+            1,
+            "the executor that owns the node must honour the restart — searching \
+             the scheduler's own `nodes` cannot reach it after the class partition"
+        );
+
+        // Honoured exactly once per raise.
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
+        assert_eq!(
+            inits.load(AOrd::Relaxed),
+            1,
+            "the flag is consumed, so a restart happens once per request"
+        );
+    }
+
+    /// A restart lifts an operator pause.
+    ///
+    /// A wedged node is usually paused before it is restarted; leaving it
+    /// paused would make the restart a no-op at the very next tick gate.
+    #[test]
+    fn a_restart_clears_the_pause_that_preceded_it() {
+        let inits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut node = make_rt_registered(
+            "paused_node",
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        );
+        node.node = super::super::types::NodeKind::new(Box::new(ReinitNode {
+            name: "paused_node".to_string(),
+            inits: inits.clone(),
+        }));
+        node.is_paused = true;
+
+        let monitors = test_monitors();
+        monitors.node_controls.register("paused_node");
+        monitors.node_controls.set_paused("paused_node", true);
+        let running = Arc::new(AtomicBool::new(true));
+        // The cached control block, the way the executor loop resolves it.
+        // Passing `None` here would leave the restart flag unread and the
+        // assertions below trivially satisfied.
+        let control = monitors.node_controls.handle("paused_node");
+
+        monitors.node_controls.request_restart("paused_node");
+        RtExecutor::tick_node(
+            &mut node,
+            &monitors,
+            &running,
+            false,
+            0,
+            None,
+            0,
+            None,
+            None,
+            control.as_deref(),
+        );
+
+        assert!(!node.is_paused, "the restart must lift the pause");
+        assert!(
+            !monitors.node_controls.is_paused("paused_node"),
+            "and clear it in the shared map the executors gate on"
+        );
     }
 
     /// The executor half of the graduated watchdog ladder.
@@ -2453,7 +2862,9 @@ mod tests {
 
         // The RT loop wraps `tick_node` exactly like this.
         let outcome = catch_unwind(AssertUnwindSafe(|| {
-            RtExecutor::tick_node(&mut node, &monitors, &running, true, 0, None, 0, None, None)
+            RtExecutor::tick_node(
+                &mut node, &monitors, &running, true, 0, None, 0, None, None, None,
+            )
         }));
 
         assert!(
@@ -2630,6 +3041,7 @@ mod tests {
             0,
             None,
             None,
+            None,
         );
 
         assert_eq!(
@@ -2637,6 +3049,163 @@ mod tests {
             1,
             "an Unhealthy RT node must keep being ticked — it is the tick that \
              feeds its watchdog, so suppressing it escalates straight to e-stop"
+        );
+    }
+
+    /// The RT executor's half of the consecutive-miss contract, on the failure
+    /// mode `check_deadline_from_release` exists to catch: a node woken late
+    /// that then executes in microseconds. Its deadline is blown from release;
+    /// its budget is untouched.
+    ///
+    /// `tick_node` calls `check_tick_budget` unconditionally, before the
+    /// deadline check. While the budget check owned the reset, that in-budget
+    /// tick cleared the run the deadline miss had just started, so the counter
+    /// was pinned at 1 no matter how long the node had been failing — neither
+    /// `warn_after: 3` nor the `max_deadline_misses` ceiling could ever fire
+    /// for it. A met deadline, and only that, ends the run.
+    #[test]
+    fn late_release_misses_accumulate_and_a_met_deadline_clears_them() {
+        use std::sync::atomic::AtomicU64;
+
+        let count = Arc::new(AtomicU64::new(0));
+        let mut node = make_rt_registered("arm_controller", count.clone());
+        node.deadline = Some(Duration::from_millis(1));
+        // A budget it comfortably meets — the tick itself is a counter bump.
+        node.tick_budget = Some(Duration::from_millis(1));
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+        let mut monitors = test_monitors();
+        monitors.safety = Some(monitor.clone());
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Released 5 ms late, five times over. Every tick is inside its budget
+        // and every tick has missed its 1 ms deadline before it even began.
+        for _ in 0..5 {
+            RtExecutor::tick_node(
+                &mut node, &monitors, &running, false, 5_000_000, None, 0, None, None, None,
+            );
+        }
+        assert_eq!(
+            monitor.consecutive_misses("arm_controller"),
+            5,
+            "five late releases in a row are five consecutive deadline misses; \
+             the node staying inside its BUDGET says nothing about its DEADLINE"
+        );
+
+        // Released on time: the deadline is met, and the run ends.
+        RtExecutor::tick_node(
+            &mut node, &monitors, &running, false, 0, None, 0, None, None, None,
+        );
+        assert_eq!(
+            monitor.consecutive_misses("arm_controller"),
+            0,
+            "a tick that met its deadline must clear the run"
+        );
+    }
+
+    /// A node whose safing callbacks panic — the failure both tests are about.
+    struct UnsafeableNode {
+        name: String,
+    }
+
+    impl Node for UnsafeableNode {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn tick(&mut self) {}
+        fn enter_safe_state(&mut self) {
+            panic!("cannot reach a safe state");
+        }
+        fn shutdown(&mut self) -> crate::error::HorusResult<()> {
+            panic!("cannot shut down");
+        }
+    }
+
+    fn make_unsafeable(name: &str) -> RegisteredNode {
+        use crate::core::NodeInfo;
+        let mut node = make_rt_registered(name, Arc::new(std::sync::atomic::AtomicU64::new(0)));
+        node.node = super::super::types::NodeKind::new(Box::new(UnsafeableNode {
+            name: name.to_string(),
+        }));
+        node.context = Some(NodeInfo::new(name.to_string()));
+        node
+    }
+
+    /// A panic in `shutdown()` must not cancel the emergency stop it was
+    /// called by.
+    ///
+    /// `BudgetPolicy::EmergencyStop` used to call `shutdown()` bare and BEFORE
+    /// latching. `shutdown()` is user code on a node that is already failing,
+    /// so an unwind out of it escaped past the latch, past `running.store`, and
+    /// into the loop's outer `catch_unwind` — whose only action is to stop the
+    /// node. `get_state()` kept reporting Normal, no blackbox EmergencyStop was
+    /// written, `PENDING_LOCAL_ESTOP` stayed empty so horus_net broadcast
+    /// nothing, and the other RT nodes kept ticking. The documented "e-stop on
+    /// any budget violation" was silently cancelled by the callback it fired.
+    #[test]
+    fn a_panicking_shutdown_does_not_cancel_the_budget_emergency_stop() {
+        let _estop_serial = super::super::safety_monitor::estop_queue_guard();
+        let mut node = make_unsafeable("budget_estop_node");
+        node.tick_budget = Some(Duration::from_nanos(1));
+        node.budget_policy = super::super::safety_monitor::BudgetPolicy::EmergencyStop;
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+        let mut monitors = test_monitors();
+        monitors.estop = Some(monitor.estop_trigger());
+        monitors.safety = Some(monitor.clone());
+        let running = Arc::new(AtomicBool::new(true));
+
+        RtExecutor::tick_node(
+            &mut node, &monitors, &running, false, 0, None, 0, None, None, None,
+        );
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "the emergency stop must be latched even though shutdown() panicked"
+        );
+        assert!(
+            !running.load(Ordering::SeqCst),
+            "the RT thread must still be told to exit"
+        );
+    }
+
+    /// A critical node that cannot reach a safe state must halt the robot.
+    ///
+    /// The docs say so without qualification, and `note_safing_failure` states
+    /// it as a property of the system: "a node that cannot safe itself is a
+    /// safety failure — escalate to a system emergency stop for critical
+    /// nodes". Only the main loop did it. The executors got the ISOLATION half
+    /// of that (`guard_fault_callback`, added "so both halves of the framework
+    /// isolate recovery callbacks identically") and not the escalation, so the
+    /// identical event halted the robot on a BestEffort node and merely stopped
+    /// an RT one — and every RT node under a scheduler `.watchdog()` is
+    /// critical, so the class most likely to be critical was the one that was
+    /// omitted.
+    #[test]
+    fn a_critical_rt_node_that_cannot_safe_itself_triggers_an_emergency_stop() {
+        let _estop_serial = super::super::safety_monitor::estop_queue_guard();
+        let mut node = make_unsafeable("critical_safer");
+        node.deadline = Some(Duration::from_millis(1));
+        node.miss_policy = Miss::SafeMode;
+
+        let monitor = Arc::new(SafetyMonitor::new(1000));
+        monitor.add_critical_node("critical_safer".to_string(), Duration::from_millis(100));
+        let mut monitors = test_monitors();
+        monitors.estop = Some(monitor.estop_trigger());
+        monitors.safety = Some(monitor.clone());
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Released 5 ms late against a 1 ms deadline: a miss, so SafeMode
+        // dispatches `enter_safe_state()` — which panics.
+        RtExecutor::tick_node(
+            &mut node, &monitors, &running, false, 5_000_000, None, 0, None, None, None,
+        );
+
+        assert!(
+            monitor.is_emergency_stop(),
+            "a CRITICAL node that panicked trying to reach a safe state has not \
+             reached one; stopping just that node leaves the robot running with \
+             an unsafe actuator"
         );
     }
 
@@ -4991,7 +5560,7 @@ mod tests {
     fn find_queued(range: std::ops::Range<u64>, pred: impl Fn(&str) -> bool) -> Option<String> {
         let mut buf = [0u8; RT_DIAG_LINE_CAP];
         for idx in range {
-            let Some(len) = read_slot(idx, &mut buf) else {
+            let SlotRead::Ready(len) = read_slot(idx, &mut buf) else {
                 continue;
             };
             if let Ok(text) = std::str::from_utf8(&buf[..len]) {
@@ -5080,7 +5649,7 @@ mod tests {
 
         let mut buf = [0u8; RT_DIAG_LINE_CAP];
         assert!(
-            read_slot(start, &mut buf).is_none(),
+            matches!(read_slot(start, &mut buf), SlotRead::Lapped),
             "after {flood} emits into {RT_DIAG_SLOTS} slots the first line must have \
              been recycled — an unbounded queue is a memory leak on the RT path"
         );

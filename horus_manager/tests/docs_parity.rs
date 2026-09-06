@@ -179,6 +179,10 @@ const TEST_ONLY: &[&str] = &[
     "HORUS_LIVE5_GHOST_CAPACITY",
     // horus_cpp/src/c_api.rs — the child half of the FFI emit test.
     "HORUS_CPP_FFI_EMIT_CHILD",
+    // scheduling/compute_executor.rs — the child half of the test that a
+    // compute-only program still drains its RT diagnostics to stdout. Read
+    // inside a `#[cfg(test)]` module; unreachable outside the test binary.
+    "HORUS_COMPUTE_DIAG_CHILD",
     // commands/fmt.rs — the switch CI uses to turn a skipped tool into a
     // failure, so a missing clang-format is not silently tolerated.
     "HORUS_TEST_REQUIRE_TOOLS",

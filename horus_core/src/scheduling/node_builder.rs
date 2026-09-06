@@ -685,6 +685,23 @@ impl NodeRegistration {
             .into());
         }
 
+        // The OTHER way `.no_alloc()` becomes false assurance: the flag is
+        // right and the execution class is right, but this binary never
+        // installed `RtAwareAllocator`, so nothing checks anything. The check
+        // above catches "the executor will not look"; this catches "there is
+        // nothing to look with".
+        //
+        // `warn_if_unenforced` was written for exactly this and says so —
+        // "Intended call site: node registration, once per `.no_alloc()` node"
+        // — and had no caller anywhere outside its own tests, so the user was
+        // never told. It warns rather than fails on purpose: refusing to build
+        // would force allocator installation on every library consumer, which
+        // its doc explains is what a library must not do. Process-wide-once, and
+        // a single atomic load after the first call.
+        if self.no_alloc {
+            crate::memory::rt_allocator::warn_if_unenforced(node_name);
+        }
+
         // Validate execution class vs is_rt flag consistency
         if self.is_rt
             && !matches!(

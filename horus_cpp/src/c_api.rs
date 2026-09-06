@@ -489,6 +489,23 @@ unsafe fn topic_name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
     }
 }
 
+/// Borrow a service or action endpoint name out of C, or give back `None`.
+///
+/// These are not topic constructors, so they do not touch the topic last-error
+/// slot — but `CStr::from_ptr` is undefined behaviour on null just the same,
+/// and `horus_c.h` is a public ABI that any C caller can pass null to. Same
+/// hazard as the one `topic_name_from_c` closes, minus the error channel.
+///
+/// # Safety
+/// `name` must be null or a pointer to a NUL-terminated string that stays
+/// valid and unwritten for the duration of the call.
+unsafe fn endpoint_name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
+    if name.is_null() {
+        return None;
+    }
+    CStr::from_ptr(name).to_str().ok()
+}
+
 /// Why the last publisher/subscriber constructor on THIS thread returned null.
 ///
 /// Writes at most `buf_len - 1` bytes plus a NUL and returns the bytes written,
@@ -899,16 +916,20 @@ pub struct HorusJsonWireMsg {
     pub _padding: [u8; 11],
 }
 
-/// Create JsonWireMessage publisher.
+/// Create JsonWireMessage publisher. Returns null on error;
+/// `horus_topic_last_error` then holds the reason.
 #[no_mangle]
 pub unsafe extern "C" fn horus_publisher_json_wire_new(name: *const c_char) -> *mut HorusPublisher {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match topic_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     match topic_ffi::publisher_json_wire_new(name) {
         Ok(pub_) => Box::into_raw(pub_) as *mut HorusPublisher,
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_topic_error(e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -938,18 +959,22 @@ pub unsafe extern "C" fn horus_publisher_json_wire_send(
     topic_ffi::publisher_json_wire_send(pub_, wire);
 }
 
-/// Create JsonWireMessage subscriber.
+/// Create JsonWireMessage subscriber. Returns null on error;
+/// `horus_topic_last_error` then holds the reason.
 #[no_mangle]
 pub unsafe extern "C" fn horus_subscriber_json_wire_new(
     name: *const c_char,
 ) -> *mut HorusSubscriber {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match topic_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     match topic_ffi::subscriber_json_wire_new(name) {
         Ok(sub) => Box::into_raw(sub) as *mut HorusSubscriber,
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_topic_error(e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -1381,7 +1406,25 @@ pub unsafe extern "C" fn horus_params_set_bool(
     }
 }
 
-/// Get param as string. Writes to buf, returns length. -1 if not found.
+/// Get param as string.
+///
+/// Returns the value's FULL length in bytes, and writes at most `buf_len - 1`
+/// of them plus a NUL. A return `>= buf_len` therefore means the value was
+/// truncated and tells the caller exactly how large a buffer to re-call with.
+/// Returns -1 if the key is absent, or if `buf` is null or `buf_len` is 0 —
+/// the same convention as `horus_topic_last_error`.
+///
+/// This used to return the number of bytes WRITTEN, which gave a caller no way
+/// to tell a complete value from a clipped one, and no way to size around it:
+/// the clipped string came back as an ordinary `std::optional<std::string>`
+/// with a value in it. It also returned that positive count for a null `buf`,
+/// and split UTF-8 sequences. `horus_topic_last_error` in this file already
+/// does none of those things, over inputs that are strictly less arbitrary —
+/// a topic name is length-checked before it gets there, while a param value
+/// holds paths, URLs and calibration blobs. Nothing anywhere states a length
+/// limit for a param; 1024 was an artefact of a stack buffer, which is why
+/// Rust, Python and C++ disagreed about what `get("key")` returned for one
+/// file.
 #[no_mangle]
 pub unsafe extern "C" fn horus_params_get_string(
     params: *const HorusParams,
@@ -1389,7 +1432,7 @@ pub unsafe extern "C" fn horus_params_get_string(
     buf: *mut u8,
     buf_len: usize,
 ) -> i32 {
-    if params.is_null() || key.is_null() {
+    if params.is_null() || key.is_null() || buf.is_null() || buf_len == 0 {
         return -1;
     }
     let params = &*(params as *const params_ffi::FfiParams);
@@ -1400,12 +1443,23 @@ pub unsafe extern "C" fn horus_params_get_string(
     match params_ffi::params_get_string(params, key) {
         Some(v) => {
             let bytes = v.as_bytes();
-            let copy_len = bytes.len().min(buf_len.saturating_sub(1));
-            if !buf.is_null() && buf_len > 0 {
-                std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, copy_len);
-                *buf.add(copy_len) = 0;
+            let mut copy_len = bytes.len().min(buf_len - 1);
+            // Back off to a char boundary: half a UTF-8 sequence is not
+            // something to hand a caller that may re-encode it.
+            while copy_len > 0 && copy_len < bytes.len() && (bytes[copy_len] & 0xC0) == 0x80 {
+                copy_len -= 1;
             }
-            copy_len as i32
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, copy_len);
+            *buf.add(copy_len) = 0;
+            // The REQUIRED length, not the written one.
+            //
+            // Saturating rather than `as i32`: the plain cast wraps, so a value
+            // longer than `i32::MAX` came back negative and a caller following
+            // the documented convention would read it as the `-1` that means
+            // "no such param". Saturating keeps the sign honest — the answer is
+            // still "your buffer is too small", which is the only thing a
+            // caller can act on, and no buffer that size can be satisfied.
+            i32::try_from(bytes.len()).unwrap_or(i32::MAX)
         }
         None => -1,
     }
@@ -1466,9 +1520,9 @@ pub struct HorusServiceServer {
 /// Create a service client.
 #[no_mangle]
 pub unsafe extern "C" fn horus_service_client_new(name: *const c_char) -> *mut HorusServiceClient {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(service_ffi::service_client_new(name)) as *mut HorusServiceClient
 }
@@ -1516,9 +1570,9 @@ pub unsafe extern "C" fn horus_service_client_call(
 /// Create a service server.
 #[no_mangle]
 pub unsafe extern "C" fn horus_service_server_new(name: *const c_char) -> *mut HorusServiceServer {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(service_ffi::service_server_new(name)) as *mut HorusServiceServer
 }
@@ -1596,9 +1650,9 @@ pub struct HorusActionGoalHandle {
 /// Create an action client.
 #[no_mangle]
 pub unsafe extern "C" fn horus_action_client_new(name: *const c_char) -> *mut HorusActionClient {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(action_ffi::action_client_new(name)) as *mut HorusActionClient
 }
@@ -1736,9 +1790,9 @@ pub unsafe extern "C" fn horus_goal_handle_destroy(handle: *mut HorusGoalHandle)
 /// Create an action server.
 #[no_mangle]
 pub unsafe extern "C" fn horus_action_server_new(name: *const c_char) -> *mut HorusActionServer {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(action_ffi::action_server_new(name)) as *mut HorusActionServer
 }
@@ -2060,7 +2114,7 @@ pub unsafe extern "C" fn horus_blackbox_record(category: *const c_char, message:
     let text = format!("[blackbox] {}", msg);
     let log_type = horus_core::core::log_buffer::LogType::Warning;
     let entry = horus_core::core::log_buffer::LogEntry {
-        timestamp: String::new(),
+        timestamp: String::new(), // publish_log stamps it
         tick_number: 0,
         node_name: cat.to_string(),
         log_type: log_type.clone(),
@@ -2108,7 +2162,7 @@ pub unsafe extern "C" fn horus_log(level: u8, node_name: *const c_char, message:
         _ => horus_core::core::log_buffer::LogType::Info,
     };
     let entry = horus_core::core::log_buffer::LogEntry {
-        timestamp: String::new(), // filled by log_buffer if empty
+        timestamp: String::new(), // publish_log stamps it
         tick_number: 0,
         node_name: node.to_string(),
         log_type: log_type.clone(),
@@ -2147,6 +2201,210 @@ mod tests {
 
     fn in_emit_child() -> bool {
         std::env::var_os("HORUS_CPP_FFI_EMIT_CHILD").is_some()
+    }
+
+    /// Every topic constructor must refuse a null name and report why.
+    ///
+    /// `topic_name_from_c`'s doc says "Every topic constructor starts here,
+    /// which is what keeps the two invariants the last-error channel rests on".
+    /// The two JsonWireMessage constructors did not: they called
+    /// `CStr::from_ptr(name)` directly, which is undefined behaviour on null —
+    /// the exact "segfault at best" case the guard was written to close — and
+    /// never cleared or set the error slot, so `horus_topic_last_error` after
+    /// one of them answered with whatever the previous topic had failed for.
+    ///
+    /// json_wire is the transport under every C++ service and action call, so
+    /// it is the least obscure entry point in the file, not the most.
+    ///
+    /// Enumerated by hand rather than by grep: a list that scans the source can
+    /// only find the constructors that already look like the others.
+    #[test]
+    fn every_topic_constructor_refuses_a_null_name_with_a_reason() {
+        // (label, constructor returns non-null?)
+        let attempts: Vec<(&str, bool)> = unsafe {
+            vec![
+                (
+                    "publisher_cmd_vel",
+                    !horus_publisher_cmd_vel_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_cmd_vel",
+                    !horus_subscriber_cmd_vel_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "publisher_json_wire",
+                    !horus_publisher_json_wire_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_json_wire",
+                    !horus_subscriber_json_wire_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "publisher_laser_scan",
+                    !horus_publisher_laser_scan_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_laser_scan",
+                    !horus_subscriber_laser_scan_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "publisher_imu",
+                    !horus_publisher_imu_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_imu",
+                    !horus_subscriber_imu_new(std::ptr::null()).is_null(),
+                ),
+            ]
+        };
+
+        for (label, returned_non_null) in &attempts {
+            assert!(!returned_non_null, "{label} accepted a null topic name");
+        }
+
+        // And each one must have left its own reason behind. Checked after the
+        // loop above only for the last call; do it per-call so a constructor
+        // that forgets `set_topic_error` is caught rather than reading the
+        // previous one's reason.
+        unsafe fn reason() -> String {
+            let mut buf = [0u8; 128];
+            let n = horus_topic_last_error(buf.as_mut_ptr(), buf.len());
+            assert!(n >= 0, "horus_topic_last_error should not fail here");
+            String::from_utf8_lossy(&buf[..n as usize]).into_owned()
+        }
+
+        unsafe {
+            let ctors: Vec<(&str, Box<dyn Fn()>)> = vec![
+                (
+                    "publisher_cmd_vel",
+                    Box::new(|| {
+                        horus_publisher_cmd_vel_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_cmd_vel",
+                    Box::new(|| {
+                        horus_subscriber_cmd_vel_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "publisher_json_wire",
+                    Box::new(|| {
+                        horus_publisher_json_wire_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_json_wire",
+                    Box::new(|| {
+                        horus_subscriber_json_wire_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "publisher_laser_scan",
+                    Box::new(|| {
+                        horus_publisher_laser_scan_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_laser_scan",
+                    Box::new(|| {
+                        horus_subscriber_laser_scan_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "publisher_imu",
+                    Box::new(|| {
+                        horus_publisher_imu_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_imu",
+                    Box::new(|| {
+                        horus_subscriber_imu_new(std::ptr::null());
+                    }),
+                ),
+            ];
+
+            for (label, call) in ctors {
+                // Arm a reason that names a DIFFERENT topic, so a constructor
+                // that neither clears nor sets the slot reads as this one.
+                set_topic_error("stale reason from some other topic".to_string());
+                call();
+                let got = reason();
+                assert!(
+                    got.contains("null"),
+                    "{label} returned null but left `{got}` in the error slot — \
+                     it neither cleared nor set its own reason"
+                );
+            }
+        }
+    }
+
+    /// A service or action endpoint name must not be dereferenced when null.
+    ///
+    /// Not covered by the topic invariant above (these do not touch the topic
+    /// error slot), but `CStr::from_ptr` is undefined behaviour on null in
+    /// exactly the same way, and `horus_c.h` is a public ABI.
+    #[test]
+    fn service_and_action_constructors_refuse_a_null_name() {
+        unsafe {
+            assert!(horus_service_client_new(std::ptr::null()).is_null());
+            assert!(horus_service_server_new(std::ptr::null()).is_null());
+            assert!(horus_action_client_new(std::ptr::null()).is_null());
+            assert!(horus_action_server_new(std::ptr::null()).is_null());
+        }
+    }
+
+    /// A C++ log line must carry a time, like every other language's does.
+    ///
+    /// Both C++ entry points built their `LogEntry` with
+    /// `timestamp: String::new()` and the comment "filled by log_buffer if
+    /// empty". `publish_log` filled nothing, so `horus log` showed a blank time
+    /// column for every line a C++ node emitted while the identical `hlog!`
+    /// call from Rust carried one. Assert against a real Rust entry rather than
+    /// a hardcoded pattern, so the two cannot drift into different shapes.
+    #[test]
+    fn a_cpp_log_line_is_stamped_like_a_rust_one() {
+        use horus_core::core::log_buffer::{LogType, GLOBAL_LOG_BUFFER};
+
+        let node = format!("cpp_stamp_{}", std::process::id());
+        let name = CString::new(node.clone()).unwrap();
+        let msg = CString::new("from a C++ node").unwrap();
+        unsafe { horus_log(0, name.as_ptr(), msg.as_ptr()) };
+
+        let cat = CString::new(node.clone()).unwrap();
+        let event = CString::new("estop").unwrap();
+        unsafe { horus_blackbox_record(cat.as_ptr(), event.as_ptr()) };
+
+        // The Rust side of the comparison, through the real Rust path.
+        let rust_node = format!("rust_stamp_{}", std::process::id());
+        horus_core::core::hlog::log_as_node(LogType::Info, &rust_node, "from a Rust node");
+
+        let cpp = GLOBAL_LOG_BUFFER.for_node(&node);
+        assert_eq!(cpp.len(), 2, "both C++ entry points should have logged");
+        let rust = GLOBAL_LOG_BUFFER.for_node(&rust_node);
+        assert_eq!(rust.len(), 1);
+        let reference = &rust[0].timestamp;
+
+        for entry in &cpp {
+            assert!(
+                !entry.timestamp.is_empty(),
+                "a C++ log entry reached the buffer with no timestamp: {entry:?}"
+            );
+            assert_eq!(
+                entry.timestamp.len(),
+                reference.len(),
+                "C++ stamp {:?} is not the shape Rust writes ({reference:?})",
+                entry.timestamp
+            );
+            // HH:MM:SS.mmm — same separators in the same places.
+            let shape = |t: &str| {
+                t.chars()
+                    .map(|c| if c.is_ascii_digit() { 'd' } else { c })
+                    .collect::<String>()
+            };
+            assert_eq!(shape(&entry.timestamp), shape(reference));
+        }
     }
 
     /// Re-run `test_name` in a child process and hand back its stderr.
@@ -2400,6 +2658,103 @@ mod tests {
 
             let missing = CString::new("missing").unwrap();
             assert!(!horus_params_has(params, missing.as_ptr()));
+
+            horus_params_destroy(params);
+        }
+    }
+
+    /// A param value must not come back silently clipped.
+    ///
+    /// `horus_params_get_string` returned the bytes WRITTEN, so a caller could
+    /// not tell a complete value from a truncated one and had no way to size a
+    /// buffer around it: `Params::get_string` handed back an ordinary
+    /// `std::optional<std::string>` with a clipped value in it. Rust and Python
+    /// always returned the whole string; only C++ clipped, over inputs — paths,
+    /// URLs, calibration blobs — that are strictly more arbitrary than the
+    /// topic names `horus_topic_last_error` already handles correctly in this
+    /// same file.
+    #[test]
+    fn params_get_string_reports_the_length_it_needed() {
+        unsafe {
+            let params = horus_params_new();
+            let key = CString::new("calibration").unwrap();
+            let value = "x".repeat(2000);
+            let cvalue = CString::new(value.as_str()).unwrap();
+            assert_eq!(
+                horus_params_set_string(params, key.as_ptr(), cvalue.as_ptr()),
+                0
+            );
+
+            let mut buf = [0xAAu8; 16];
+            let n = horus_params_get_string(params, key.as_ptr(), buf.as_mut_ptr(), buf.len());
+            assert_eq!(
+                n, 2000,
+                "the REQUIRED length, so a caller can size a buffer that holds \
+                 the whole value"
+            );
+            assert_eq!(buf[15], 0, "the terminator must still fit");
+
+            // Sized from the reported length, the value arrives whole.
+            let mut big = vec![0u8; n as usize + 1];
+            let again = horus_params_get_string(params, key.as_ptr(), big.as_mut_ptr(), big.len());
+            assert_eq!(again, 2000);
+            assert_eq!(
+                std::str::from_utf8(&big[..2000]).unwrap(),
+                value,
+                "the second call must return the complete value"
+            );
+
+            horus_params_destroy(params);
+        }
+    }
+
+    /// A null buffer is an error, not a positive byte count.
+    #[test]
+    fn params_get_string_refuses_a_null_buffer() {
+        unsafe {
+            let params = horus_params_new();
+            let key = CString::new("name").unwrap();
+            let v = CString::new("lidar").unwrap();
+            assert_eq!(horus_params_set_string(params, key.as_ptr(), v.as_ptr()), 0);
+
+            assert_eq!(
+                horus_params_get_string(params, key.as_ptr(), std::ptr::null_mut(), 64),
+                -1,
+                "a null buffer used to return a positive 'bytes written'"
+            );
+            let mut buf = [0u8; 8];
+            assert_eq!(
+                horus_params_get_string(params, key.as_ptr(), buf.as_mut_ptr(), 0),
+                -1
+            );
+
+            horus_params_destroy(params);
+        }
+    }
+
+    /// Truncation must not split a UTF-8 sequence.
+    #[test]
+    fn params_get_string_truncates_on_a_char_boundary() {
+        unsafe {
+            let params = horus_params_new();
+            let key = CString::new("label").unwrap();
+            // Three-byte characters, so a naive byte cut lands mid-sequence.
+            let value = "\u{4e2d}".repeat(10);
+            let cvalue = CString::new(value.as_str()).unwrap();
+            assert_eq!(
+                horus_params_set_string(params, key.as_ptr(), cvalue.as_ptr()),
+                0
+            );
+
+            let mut buf = [0xAAu8; 8];
+            let n = horus_params_get_string(params, key.as_ptr(), buf.as_mut_ptr(), buf.len());
+            assert_eq!(n, 30, "the full length is still reported");
+
+            let nul = buf.iter().position(|&b| b == 0).expect("NUL written");
+            assert!(
+                std::str::from_utf8(&buf[..nul]).is_ok(),
+                "no split UTF-8 sequence — the caller may re-encode this"
+            );
 
             horus_params_destroy(params);
         }

@@ -92,6 +92,14 @@ env:
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
   #
+  # Bumped from 4a612b1 to 9a1a0c1 (horus-docs main, the merge of
+  # horus-docs#17). That PR is the documentation half of the same bidirectional
+  # audit this branch is the code half of, so the two belong at the same pin:
+  # against 4a612b1 the contract validates this branch's runtime corrections
+  # against pages that still describe what the runtime did BEFORE them, which
+  # is the drift the audit existed to find. Exactly one commit, and 4a612b1 is
+  # its parent. Verified from this tree: 14 passed, 0 failed.
+  #
   # Bumped from 38368c8 to 4a612b1 (horus-docs main, the merge of
   # horus-docs#18), for the same reason 38368c8 replaced af057d9 before it.
   # This branch adds six operator-facing variables — HORUS_RECORD_MAX_MB,
@@ -107,7 +115,7 @@ env:
   # it: 14 passed, 0 failed. The bump is 7 commits, not 1 — horus-docs#18 is
   # only the newest of them, and that suite result is what says the other six,
   # written by other people for other reasons, are compatible with this branch.
-  DOCS_PINNED_REF: 4a612b108d51308537cdd5c737bbc0181f8354ac
+  DOCS_PINNED_REF: 9a1a0c107bc2e04b75cbdd08a04462e242285bce
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────
