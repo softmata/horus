@@ -650,9 +650,18 @@ pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
         .ok()
 }
 
-/// The process-wide log-file drain, started at most once.
-static LOG_FILE_DRAIN: std::sync::OnceLock<Option<std::thread::JoinHandle<()>>> =
-    std::sync::OnceLock::new();
+/// The process-wide log-file drain, started at most once — but only once it
+/// has actually started.
+///
+/// A `OnceLock<Option<_>>` was wrong: `get_or_init` memoizes whatever the first
+/// call produced, `None` included. A process that built one `Scheduler` before
+/// `HORUS_LOG_FILE` was set — which every test that sets the variable and then
+/// constructs a scheduler does, and any program that reads config after an
+/// early scheduler — cached "no drain" for its whole life and silently never
+/// wrote a log file again. A `Mutex` keeps the at-most-one guarantee (the lock
+/// serialises the check and the spawn) without freezing the negative answer.
+static LOG_FILE_DRAIN: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
 
 /// Start the log-file drain once per process, if `HORUS_LOG_FILE` asks for it.
 ///
@@ -667,7 +676,12 @@ static LOG_FILE_DRAIN: std::sync::OnceLock<Option<std::thread::JoinHandle<()>>> 
 ///
 /// Returns whether a drain thread is running.
 pub fn start_log_file_drain_once() -> bool {
-    LOG_FILE_DRAIN.get_or_init(start_log_file_drain).is_some()
+    let mut slot = LOG_FILE_DRAIN.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
+        return true;
+    }
+    *slot = start_log_file_drain();
+    slot.is_some()
 }
 
 fn log_drain_loop(log_dir: &str, max_size: u64, max_files: usize) {

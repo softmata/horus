@@ -75,8 +75,19 @@ fn restart_command_reinitialises_the_node() {
         scheduler.run_for(1200_u64.ms()).expect("run_for");
     });
 
-    // Let it start and perform the initial init().
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // Poll for the startup init() rather than sleeping a fixed 400 ms.
+    //
+    // A fixed wait is a bet that the scheduler thread got scheduled inside it.
+    // On a loaded runner — which is the normal state of CI, and of this repo's
+    // own workstation under concurrent builds — it does not, and the test fails
+    // reporting 0 inits as though `RestartNode` were broken. Polling turns the
+    // same wall clock into an upper bound instead of an assumption: it returns
+    // as soon as the init lands, and only the diagnostic changes if it never
+    // does.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while inits.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert_eq!(
         inits.load(Ordering::SeqCst),
         1,

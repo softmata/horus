@@ -1452,7 +1452,14 @@ pub unsafe extern "C" fn horus_params_get_string(
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), buf, copy_len);
             *buf.add(copy_len) = 0;
             // The REQUIRED length, not the written one.
-            bytes.len() as i32
+            //
+            // Saturating rather than `as i32`: the plain cast wraps, so a value
+            // longer than `i32::MAX` came back negative and a caller following
+            // the documented convention would read it as the `-1` that means
+            // "no such param". Saturating keeps the sign honest — the answer is
+            // still "your buffer is too small", which is the only thing a
+            // caller can act on, and no buffer that size can be satisfied.
+            i32::try_from(bytes.len()).unwrap_or(i32::MAX)
         }
         None => -1,
     }

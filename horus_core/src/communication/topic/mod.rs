@@ -4563,9 +4563,25 @@ where
         // the exact failure the counter was introduced to prevent, and these
         // are the APIs the docs send users to on critical topics.
         //
-        // Counted before the call, like `send()`: this is an attempt count, and
-        // a publisher hammering a full ring is alive — a ring nobody drains is
-        // a different fault, and one the subscriber's own staleness sees.
+        // Counted before the call, like `send()`: this is an attempt count, so
+        // a publisher hammering a full ring keeps it moving.
+        //
+        // KNOWN LIMITATION, and the reason this note is not a reassurance. An
+        // earlier version of it claimed a ring nobody drains is "a different
+        // fault, and one the subscriber's own staleness sees". That is
+        // circular: `SubscriptionFreshness::refresh` derives freshness from
+        // this counter and from nothing else, so while a full ring drops every
+        // message the subscriber still observes the count advancing and stays
+        // "fresh" — the watchdog cannot see the fault it is watching for.
+        //
+        // Bumping on SUCCESS instead would close it, and is the right shape:
+        // `try_send` failing means nothing was published, which is exactly what
+        // staleness should report. It is not done here because it moves the
+        // meaning of the counter at seven call sites across two crates and
+        // changes when `StalePolicy::SafeState`/`Stop` fire on a live robot —
+        // that belongs in its own change with its own tests, not in a merge.
+        // Until then, a stalled consumer is visible in `dropped_count()` /
+        // `send_retry_overruns()`, not in staleness.
         self.ring.bump_messages_total();
         self.ring.try_send(msg)
     }

@@ -332,7 +332,13 @@ fn execute_workspace(
             apply_network_config(&mut cmd);
             let status = cmd.status()?;
             if !status.success() {
-                let code = status.code().unwrap_or(1);
+                // `shell_exit_code`, not `status.code().unwrap_or(1)`. On Unix
+                // a child killed by a signal has no exit code at all, and the
+                // `unwrap_or(1)` reported every one of them — SIGSEGV, SIGKILL,
+                // the Ctrl-C the operator just pressed — as a plain "exited
+                // with code 1". That is the defect `shell_exit_code` was
+                // introduced for; this call site was missed.
+                let code = crate::error_wrapper::shell_exit_code(&status);
                 return Err(anyhow!("Process exited with code {}", code));
             }
         }

@@ -956,8 +956,22 @@ if [ -n "${HORUS_PREFIX:-}" ] && [ -n "$SHELL_RC" ] && [ -z "$TARGET_USER" ]; th
     mkdir -p "$(dirname "$SHELL_RC")" 2>/dev/null || true
     case "$SHELL_RC" in
         */config.fish)
-            grep -qF "set -gx HORUS_PREFIX" "$SHELL_RC" 2>/dev/null || \
+            # Value-aware, like the POSIX arm below. Testing only for the
+            # PRESENCE of `set -gx HORUS_PREFIX` treated a line naming a
+            # DIFFERENT prefix as "already configured", so a fish user who
+            # reinstalled to a new location kept the old export and a shell
+            # that pointed at a tree the installer had just replaced. The
+            # POSIX arm was fixed for exactly this; fish was left behind.
+            if grep -qE "^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|\$)" "$SHELL_RC" 2>/dev/null; then
+                grep -qF "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" "$SHELL_RC" 2>/dev/null || {
+                    sed -E -i.horusbak "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|\$)/d" "$SHELL_RC" 2>/dev/null || \
+                        sed -E -i '' "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|\$)/d" "$SHELL_RC" 2>/dev/null
+                    rm -f "${SHELL_RC}.horusbak" 2>/dev/null
+                    echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+                }
+            else
                 echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+            fi
             ;;
         *)
             # Value-aware: a stale line naming a DIFFERENT prefix must be

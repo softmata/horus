@@ -1817,7 +1817,7 @@ fn check_network() -> CheckResult {
         details.push("horus_net: enabled".to_string());
     } else {
         details.push(
-            "horus_net: available (enable it with `horus run --net`,              enable = [\"net\"] in horus.toml, or HORUS_ENABLE=net)"
+            "horus_net: available (enable it with `horus run --net`, enable = [\"net\"] in horus.toml, or HORUS_ENABLE=net)"
                 .to_string(),
         );
     }
