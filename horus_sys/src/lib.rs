@@ -18,7 +18,7 @@
 //! | [`device`] | Serial port and video device enumeration |
 //! | [`platform`] | OS/distro detection, directories, shell, package manager |
 //! | [`sync`] | Environment synchronization (toolchains, system deps) |
-//! | [`env`] | One vocabulary for boolean `HORUS_*` environment variables |
+//! | [`mod@env`] | One vocabulary for boolean `HORUS_*` environment variables |
 //!
 //! ## Platform Support
 //!
