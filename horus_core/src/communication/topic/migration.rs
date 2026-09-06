@@ -202,10 +202,16 @@ impl<'a> BackendMigrator<'a> {
         }
         // Yield to let preempted producer threads complete.
         for _ in 0..3 {
-            std::thread::yield_now();
+            // Before the yield, not after. `yield_now` returns when the
+            // scheduler says so, so a check placed after it bounds the number of
+            // yields and not their duration — the same defect `send_lossy_retry`
+            // carried, and the only other place in this crate that pairs a yield
+            // with a deadline. Leaving one of the two in the broken shape
+            // guarantees the next person copies the wrong one.
             if start.elapsed() > budget {
                 return;
             }
+            std::thread::yield_now();
         }
     }
 

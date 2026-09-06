@@ -642,12 +642,10 @@ pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(5);
 
-    std::thread::Builder::new()
-        .name("horus-log-drain".into())
-        .spawn(move || {
-            log_drain_loop(&log_dir, max_size, max_files);
-        })
-        .ok()
+    crate::scheduling::rt::spawn_best_effort("horus-log-drain", 5, move || {
+        log_drain_loop(&log_dir, max_size, max_files);
+    })
+    .ok()
 }
 
 /// The process-wide log-file drain, started at most once — but only once it

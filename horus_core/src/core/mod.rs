@@ -20,6 +20,7 @@ pub mod clock;
 pub mod duration_ext;
 #[doc(hidden)]
 pub mod hlog;
+pub mod hlog_rt;
 #[doc(hidden)]
 pub mod log_bridge;
 #[doc(hidden)]

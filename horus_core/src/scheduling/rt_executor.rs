@@ -440,12 +440,10 @@ pub(crate) fn flush_rt_diag() {
 
 pub(crate) fn start_rt_diag_drain() {
     RT_DIAG_DRAIN_STARTED.call_once(|| {
-        let spawned = std::thread::Builder::new()
-            .name("horus-rt-diag".to_string())
-            .spawn(|| loop {
-                rt_diag_drain(print_line);
-                std::thread::sleep(RT_DIAG_POLL);
-            });
+        let spawned = super::rt::spawn_best_effort("horus-rt-diag", 5, || loop {
+            rt_diag_drain(print_line);
+            std::thread::sleep(RT_DIAG_POLL);
+        });
         if spawned.is_err() {
             // Out of threads. Say so on the caller's thread — RT diagnostics
             // will now only appear at `stop()`, which is worth knowing.
@@ -549,6 +547,61 @@ const SPIN_GUARD_DEFAULT_NS: u64 = 20_000;
 /// every rate, leaving the remainder of the budget for the nodes' real work.
 const SPIN_GUARD_PERIOD_SHIFT: u32 = 4;
 
+/// The tick period one chain will run at: the fastest declared rate in it, or
+/// the fallback when no node declared one.
+///
+/// Extracted so `start_pool` and the idle-latency budget cannot disagree about
+/// what period a chain has — they are two consumers of the same decision, and a
+/// budget computed against a different period than the loop actually runs is
+/// worse than no budget.
+pub(crate) fn chain_tick_period(nodes: &[RegisteredNode], fallback: Duration) -> Duration {
+    let max_rate_hz = nodes
+        .iter()
+        .filter_map(|n| n.rate_hz)
+        .fold(0.0_f64, f64::max);
+    if max_rate_hz > 0.0 {
+        max_rate_hz.hz().period()
+    } else {
+        fallback
+    }
+}
+
+/// Environment override for the idle-exit latency budget, in microseconds.
+pub(crate) const RT_IDLE_LATENCY_ENV: &str = "HORUS_RT_IDLE_LATENCY_US";
+
+/// The idle-exit latency budget, in microseconds, for a run whose RT chains
+/// have these tick periods.
+///
+/// The invariant: the cpuidle governor may only enter states whose exit the
+/// guard spin can still absorb. The guard is
+/// `min(SPIN_GUARD_DEFAULT_NS, period >> SPIN_GUARD_PERIOD_SHIFT)`, so a 4 kHz
+/// chain has a 15.6 us guard rather than 20 — the budget has to track it, or it
+/// would license a state the fastest chain cannot survive.
+///
+/// Floored at 1, never 0. Zero means opposite things in the two kernel
+/// interfaces: "tolerate no exit latency at all" to `/dev/cpu_dma_latency`,
+/// which pins every core in POLL and costs real power on a battery robot, and
+/// "no constraint" to `pm_qos_resume_latency_us`. A default that means opposite
+/// things is not a default.
+pub(crate) fn idle_latency_budget_us(chain_periods: &[Duration]) -> u32 {
+    let requested_guard_ns = std::env::var("HORUS_RT_SPIN_GUARD_US")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|us| us.saturating_mul(1_000))
+        .unwrap_or(SPIN_GUARD_DEFAULT_NS);
+
+    let tightest_guard_ns = chain_periods
+        .iter()
+        .map(|p| {
+            let period_ns = (p.as_nanos() as u64).max(1);
+            requested_guard_ns.min(period_ns >> SPIN_GUARD_PERIOD_SHIFT)
+        })
+        .min()
+        .unwrap_or(SPIN_GUARD_DEFAULT_NS);
+
+    ((tightest_guard_ns / 1_000) as u32).max(1)
+}
+
 /// Minimum slack worth an absolute-sleep syscall, in nanoseconds.
 ///
 /// Arming an hrtimer, switching out, taking the timer interrupt and switching
@@ -595,8 +648,26 @@ fn cyclic_now_ns() -> u64 {
     };
     // SAFETY: `ts` is a live, writable `timespec` and CLOCK_MONOTONIC is always
     // a valid clock id, so both documented failure modes (EFAULT for a bad
-    // pointer, EINVAL for a bad clock id) are unreachable. On Linux this
-    // resolves through the vDSO and does not enter the kernel.
+    // pointer, EINVAL for a bad clock id) are unreachable.
+    //
+    // COST — not part of the safety argument, and NOT a guarantee. This comment
+    // used to assert "resolves through the vDSO and does not enter the kernel"
+    // as unconditional fact. It is a runtime property the kernel changes
+    // without asking: "clocksource: Marking TSC unstable due to clocksource
+    // watchdog" demotes to hpet or acpi_pm mid-run. Only clocksources with a
+    // non-NONE `vdso_clock_mode` are served from the vDSO — `tsc`, `kvm-clock`,
+    // the Hyper-V TSC page, arm64's `arch_sys_counter`; `hpet` lost its vDSO
+    // page in 4.20 and `acpi_pm` never had one, so on either every call is a
+    // syscall PLUS an uncached device read. Measured on the reference box, 2M
+    // iterations each: 25.4 ns through the vDSO against 187.3 ns for the bare
+    // syscall on the SAME tsc clocksource — 7.4x, before the device access is
+    // added on top.
+    //
+    // The guard spin in `CyclicWaiter::wait` calls this once per iteration, so
+    // it is the loop that degrades first and by the most.
+    // `horus_sys::rt::clocksource()` reports what is actually in force, and
+    // `RtReport` reads it again after its benchmark so a mid-measurement
+    // demotion is named rather than silently folded into the numbers.
     unsafe {
         libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
     }
@@ -784,17 +855,44 @@ impl CyclicWaiter {
         // SPIN_GUARD_PERIOD_SHIFT.
         let guard_ns = requested_guard_ns.min(period_ns >> SPIN_GUARD_PERIOD_SHIFT);
 
-        if mode == WaitMode::Spin && rt_policy_active {
-            // Unconditional, not verbose-gated: this is the exact combination
-            // that produces the ~50 ms dequeue, and an operator who opted into
-            // it deserves to be told on every boot.
-            print_line(
-                "[RT-thread] WARNING: HORUS_RT_WAIT=spin with a real RT policy. The tick loop \
-                 will busy-wait every period; Linux RT bandwidth control will dequeue this \
-                 thread for ~50ms once its share is exhausted (~50 missed deadlines at 1kHz). \
-                 Median wake jitter improves to ~100ns and the worst case gets far worse.",
-            );
-        } else if period_ns < (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) && rt_policy_active {
+        // Measured, not reasoned. This used to fire on
+        // `mode == Spin && rt_policy_active` with the budget not an input, so
+        // an operator who had already set `sched_rt_runtime_us=-1` — the exact
+        // remedy this file's own comments recommend — was told on every boot
+        // that the kernel would dequeue them anyway. It also hardcoded "~50ms"
+        // and "~50 missed deadlines at 1kHz", which are right for one budget at
+        // one tick rate, and said nothing about a zero cgroup budget, whose
+        // EPERM reads as a missing CAP_SYS_NICE and is not.
+        //
+        // The read is three `open`/`read`/`close` pairs, cached process-wide,
+        // here on the startup path alongside the affinity and governor syscalls
+        // — never from the loop below.
+        {
+            let bandwidth = horus_sys::rt::rt_bandwidth();
+            let duty = if mode == WaitMode::Spin {
+                super::rt_bandwidth::LoopDuty::Spin
+            } else {
+                super::rt_bandwidth::LoopDuty::Yielding {
+                    guard_ns,
+                    period_ns,
+                }
+            };
+            let verdict = super::rt_bandwidth::classify(bandwidth, rt_policy_active, duty);
+            if let Some(line) = super::rt_bandwidth::advisory(
+                verdict,
+                bandwidth,
+                tick_period,
+                bandwidth.source == horus_sys::rt::RtBandwidthSource::CgroupV1,
+                verbose,
+            ) {
+                print_line(&line);
+            }
+        }
+
+        // The sub-160us floor is a syscall-cost fact, not a budget fact, so it
+        // keeps its own branch — and it is no longer an `else if`: a spin-mode
+        // chain at a 100us period is BOTH, and only the first line was printed.
+        if period_ns < (MIN_SLEEP_SLACK_NS << SPIN_GUARD_PERIOD_SHIFT) && rt_policy_active {
             print_line(&format!(
                 "[RT-thread] WARNING: tick period {}us is below the {}us floor where an \
                  absolute sleep is cheaper than spinning; the final approach will be \
@@ -1199,26 +1297,30 @@ impl RtExecutor {
         let chain_cores = resolve_chain_cores(&chains, &rt_cpus);
         check_core_collisions(&chains, &chain_cores)?;
 
+        // Declare the resolved cores off-limits to helper threads before the
+        // first one is spawned — `start_rt_diag_drain` below is itself a helper
+        // and must already see the reservation.
+        horus_sys::rt::reserve_rt_cpus(
+            &chain_cores
+                .iter()
+                .filter_map(|c| c.cpu)
+                .collect::<Vec<usize>>(),
+        );
+
         // The blocking half of RT diagnostics lives on its own thread, started
         // here — on the caller's thread, never on an RT thread.
         start_rt_diag_drain();
+        // The same discipline for `hlog!`. Node code has no other logging API,
+        // and its direct path ends in an unbuffered blocking write to stderr.
+        crate::core::hlog_rt::start_drain();
 
         // One slot per chain, sized before any thread is spawned so
         // `wait_for_all` knows what a complete report looks like.
         let report = super::rt_status::RtThreadReport::new(num_chains);
 
         for (chain_idx, nodes) in chains.into_iter().enumerate() {
-            // Determine tick period from the fastest node in this chain
-            let max_rate_hz = nodes
-                .iter()
-                .filter_map(|n| n.rate_hz)
-                .fold(0.0_f64, f64::max);
-
-            let tick_period = if max_rate_hz > 0.0 {
-                max_rate_hz.hz().period()
-            } else {
-                fallback_period
-            };
+            // Determine tick period from the fastest node in this chain.
+            let tick_period = chain_tick_period(&nodes, fallback_period);
 
             // Already resolved above — `.core(n)` if a node named one, else the
             // round-robin slot.
@@ -1302,6 +1404,9 @@ impl RtExecutor {
         // in the final milliseconds, which is the interesting case — would exit
         // with its diagnostics still sitting in the ring.
         flush_rt_diag();
+        // Same reason: a run shorter than one drain poll must not exit with its
+        // RT log lines still sitting in the ring.
+        crate::core::hlog_rt::flush();
         all_nodes
     }
 
@@ -1340,28 +1445,15 @@ impl RtExecutor {
 
         // Begin recording tick (before execution)
         if let Some(ref mut recorder) = node.recorder {
-            recorder.begin_tick(0); // RT thread has no global tick counter
+            // The RT thread has no global tick counter, and passing a literal
+            // 0 here made `interval` inert — 0 is a multiple of every N, so
+            // "record every 10 ticks" recorded every one — and stamped every
+            // snapshot with tick 0.
+            recorder.begin_next_tick();
 
-            // Capture this node's inputs (subscriber topics) into the snapshot,
-            // mirroring the single-threaded scheduler path. Without this, RT-node
-            // recordings held only tick/timestamp metadata with empty payloads, so
-            // `horus record export` produced metadata-only output. Gated on an
-            // active recording tick, so there is zero cost when not recording.
-            if recorder.is_active_tick() {
-                let subscribers =
-                    crate::communication::topic_node_registry().subscribers_for_node(&node.name);
-                if !subscribers.is_empty() {
-                    let topics_dir = crate::memory::platform::shm_topics_dir();
-                    for sub in &subscribers {
-                        let topic_path = topics_dir.join(&sub.topic_name);
-                        if let Some(slot_read) =
-                            crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                        {
-                            recorder.record_input(&sub.topic_name, slot_read.payload);
-                        }
-                    }
-                }
-            }
+            // Capture this node's inputs. The registry walk and the topic
+            // mappings are cached across ticks; see `NodeRecorder::capture_inputs`.
+            recorder.capture_inputs(&node.name);
         }
 
         // Start tick timing in context (required for record_tick() to increment counter)
@@ -1453,14 +1545,12 @@ impl RtExecutor {
                     stats.record_budget_violation();
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::BudgetViolation {
-                            name: node.name.to_string(),
-                            budget_us: tick_budget.as_micros() as u64,
-                            actual_us: tr.duration.as_micros() as u64,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_budget_violation(
+                        &node.name,
+                        tick_budget.as_micros() as u64,
+                        tr.duration.as_micros() as u64,
+                    );
                 }
                 // Budget enforcement based on per-node policy.
                 // Post-tick enforcement (safe — tick completed, no shared state issues).
@@ -1512,7 +1602,7 @@ impl RtExecutor {
                         // stop the node. The e-stop this policy exists to fire
                         // was silently cancelled by the callback it fired.
                         if let Some(ref estop) = monitors.estop {
-                            estop.trigger(format!(
+                            estop.trigger_fmt(format_args!(
                                 "RT node '{}' budget violation ({:?} > {:?}) with BudgetPolicy::EmergencyStop",
                                 node.name, tr.duration, tick_budget
                             ));
@@ -1637,14 +1727,12 @@ impl RtExecutor {
                     }
                 }
                 // Record to blackbox (try_lock to avoid RT priority inversion)
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::DeadlineMiss {
-                            name: node.name.to_string(),
-                            deadline_us: deadline.as_micros() as u64,
-                            actual_us: dm.elapsed.as_micros() as u64,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_deadline_miss(
+                        &node.name,
+                        deadline.as_micros() as u64,
+                        dm.elapsed.as_micros() as u64,
+                    );
                 }
                 match dm.action {
                     DeadlineAction::Warn => {}
@@ -1690,7 +1778,7 @@ impl RtExecutor {
                         // See the budget branch: without this the e-stop is a
                         // silent local shutdown that the fleet never hears about.
                         if let Some(ref estop) = monitors.estop {
-                            estop.trigger(format!(
+                            estop.trigger_fmt(format_args!(
                                 "RT node '{}' deadline miss escalated to emergency stop",
                                 node.name
                             ));
@@ -1803,14 +1891,8 @@ impl RtExecutor {
                 // `horus blackbox -e NodeError` after a panic returned
                 // "No blackbox events found" while `--help` advertised
                 // filtering by exactly that event.
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::NodeError {
-                            name: node.name.to_string(),
-                            error: error_msg.clone(),
-                            severity: crate::error::Severity::Fatal,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_node_error(&node.name, &error_msg, crate::error::Severity::Fatal);
                 }
 
                 // Call on_error handler, panic-guarded like every other
@@ -1977,19 +2059,35 @@ impl RtExecutor {
         // Reported as the thread's actual affinity, so a refused pin shows as
         // unpinned rather than as whatever was requested.
         let mut pinned_cpus: Vec<usize> = Vec::new();
+        let mut affinity_degraded: Option<String> = None;
         if !rt_cpus.is_empty() {
             match super::rt::set_thread_affinity(&rt_cpus) {
-                Ok(()) => {
-                    pinned_cpus = rt_cpus.clone();
+                // The installed mask, not `rt_cpus`. Assigning the request here
+                // is how a thread reports an isolation it does not have: the
+                // pin can be partially applied, and before `set_thread_affinity`
+                // returned the read-back there was no way to tell.
+                Ok(installed) => {
+                    pinned_cpus = installed;
                     if monitors.verbose {
-                        print_line(&format!("[RT-thread] Pinned to CPU(s) {:?}", rt_cpus));
+                        print_line(&format!("[RT-thread] Pinned to CPU(s) {:?}", pinned_cpus));
                     }
                 }
                 Err(e) => {
-                    print_line(&format!(
-                        "[RT-thread] Could not pin to CPU(s) {:?}: {} (continuing unpinned)",
-                        rt_cpus, e
-                    ));
+                    // Not just a console line. `require_rt()` refuses to arm on
+                    // recorded degradations, and a thread that asked for the
+                    // isolated cores and got the housekeeping ones is precisely
+                    // the "running non-RT while you believe otherwise" outcome
+                    // it exists to prevent — the old code printed
+                    // "continuing unpinned" and left every programmatic
+                    // consumer believing the pin had taken.
+                    let msg = format!(
+                        "could not pin to CPU(s) {:?}: {} (continuing on {:?})",
+                        rt_cpus,
+                        e,
+                        horus_sys::rt::current_affinity()
+                    );
+                    print_line(&format!("[RT-thread] {msg}"));
+                    affinity_degraded = Some(msg);
                 }
             }
         }
@@ -2076,8 +2174,19 @@ impl RtExecutor {
                 },
                 refusal,
                 cpus: pinned_cpus,
+                cpus_requested: rt_cpus.clone(),
+                affinity_refusal: affinity_degraded,
                 memory_locked: identity.memory_locked,
             });
+
+            // Tell the publish path what this thread actually got. A SCHED_FIFO
+            // thread must never `sched_yield()` from a lossy `send()`: the yield
+            // goes to the tail of its own priority runqueue and returns only
+            // once every same-priority peer blocks, which is unbounded by
+            // construction rather than by load.
+            crate::communication::topic::send_budget::mark_current_thread_realtime(
+                granted.is_realtime(),
+            );
         }
 
         // Per-node "has completed at least one tick" flags, aligned with `nodes`.
@@ -2152,6 +2261,18 @@ impl RtExecutor {
         // it describe the right tick. Zero for the first iteration, which is
         // released by the loop being entered rather than by a wait.
         let mut release_late_ns: u64 = 0;
+
+        // From here to the end of the loop this thread is real-time, and
+        // `hlog!` from node code, from the panic hook and from the
+        // emergency-stop latch routes through the ring instead of allocating,
+        // taking two process-global mutexes and blocking on stderr.
+        //
+        // Scoped to the loop only: every `print_line` above runs once, before
+        // any tick, on a thread that is not yet cycling — the direct path is
+        // right for those, and routing them would only delay startup output by
+        // a poll.
+        let rt_log_guard = crate::core::hlog_rt::enter_rt_thread();
+
         while running.load(Ordering::Relaxed) {
             let loop_start = Instant::now();
 
@@ -2281,6 +2402,10 @@ impl RtExecutor {
             release_late_ns = waiter.wait();
         }
 
+        // Back on the direct path for teardown, whose output should not wait
+        // for a poll that may never come.
+        drop(rt_log_guard);
+
         waiter.finish(monitors.verbose);
 
         if monitors.verbose {
@@ -2393,6 +2518,58 @@ mod diag_ring_inflight {
 
 #[cfg(test)]
 mod tests {
+    /// The idle-exit budget must track the guard spin it has to fit inside,
+    /// not a constant.
+    ///
+    /// The guard is `min(SPIN_GUARD_DEFAULT_NS, period >> SPIN_GUARD_PERIOD_SHIFT)`,
+    /// so it is 20 us only above a 320 us period. A budget that ignored the
+    /// clamp would license the governor to enter a state the fastest chain
+    /// cannot survive.
+    #[test]
+    fn the_idle_latency_budget_tracks_the_guard_spin() {
+        // 1 kHz: the /16 clamp does not bind, so the guard is the full 20 us.
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_millis(1)]),
+            20
+        );
+        // 100 Hz: still 20 us — a slower loop does not get a bigger guard.
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_millis(10)]),
+            20
+        );
+        // 4 kHz (250 us): 250/16 = 15.6 us, so the guard IS the clamp and the
+        // budget must follow it down.
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_micros(250)]),
+            15
+        );
+
+        // Several chains: the tightest wins, because the governor's decision is
+        // machine-wide and the fastest chain is the one that cannot absorb it.
+        assert_eq!(
+            super::idle_latency_budget_us(&[
+                Duration::from_millis(10),
+                Duration::from_micros(250),
+                Duration::from_millis(1),
+            ]),
+            15
+        );
+    }
+
+    /// Never 0, whatever the period.
+    ///
+    /// 0 means opposite things in the two kernel interfaces: "tolerate no exit
+    /// latency at all" to /dev/cpu_dma_latency, which pins every core in POLL,
+    /// and "no constraint" to pm_qos_resume_latency_us.
+    #[test]
+    fn the_idle_latency_budget_is_never_zero() {
+        assert_eq!(
+            super::idle_latency_budget_us(&[Duration::from_micros(1)]),
+            1
+        );
+        assert_eq!(super::idle_latency_budget_us(&[Duration::from_nanos(1)]), 1);
+        assert_eq!(super::idle_latency_budget_us(&[]), 20);
+    }
 
     /// `start_pool` with the pre-`memory_locked` argument list.
     ///

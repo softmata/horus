@@ -99,7 +99,11 @@ pub(crate) fn note_safing_failure(
             node.name, action
         ));
         if let Some(ref estop) = monitors.estop {
-            estop.trigger(format!(
+            // `trigger_fmt`/`format_args!`, not `trigger`/`format!`. This is
+            // the RT panic path — the `[RT-thread]` line directly above says
+            // so — and `format!` allocates on it. The `String` wrapper this
+            // used to call no longer exists for that reason.
+            estop.trigger_fmt(format_args!(
                 "critical node '{}' panicked in {} and could not reach a safe state",
                 node.name, action
             ));

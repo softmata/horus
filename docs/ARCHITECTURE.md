@@ -432,7 +432,7 @@ names.** Where they are, exactly:
 
 That count understates the branching, because `#[cfg(target_os` is not the only
 spelling — `#[cfg(not(target_os = "linux"))]` does not match the grep at all, and
-`rt_executor.rs:515` is exactly such a site. Counting `#[cfg(unix)]`,
+`rt_executor.rs:531` is exactly such a site. Counting `#[cfg(unix)]`,
 `#[cfg(windows)]` and `#[cfg(not(unix))]` as well: `horus_core` 15/1/6,
 `horus_manager` 78/15/4, `horus_net` 8/0/0, `benchmarks` 3/0/3, against
 `horus_sys` 74/24/17.
@@ -461,9 +461,9 @@ behind gated dependencies.
    Windows arm exists because a named section and a file-backed mmap are
    different Rust types (`:77-84`), and `open_named_section_mut` calls
    `horus_sys::shm::ShmRegion::open_existing` (`:149`) rather than the Win32 API.
-   `scheduling/rt_executor.rs:495-550` is the other kind: `libc::clock_gettime`
-   (`:507`) and `libc::clock_nanosleep` (`:535`) called directly, with
-   `cfg(not(target_os = "linux"))` fallbacks beside them (`:515`).
+   `scheduling/rt_executor.rs:495-570` is the other kind: `libc::clock_gettime`
+   (`:523`) and `libc::clock_nanosleep` (`:551`) called directly, with
+   `cfg(not(target_os = "linux"))` fallbacks beside them (`:531`, `:571`).
 
 **Treat the number as a ratchet.** If your change adds a `#[cfg(target_os` site
 outside `horus_sys`, the counts above must go up in this file in the same commit,

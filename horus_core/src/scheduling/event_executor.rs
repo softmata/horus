@@ -195,11 +195,11 @@ impl EventExecutor {
             let notifier = Arc::new(EventNotifier::new());
             let watcher_notifier = Arc::clone(&notifier);
 
-            let handle = match std::thread::Builder::new()
-                .name(format!("horus-event-{}", node_name))
-                .spawn(move || {
-                    Self::watcher_thread(node, topic_name, watcher_notifier, running, monitors)
-                }) {
+            let handle = match crate::scheduling::rt::spawn_best_effort(
+                format!("horus-event-{}", node_name),
+                0,
+                move || Self::watcher_thread(node, topic_name, watcher_notifier, running, monitors),
+            ) {
                 Ok(h) => h,
                 Err(e) => {
                     print_line(&format!(
@@ -431,7 +431,10 @@ impl EventExecutor {
 
                 // Begin recording tick
                 if let Some(ref mut recorder) = node.recorder {
-                    recorder.begin_tick(tick_count);
+                    // `tick_count` is only incremented in the Ok arm below, so
+                    // a node whose tick returns Err re-stamped tick 0 forever
+                    // and its `interval` was inert too.
+                    recorder.begin_next_tick();
                 }
 
                 // FIX #5: this tick runs on THIS watcher thread — install the
@@ -518,14 +521,12 @@ impl EventExecutor {
 
                         // Record to the blackbox so the flight recorder can see a crash.
                         // try_lock mirrors the RT path: never block an executor on it.
-                        if let Some(ref bb) = monitors.blackbox {
-                            if let Ok(mut bb) = bb.try_lock() {
-                                bb.record(super::blackbox::BlackBoxEvent::NodeError {
-                                    name: node.name.to_string(),
-                                    error: error_msg.clone(),
-                                    severity: crate::error::Severity::Fatal,
-                                });
-                            }
+                        if let Some(ref ring) = monitors.blackbox {
+                            ring.emit_node_error(
+                                &node.name,
+                                &error_msg,
+                                crate::error::Severity::Fatal,
+                            );
                         }
 
                         // `record_tick_failure` above already logged this at error level, which

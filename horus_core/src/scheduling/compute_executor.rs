@@ -240,50 +240,6 @@ fn run_job(job: Job, monitors: &SharedMonitors) -> ParallelResult {
 /// compute nodes inheriting that priority loses it. Nodes that need real-time
 /// scheduling belong in the RT executor, which sets its priority explicitly;
 /// `ExecutionClass::Compute` is documented as best-effort.
-#[cfg(target_os = "linux")]
-fn set_best_effort_class(label: &str, nice_increment: i32) {
-    // SAFETY: `pid == 0` addresses the calling thread and `sched_getscheduler`
-    // only reads.
-    if unsafe { libc::sched_getscheduler(0) } != libc::SCHED_OTHER {
-        // SAFETY: `sched_param` is a POD struct of integer fields for which
-        // all-zero is a valid bit pattern. It is zeroed rather than
-        // literal-constructed because musl carries four extra sporadic-server
-        // members that glibc does not (the same portability trap documented in
-        // horus_sys::rt::linux::sched_param_with_priority); SCHED_OTHER ignores
-        // every member but `sched_priority`, which must be 0.
-        let rc = unsafe {
-            let mut param: libc::sched_param = std::mem::zeroed();
-            param.sched_priority = 0;
-            libc::sched_setscheduler(0, libc::SCHED_OTHER, &param)
-        };
-        if rc != 0 {
-            // Never silent: if this fails the thread keeps a policy that can
-            // preempt the RT thread, which is a latency fact the operator needs.
-            print_line(&format!(
-                "[Compute] {label}: could not demote to SCHED_OTHER ({}) — thread keeps \
-                 its inherited policy and may preempt the RT thread",
-                std::io::Error::last_os_error()
-            ));
-        }
-    }
-
-    if nice_increment > 0 {
-        // SAFETY: `nice` adjusts only the calling thread's CFS weight (the nice
-        // value is a per-thread attribute on Linux/NPTL). Raising it never
-        // requires privilege. The return value is deliberately ignored: it
-        // cannot be distinguished from a legitimate -1 result without errno
-        // handling, and the failure mode — the worker keeps its inherited
-        // weight — is not worth a log line on a path that cannot fail.
-        let _ = unsafe { libc::nice(nice_increment) };
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn set_best_effort_class(_label: &str, _nice_increment: i32) {
-    // No portable equivalent. macOS/Windows deployments of this runtime are
-    // development targets, where the RT executor has no hard guarantee either.
-}
-
 /// Persistent worker pool for parallel compute ticks.
 ///
 /// Created once per executor run and fed one batch of jobs per cycle. Holds no
@@ -390,7 +346,7 @@ impl ComputePool {
         result_tx: Sender<ParallelResult>,
         monitors: SharedMonitors,
     ) {
-        set_best_effort_class(&format!("worker {id}"), COMPUTE_WORKER_NICE);
+        crate::scheduling::rt::enter_best_effort(&format!("worker {id}"), COMPUTE_WORKER_NICE);
         crate::core::rt_config::prefault_stack(WORKER_PREFAULT_BYTES);
 
         // `recv()` tries the channel, backs off for a short bounded spin, then
@@ -559,10 +515,13 @@ impl ComputeExecutor {
         // reads. Idempotent, and on the caller's thread.
         super::rt_executor::start_rt_diag_drain();
 
-        let handle = std::thread::Builder::new()
-            .name("horus-compute".to_string())
-            .spawn(move || Self::compute_thread_main(nodes, running, tick_period, monitors))
-            .expect("Failed to spawn compute thread");
+        // `spawn_best_effort`, not a bare `Builder`: this executor runs
+        // non-real-time node classes, so it must not inherit the tick thread's
+        // policy or its reserved-core mask.
+        let handle = crate::scheduling::rt::spawn_best_effort("horus-compute", 0, move || {
+            Self::compute_thread_main(nodes, running, tick_period, monitors)
+        })
+        .expect("Failed to spawn compute thread");
 
         Self {
             handle: Some(handle),
@@ -615,7 +574,7 @@ impl ComputeExecutor {
         // having to change it. No nice increment here: the coordinator owns the
         // tick barrier, the load-shed accounting and the `running` re-check
         // that ends shutdown, and delaying those delays every compute node.
-        set_best_effort_class("coordinator", 0);
+        crate::scheduling::rt::enter_best_effort("coordinator", 0);
 
         let pool = ComputePool::new(nodes.len(), &monitors);
 
@@ -734,7 +693,9 @@ impl ComputeExecutor {
             // Begin recording for all ready nodes
             for &i in &ready_indices {
                 if let Some(ref mut recorder) = nodes[i].recorder {
-                    recorder.begin_tick(0);
+                    // No global tick counter on this thread; a literal 0 made `interval`
+                    // inert and stamped every snapshot with tick 0.
+                    recorder.begin_next_tick();
                 }
             }
 
@@ -909,14 +870,8 @@ impl ComputeExecutor {
 
                 // Record to the blackbox so the flight recorder can see a crash.
                 // try_lock mirrors the RT path: never block an executor on it.
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::NodeError {
-                            name: node.name.to_string(),
-                            error: error_msg.clone(),
-                            severity: crate::error::Severity::Fatal,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_node_error(&node.name, &error_msg, crate::error::Severity::Fatal);
                 }
 
                 // `record_tick_failure` above already logged this at error level, which

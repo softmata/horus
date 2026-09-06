@@ -97,8 +97,24 @@ pub struct RtThreadStatus {
     pub priority: i32,
     /// Why the kernel refused, when it did. `None` on success.
     pub refusal: Option<String>,
-    /// CPUs this thread is pinned to; empty means unpinned.
+    /// CPUs this thread is actually pinned to, read back from the kernel;
+    /// empty means unpinned.
+    ///
+    /// Read back rather than echoed from the request, because
+    /// `sched_setaffinity` intersects a mask with what a cpuset cgroup permits
+    /// and still reports success. See [`Self::cpus_requested`].
     pub cpus: Vec<usize>,
+    /// CPUs this thread asked for, before the kernel had its say.
+    ///
+    /// Empty when no affinity was requested. `cpus_requested != cpus` is the
+    /// affinity analogue of `granted != requested`: the thread is running
+    /// somewhere other than where the operator placed it, which on a host with
+    /// isolated cores means it is sharing the housekeeping CPUs with everything
+    /// else on the machine.
+    pub cpus_requested: Vec<usize>,
+    /// Why the pin did not take, when it did not. `None` when the thread got
+    /// exactly the CPUs it asked for, or asked for none.
+    pub affinity_refusal: Option<String>,
     /// Whether the *process* had `mlockall` applied when this thread started.
     ///
     /// Per-process rather than per-thread because that is what `mlockall` is.
@@ -113,6 +129,19 @@ impl RtThreadStatus {
     /// Whether this thread asked for real-time and did not get it.
     pub fn is_degraded(&self) -> bool {
         self.requested.is_realtime() && !self.granted.is_realtime()
+    }
+
+    /// Whether this thread asked to be pinned and is not on the CPUs it asked
+    /// for.
+    ///
+    /// Separate from [`is_degraded`](Self::is_degraded) because the two fail
+    /// independently and for different reasons: a thread can hold SCHED_FIFO
+    /// and still be running on the housekeeping cores, which is the outcome
+    /// `isolcpus` was configured to prevent. It is a degradation in its own
+    /// right — the isolated CPUs the operator rebooted for are going unused
+    /// while the RT thread competes with every other process on the box.
+    pub fn is_affinity_degraded(&self) -> bool {
+        !self.cpus_requested.is_empty() && self.cpus != self.cpus_requested
     }
 
     /// Whether this thread got real-time but is running on unlocked memory.
@@ -143,6 +172,12 @@ impl RtThreadStatus {
                 " (requested {}: {})",
                 self.requested.as_str(),
                 why
+            ));
+        }
+        if let Some(ref why) = self.affinity_refusal {
+            s.push_str(&format!(
+                " (requested cpu {:?}: {})",
+                self.cpus_requested, why
             ));
         }
         if self.is_realtime_without_locked_memory() {

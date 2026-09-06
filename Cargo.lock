@@ -1363,7 +1363,6 @@ dependencies = [
  "bytemuck",
  "chrono",
  "colored",
- "core_affinity",
  "criterion",
  "crossbeam",
  "ctrlc",

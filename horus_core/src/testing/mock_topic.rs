@@ -206,6 +206,9 @@ impl<T: Clone> MockTopic<T> {
             self.recv_delivered.load(Ordering::Relaxed),
             self.send_failures.load(Ordering::Relaxed),
             self.recv_failures.load(Ordering::Relaxed),
+            // A mock never enters the retry cold path, so it can never overrun
+            // its budget.
+            0,
         )
     }
 

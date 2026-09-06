@@ -119,6 +119,11 @@ pub(crate) mod header;
 pub(crate) mod local_state;
 pub mod metrics;
 pub(crate) mod migration;
+pub mod send_budget;
+
+/// Full scans of the topic registry, process-wide. See
+/// `TopicNodeRegistry::scan_count`.
+static REGISTRY_SCAN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Authoritative byte layout of a topic's SHM region, for out-of-crate readers
 /// and writers (`horus_net`). Offsets are `offset_of!`-asserted against
 /// `TopicHeader`, so drift is a build failure.
@@ -363,6 +368,20 @@ impl TopicNodeRegistry {
         }
     }
 
+    /// Full scans of the topic registry since process start.
+    ///
+    /// The test seam for the recorder's per-tick registry walk: each scan takes
+    /// the process-global read lock and walks every topic in the process,
+    /// allocating a `Vec` and two `String`s per match — once per recording node
+    /// per tick on the input side, and again on the output side. None of that
+    /// changes between ticks, which is what [`version`](Self::version) is for.
+    ///
+    /// Monotonic; a monitor samples it as a delta.
+    #[doc(hidden)]
+    pub fn scan_count() -> u64 {
+        REGISTRY_SCAN_COUNT.load(Ordering::Relaxed)
+    }
+
     /// Current topology version. Bumped on every register/unregister.
     /// The scheduler compares this to its last-built version to know
     /// whether the dependency graph needs rebuilding.
@@ -425,6 +444,7 @@ impl TopicNodeRegistry {
 
     /// Get all topics published by a given node.
     pub fn publishers_for_node(&self, node_name: &str) -> Vec<crate::core::TopicMetadata> {
+        REGISTRY_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
         let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let mut result = Vec::new();
         for (topic_name, entries) in topics.iter() {
@@ -444,6 +464,7 @@ impl TopicNodeRegistry {
 
     /// Get all topics subscribed to by a given node.
     pub fn subscribers_for_node(&self, node_name: &str) -> Vec<crate::core::TopicMetadata> {
+        REGISTRY_SCAN_COUNT.fetch_add(1, Ordering::Relaxed);
         let topics = self.topics.read().unwrap_or_else(|e| e.into_inner());
         let mut result = Vec::new();
         for (topic_name, entries) in topics.iter() {
@@ -541,8 +562,8 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 #[doc(hidden)]
 pub use header::{
     peek_topic_type_name, read_latest_slot_bytes, read_slots_since, read_topic_header_info,
-    read_topic_messages_total, read_topic_sequence, set_topic_verbose, TopicHeaderInfo, TopicKind,
-    TopicSlotRead, TOPIC_VERBOSE_OFFSET,
+    read_topic_messages_total, read_topic_sequence, set_topic_verbose, shm_map_count,
+    TopicHeaderInfo, TopicKind, TopicReader, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
@@ -2776,6 +2797,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // returns `None` is an empty ring. Only `MockTopic` reports one,
             // from its fault injection. See `TopicMetrics::recv_failures`.
             0,
+            self.metrics.send_retry_overruns.load(Ordering::Relaxed),
         )
     }
 
@@ -3029,8 +3051,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Send with bounded retry, dropping the message on failure.
     ///
-    /// Hot path: try_send() succeeds → return immediately.
-    /// Cold path (queue full): spin retry → yield retry → drop.
+    /// Hot path: `try_send()` succeeds → return immediately.
+    ///
+    /// Cold path (ring full): keep-last-N reclaim if nothing is draining, else
+    /// spin retry → yield retry → drop. The *whole* cold path runs under one
+    /// deadline anchored at entry, and the yield phase is entered only while
+    /// budget remains — the phases are not unconditional, which is what this
+    /// comment used to say and what the code used to do. On a thread the kernel
+    /// granted a real-time policy the budget is zero and no yield is ever
+    /// performed. A drop taken because the budget was gone is counted in
+    /// [`Topic::send_retry_overruns`], separately from one taken because the
+    /// consumer was behind. See [`send_budget`](super::send_budget).
     #[inline(always)]
     fn send_lossy(&self, msg: T) {
         match self.try_send(msg) {
@@ -3089,6 +3120,25 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     #[cold]
     #[inline(never)]
     fn send_lossy_retry(&self, mut msg: T) {
+        // Anchored HERE, at function entry, not above the yield loop.
+        //
+        // By the time the yield phase is reached this deadline has already
+        // absorbed the migration check, the participant sweep with its pid
+        // probes, and 65 `try_send` attempts that on the serde path each
+        // re-serialize and may attempt an mmap grow. A deadline anchored at the
+        // loop instead would read a handful of nanoseconds on its first check
+        // and could never fire — which is why moving the check alone, without
+        // moving the anchor, would have changed nothing at all.
+        // `checked_add`, not `+`. The budget is operator input —
+        // `HORUS_SEND_RETRY_BUDGET_US` or `set_send_retry_budget` — and
+        // `Instant + Duration` panics on overflow. A publish path whose
+        // contract is "never block, never fail, drop" must not abort the
+        // process because someone typed a large number; an unrepresentable
+        // deadline is one that can never be reached, which is what `None` here
+        // means and what every check below then reads as "budget remains".
+        let now = std::time::Instant::now();
+        let deadline = now.checked_add(send_budget::send_retry_budget());
+
         // Check migration before retrying — if the ring is full because we're
         // on the role=Both fast path with no consumer draining it, a cross-process
         // migration will switch to a SHM backend where the remote subscriber is waiting.
@@ -3097,6 +3147,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
         // First retry immediately — handles the common "buffer was full for
         // a microsecond" case without any spin overhead.
+        send_budget::note_attempt();
         match self.try_send(msg) {
             Ok(()) => return,
             Err(returned) => msg = returned,
@@ -3170,52 +3221,82 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // handle: the slot just retired is one it will not see.
             let local = self.local();
             local.local_tail = local.local_tail.max(new_tail);
+            send_budget::note_attempt();
             match self.try_send(msg) {
                 Ok(()) => return,
                 Err(returned) => msg = returned,
             }
         }
 
-        // If the second attempt also failed, spin briefly. For oversized
-        // messages this is wasteful (~50μs), but the warning log in the serde
-        // path fires on every attempt so the user sees it.
+        // If the second attempt also failed, spin briefly, then yield — both
+        // phases under the one deadline anchored at entry. See
+        // [`send_budget`](super::send_budget) for why the deadline is where it
+        // is and why a real-time thread gets a budget of zero.
         const SPIN_ITERS: u32 = 64;
+        /// Spins between clock reads.
+        ///
+        /// A `spin_loop` hint is ~1 ns against a ~20 ns `Instant::now`, so
+        /// checking the clock every iteration would cost twenty times the thing
+        /// it is guarding. But a serde `try_send` that fails re-serializes,
+        /// attempts an mmap grow and logs — microseconds each — so the spin
+        /// phase is not uniformly cheap and cannot be left unchecked either.
+        const SPINS_PER_CLOCK_CHECK: u32 = 16;
         const YIELD_ITERS: u32 = 4;
-        /// How long the yield phase may spend before giving up and dropping.
-        ///
-        /// `send` is the lossy publish: it never blocks and never fails, it
-        /// drops. But `yield_now` hands the CPU to whatever else is runnable and
-        /// getting it back is a scheduling decision, not a bounded wait. Four
-        /// unconditional yields on a full ring measured 26.4ms mean / 58.6ms
-        /// worst with 32 competing threads, and 109.6ms / 199.0ms with 128 — on
-        /// a call that is supposed to drop rather than wait, from a control loop
-        /// that may be running at 1kHz. A robot running more nodes than it has
-        /// cores is oversubscribed by design, so this is the ordinary case.
-        ///
-        /// 200μs is far above the ~1.4μs the four yields cost on an idle
-        /// machine, so nothing changes when the machine is quiet; it only stops
-        /// the loop once yielding has demonstrably become expensive.
-        const YIELD_BUDGET: std::time::Duration = std::time::Duration::from_micros(200);
 
-        for _ in 0..SPIN_ITERS {
+        // A budget already spent — including `Duration::ZERO`, which is what an
+        // RT thread gets — stops here, having made exactly the attempts above
+        // and no yields at all. That is a structural bound, not a timing one.
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            return self.drop_after_retry(true);
+        }
+        for i in 0..SPIN_ITERS {
             std::hint::spin_loop();
+            send_budget::note_attempt();
             match self.try_send(msg) {
                 Ok(()) => return,
                 Err(returned) => msg = returned,
             }
+            if (i + 1) % SPINS_PER_CLOCK_CHECK == 0
+                && deadline.is_some_and(|d| std::time::Instant::now() >= d)
+            {
+                return self.drop_after_retry(true);
+            }
         }
-        let yield_start = std::time::Instant::now();
         for _ in 0..YIELD_ITERS {
-            std::thread::yield_now();
+            // BEFORE the yield, not after — that is the whole defect. A check
+            // placed after `yield_now` bounds the NUMBER of yields and not one
+            // microsecond of their duration, because `yield_now` returns when
+            // the scheduler says so. `send_blocking` below has had the right
+            // shape for a while; this is the same one.
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                return self.drop_after_retry(true);
+            }
+            send_budget::yield_now_counted();
+            send_budget::note_attempt();
             match self.try_send(msg) {
                 Ok(()) => return,
                 Err(returned) => msg = returned,
             }
-            if yield_start.elapsed() >= YIELD_BUDGET {
-                break;
-            }
         }
+        self.drop_after_retry(false)
+    }
+
+    /// Record a message the lossy publish path gave up on.
+    ///
+    /// `deadline_blown` separates "the ring stayed full for the whole retry"
+    /// from "this call was already out of budget before it could retry". The
+    /// second is a report about the machine's scheduling, not about the
+    /// transport, and folding the two into `send_failures` would make an
+    /// oversubscribed box look exactly like a slow consumer.
+    #[cold]
+    #[inline(never)]
+    fn drop_after_retry(&self, deadline_blown: bool) {
         self.metrics.send_failures.fetch_add(1, Ordering::Relaxed);
+        if deadline_blown {
+            self.metrics
+                .send_retry_overruns
+                .fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Send a message, blocking until the ring has space or the timeout expires.
@@ -4178,6 +4259,19 @@ impl<T: TopicMessage> Topic<T> {
     /// ```
     pub fn dropped_count(&self) -> u64 {
         self.ring.metrics().send_failures()
+    }
+
+    /// How many of [`dropped_count`](Self::dropped_count) were dropped because
+    /// this publisher ran out of retry budget, rather than because the consumer
+    /// was behind.
+    ///
+    /// The two call for opposite responses — a slow consumer is a graph
+    /// problem, an exhausted retry budget is an oversubscribed machine — and a
+    /// single counter could not tell them apart. A publisher on a thread the
+    /// kernel granted a real-time policy runs with a zero budget by design, so
+    /// on those threads every cold-path drop lands here.
+    pub fn send_retry_overruns(&self) -> u64 {
+        self.ring.metrics().send_retry_overruns()
     }
 
     /// Number of messages **this subscriber** skipped past because the producer
