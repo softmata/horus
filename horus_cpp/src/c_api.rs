@@ -489,6 +489,23 @@ unsafe fn topic_name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
     }
 }
 
+/// Borrow a service or action endpoint name out of C, or give back `None`.
+///
+/// These are not topic constructors, so they do not touch the topic last-error
+/// slot — but `CStr::from_ptr` is undefined behaviour on null just the same,
+/// and `horus_c.h` is a public ABI that any C caller can pass null to. Same
+/// hazard as the one `topic_name_from_c` closes, minus the error channel.
+///
+/// # Safety
+/// `name` must be null or a pointer to a NUL-terminated string that stays
+/// valid and unwritten for the duration of the call.
+unsafe fn endpoint_name_from_c<'a>(name: *const c_char) -> Option<&'a str> {
+    if name.is_null() {
+        return None;
+    }
+    CStr::from_ptr(name).to_str().ok()
+}
+
 /// Why the last publisher/subscriber constructor on THIS thread returned null.
 ///
 /// Writes at most `buf_len - 1` bytes plus a NUL and returns the bytes written,
@@ -899,16 +916,20 @@ pub struct HorusJsonWireMsg {
     pub _padding: [u8; 11],
 }
 
-/// Create JsonWireMessage publisher.
+/// Create JsonWireMessage publisher. Returns null on error;
+/// `horus_topic_last_error` then holds the reason.
 #[no_mangle]
 pub unsafe extern "C" fn horus_publisher_json_wire_new(name: *const c_char) -> *mut HorusPublisher {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match topic_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     match topic_ffi::publisher_json_wire_new(name) {
         Ok(pub_) => Box::into_raw(pub_) as *mut HorusPublisher,
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_topic_error(e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -938,18 +959,22 @@ pub unsafe extern "C" fn horus_publisher_json_wire_send(
     topic_ffi::publisher_json_wire_send(pub_, wire);
 }
 
-/// Create JsonWireMessage subscriber.
+/// Create JsonWireMessage subscriber. Returns null on error;
+/// `horus_topic_last_error` then holds the reason.
 #[no_mangle]
 pub unsafe extern "C" fn horus_subscriber_json_wire_new(
     name: *const c_char,
 ) -> *mut HorusSubscriber {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match topic_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     match topic_ffi::subscriber_json_wire_new(name) {
         Ok(sub) => Box::into_raw(sub) as *mut HorusSubscriber,
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            set_topic_error(e);
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -1488,9 +1513,9 @@ pub struct HorusServiceServer {
 /// Create a service client.
 #[no_mangle]
 pub unsafe extern "C" fn horus_service_client_new(name: *const c_char) -> *mut HorusServiceClient {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(service_ffi::service_client_new(name)) as *mut HorusServiceClient
 }
@@ -1538,9 +1563,9 @@ pub unsafe extern "C" fn horus_service_client_call(
 /// Create a service server.
 #[no_mangle]
 pub unsafe extern "C" fn horus_service_server_new(name: *const c_char) -> *mut HorusServiceServer {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(service_ffi::service_server_new(name)) as *mut HorusServiceServer
 }
@@ -1618,9 +1643,9 @@ pub struct HorusActionGoalHandle {
 /// Create an action client.
 #[no_mangle]
 pub unsafe extern "C" fn horus_action_client_new(name: *const c_char) -> *mut HorusActionClient {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(action_ffi::action_client_new(name)) as *mut HorusActionClient
 }
@@ -1758,9 +1783,9 @@ pub unsafe extern "C" fn horus_goal_handle_destroy(handle: *mut HorusGoalHandle)
 /// Create an action server.
 #[no_mangle]
 pub unsafe extern "C" fn horus_action_server_new(name: *const c_char) -> *mut HorusActionServer {
-    let name = match CStr::from_ptr(name).to_str() {
-        Ok(n) => n,
-        Err(_) => return std::ptr::null_mut(),
+    let name = match endpoint_name_from_c(name) {
+        Some(n) => n,
+        None => return std::ptr::null_mut(),
     };
     Box::into_raw(action_ffi::action_server_new(name)) as *mut HorusActionServer
 }
@@ -2169,6 +2194,158 @@ mod tests {
 
     fn in_emit_child() -> bool {
         std::env::var_os("HORUS_CPP_FFI_EMIT_CHILD").is_some()
+    }
+
+    /// Every topic constructor must refuse a null name and report why.
+    ///
+    /// `topic_name_from_c`'s doc says "Every topic constructor starts here,
+    /// which is what keeps the two invariants the last-error channel rests on".
+    /// The two JsonWireMessage constructors did not: they called
+    /// `CStr::from_ptr(name)` directly, which is undefined behaviour on null —
+    /// the exact "segfault at best" case the guard was written to close — and
+    /// never cleared or set the error slot, so `horus_topic_last_error` after
+    /// one of them answered with whatever the previous topic had failed for.
+    ///
+    /// json_wire is the transport under every C++ service and action call, so
+    /// it is the least obscure entry point in the file, not the most.
+    ///
+    /// Enumerated by hand rather than by grep: a list that scans the source can
+    /// only find the constructors that already look like the others.
+    #[test]
+    fn every_topic_constructor_refuses_a_null_name_with_a_reason() {
+        // (label, constructor returns non-null?)
+        let attempts: Vec<(&str, bool)> = unsafe {
+            vec![
+                (
+                    "publisher_cmd_vel",
+                    !horus_publisher_cmd_vel_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_cmd_vel",
+                    !horus_subscriber_cmd_vel_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "publisher_json_wire",
+                    !horus_publisher_json_wire_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_json_wire",
+                    !horus_subscriber_json_wire_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "publisher_laser_scan",
+                    !horus_publisher_laser_scan_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_laser_scan",
+                    !horus_subscriber_laser_scan_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "publisher_imu",
+                    !horus_publisher_imu_new(std::ptr::null()).is_null(),
+                ),
+                (
+                    "subscriber_imu",
+                    !horus_subscriber_imu_new(std::ptr::null()).is_null(),
+                ),
+            ]
+        };
+
+        for (label, returned_non_null) in &attempts {
+            assert!(!returned_non_null, "{label} accepted a null topic name");
+        }
+
+        // And each one must have left its own reason behind. Checked after the
+        // loop above only for the last call; do it per-call so a constructor
+        // that forgets `set_topic_error` is caught rather than reading the
+        // previous one's reason.
+        unsafe fn reason() -> String {
+            let mut buf = [0u8; 128];
+            let n = horus_topic_last_error(buf.as_mut_ptr(), buf.len());
+            assert!(n >= 0, "horus_topic_last_error should not fail here");
+            String::from_utf8_lossy(&buf[..n as usize]).into_owned()
+        }
+
+        unsafe {
+            let ctors: Vec<(&str, Box<dyn Fn()>)> = vec![
+                (
+                    "publisher_cmd_vel",
+                    Box::new(|| {
+                        horus_publisher_cmd_vel_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_cmd_vel",
+                    Box::new(|| {
+                        horus_subscriber_cmd_vel_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "publisher_json_wire",
+                    Box::new(|| {
+                        horus_publisher_json_wire_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_json_wire",
+                    Box::new(|| {
+                        horus_subscriber_json_wire_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "publisher_laser_scan",
+                    Box::new(|| {
+                        horus_publisher_laser_scan_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_laser_scan",
+                    Box::new(|| {
+                        horus_subscriber_laser_scan_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "publisher_imu",
+                    Box::new(|| {
+                        horus_publisher_imu_new(std::ptr::null());
+                    }),
+                ),
+                (
+                    "subscriber_imu",
+                    Box::new(|| {
+                        horus_subscriber_imu_new(std::ptr::null());
+                    }),
+                ),
+            ];
+
+            for (label, call) in ctors {
+                // Arm a reason that names a DIFFERENT topic, so a constructor
+                // that neither clears nor sets the slot reads as this one.
+                set_topic_error("stale reason from some other topic".to_string());
+                call();
+                let got = reason();
+                assert!(
+                    got.contains("null"),
+                    "{label} returned null but left `{got}` in the error slot — \
+                     it neither cleared nor set its own reason"
+                );
+            }
+        }
+    }
+
+    /// A service or action endpoint name must not be dereferenced when null.
+    ///
+    /// Not covered by the topic invariant above (these do not touch the topic
+    /// error slot), but `CStr::from_ptr` is undefined behaviour on null in
+    /// exactly the same way, and `horus_c.h` is a public ABI.
+    #[test]
+    fn service_and_action_constructors_refuse_a_null_name() {
+        unsafe {
+            assert!(horus_service_client_new(std::ptr::null()).is_null());
+            assert!(horus_service_server_new(std::ptr::null()).is_null());
+            assert!(horus_action_client_new(std::ptr::null()).is_null());
+            assert!(horus_action_server_new(std::ptr::null()).is_null());
+        }
     }
 
     /// A C++ log line must carry a time, like every other language's does.
