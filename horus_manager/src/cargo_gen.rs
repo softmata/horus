@@ -1813,19 +1813,18 @@ pub fn generate_workspace(
         // Auto-inject horus core path deps. Required — see the note on the
         // single-package path above; an empty section yields unresolvable
         // imports in every workspace member.
+        //
+        // `write_horus_path_deps`, not a second copy of its loop. The copy that
+        // used to be here emitted `name = { path = "…" }` and dropped the
+        // `features = [...]` clause, so `horus_dep_features` — which turns
+        // `enable = ["net"]` in horus.toml, and `HORUS_ENABLE` from
+        // `horus run --net`, into the `net` cargo feature — reached
+        // single-package projects and no workspace project at all. A user
+        // asking for LAN replication in a workspace got a build without it and
+        // no error: the feature was parsed, resolved, and dropped on the floor
+        // one generator over. Members inherit through `horus.workspace = true`.
         {
-            for dep_name in &["horus", "horus_core", "horus_library", "horus_macros"] {
-                let dep_path = horus_source.join(dep_name);
-                if dep_path.exists() && dep_path.join("Cargo.toml").exists() {
-                    writeln!(
-                        root_cargo,
-                        "{} = {{ path = \"{}\" }}",
-                        dep_name,
-                        toml_path(dep_path.display())
-                    )
-                    .unwrap();
-                }
-            }
+            write_horus_path_deps(&mut root_cargo, &horus_source, root_manifest);
             // serde is implicit — see write_implicit_deps. Members opt in via
             // `serde = { workspace = true }` (added in generate_member_cargo).
             //
@@ -5144,5 +5143,51 @@ mod tests {
 
         assert!(!dir.path().join(".cargo").exists());
         assert!(!horus_dir.join(".cargo/config.toml").exists());
+    }
+
+    /// A workspace project must get the same cargo features a single-package
+    /// project gets.
+    ///
+    /// `horus_dep_features` turns `enable = ["net"]` in horus.toml — and
+    /// `HORUS_ENABLE`, which `horus run --net` sets — into the `net` feature on
+    /// the `horus` dependency. It had exactly one caller,
+    /// `write_horus_path_deps`, which had exactly one caller: the
+    /// single-package generator. The workspace generator carried its own copy
+    /// of that loop with the `features = [...]` clause missing, so asking for
+    /// LAN replication in a workspace produced a build without it and no error.
+    ///
+    /// This asserts on the emitted TOML, which is the artifact that decides
+    /// what cargo compiles.
+    #[test]
+    fn the_workspace_generator_emits_the_features_the_manifest_asks_for() {
+        let mut manifest = HorusManifest::default();
+        manifest.enable = vec!["net".to_string()];
+        let features = horus_dep_features(&manifest);
+        assert!(
+            features.iter().any(|f| f == "net"),
+            "enable = [\"net\"] must resolve to the `net` cargo feature; got {features:?}"
+        );
+
+        // The shared writer must put them in the TOML for any caller.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let src = tmp.path();
+        for c in ["horus", "horus_core", "horus_macros"] {
+            std::fs::create_dir_all(src.join(c)).unwrap();
+            std::fs::write(src.join(c).join("Cargo.toml"), "[package]\n").unwrap();
+        }
+        let mut out = String::new();
+        write_horus_path_deps(&mut out, src, &manifest);
+
+        let horus_line = out
+            .lines()
+            .find(|l| l.starts_with("horus = "))
+            .expect("the horus dependency must be written");
+        assert!(
+            horus_line.contains("features = [\"net\"]"),
+            "the `horus` dep must carry the requested features. The workspace \
+             generator used to emit this line without them, which is how \
+             `horus run --net` silently produced a build with no replication. \
+             Got: {horus_line}"
+        );
     }
 }
