@@ -850,7 +850,7 @@ macro_rules! horus_internal {
 
 /// Convenience type alias for Results using HorusError.
 ///
-/// **Prefer the short aliases [`Result`] and [`Error`](tyalias@Error) in all new code.**
+/// **Prefer the short aliases [`Result`] and [`Error`](type@Error) in all new code.**
 /// `HorusResult` and `HorusError` are the canonical names but verbose —
 /// the aliases exist specifically so you can write `Result<()>` and `Error`
 /// without the `Horus` prefix everywhere.

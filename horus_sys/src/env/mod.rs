@@ -44,10 +44,18 @@
 /// a recognised truth value — in both cases the caller's default should stand.
 ///
 /// ```
-/// # use horus_sys::env::env_flag;
-/// // Unset variables leave the caller's default in force.
-/// assert_eq!(env_flag("HORUS_A_VARIABLE_NOBODY_SETS"), None);
+/// # use horus_sys::env::parse_flag;
+/// assert_eq!(parse_flag("yes"),   Some(true));
+/// assert_eq!(parse_flag("off"),   Some(false));
+/// assert_eq!(parse_flag(""),      Some(false));
+/// // Not a truth value: the caller's default stands.
+/// assert_eq!(parse_flag("maybe"), None);
 /// ```
+///
+/// The example exercises [`parse_flag`] rather than `env_flag` on purpose: an
+/// assertion about a variable being *unset* is only true until someone's shell
+/// or CI image happens to set it, and a doctest that depends on the ambient
+/// environment is a flake waiting for a machine that disagrees.
 pub fn env_flag(name: &str) -> Option<bool> {
     parse_flag(std::env::var(name).ok()?.as_str())
 }
@@ -121,8 +129,25 @@ mod tests {
         assert_eq!(parse_flag("\toff\n"), Some(false));
     }
 
+    /// `env_flag` is the thin half — it reads the variable and hands the value
+    /// to `parse_flag`. Asserting it on a name this process itself controls
+    /// keeps the check honest without depending on what the ambient
+    /// environment happens to hold.
     #[test]
-    fn env_flag_reports_none_for_an_unset_variable() {
-        assert_eq!(env_flag("HORUS_DEFINITELY_UNSET_XYZZY"), None);
+    fn env_flag_delegates_to_parse_flag() {
+        // A name unique to this process, so a developer's shell or a CI image
+        // cannot decide the outcome.
+        let name = format!("HORUS_ENV_FLAG_SELFTEST_{}", std::process::id());
+        assert_eq!(env_flag(&name), None, "an unset variable must not decide");
+
+        // SAFETY: the name embeds this process's pid and is used by nothing
+        // else, so no other thread can be reading it concurrently.
+        unsafe { std::env::set_var(&name, "YES") };
+        assert_eq!(env_flag(&name), Some(true));
+        unsafe { std::env::set_var(&name, "off") };
+        assert_eq!(env_flag(&name), Some(false));
+        unsafe { std::env::set_var(&name, "banana") };
+        assert_eq!(env_flag(&name), None);
+        unsafe { std::env::remove_var(&name) };
     }
 }
