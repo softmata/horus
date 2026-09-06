@@ -178,6 +178,9 @@ static RT_DIAG_TRUNCATED: AtomicU64 = AtomicU64::new(0);
 /// diagnostic can never wait on a drainer, which is the priority inversion the
 /// blocking `print_line` had.
 static RT_DIAG_TAIL: Mutex<u64> = Mutex::new(0);
+/// The index a drain last stopped on because its producer had not finished
+/// writing. Guarded by `RT_DIAG_TAIL`, so plain `Relaxed` is enough.
+static RT_DIAG_STALLED_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 
 static RT_DIAG_DRAIN_STARTED: Once = Once::new();
 
@@ -265,11 +268,36 @@ pub(crate) fn rt_diag(args: fmt::Arguments<'_>) {
 /// The seqlock check is the whole safety argument: `idx` names a *generation*,
 /// not just a slot, so a reader can always tell "the line I asked for" from
 /// "some newer line that happens to live here now".
-fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> Option<usize> {
+/// What a reader found in a slot it asked for.
+///
+/// The two failure cases used to be one `None`, and the drain treated both the
+/// same way: skip the index and advance the tail past it. They are opposites.
+/// A LAPPED slot is genuinely gone. An IN-FLIGHT slot belongs to a producer
+/// that has claimed the index and is still writing it -- it will be complete
+/// microseconds later, and skipping it throws away a line that was never lost.
+enum SlotRead {
+    Ready(usize),
+    /// Claimed, not finished. `seq` is behind the value this index will carry.
+    InFlight,
+    /// A later producer has already recycled this slot; the line is gone.
+    Lapped,
+}
+
+fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> SlotRead {
     let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
     let want = idx.wrapping_mul(2).wrapping_add(2);
-    if slot.seq.load(Ordering::Acquire) != want {
-        return None;
+    let classify = |seq: u64| {
+        // `seq` is derived from a monotonic claim index, so "behind" is a plain
+        // comparison; u64 does not wrap in any reachable lifetime.
+        if seq < want {
+            SlotRead::InFlight
+        } else {
+            SlotRead::Lapped
+        }
+    };
+    let seq = slot.seq.load(Ordering::Acquire);
+    if seq != want {
+        return classify(seq);
     }
     let len = (slot.len.load(Ordering::Relaxed) as usize).min(RT_DIAG_LINE_CAP);
     for (i, dst) in out[..len].iter_mut().enumerate() {
@@ -280,10 +308,11 @@ fn read_slot(idx: u64, out: &mut [u8; RT_DIAG_LINE_CAP]) -> Option<usize> {
     // being reordered past this load — an `Acquire` *load* would only order
     // what comes after it.
     std::sync::atomic::fence(Ordering::Acquire);
-    if slot.seq.load(Ordering::Relaxed) != want {
-        return None;
+    let seq = slot.seq.load(Ordering::Relaxed);
+    if seq != want {
+        return classify(seq);
     }
-    Some(len)
+    SlotRead::Ready(len)
 }
 
 /// Print every queued diagnostic through `emit`, then report what was lost.
@@ -306,16 +335,52 @@ fn rt_diag_drain(emit: impl Fn(&str)) -> usize {
 
     let mut line = [0u8; RT_DIAG_LINE_CAP];
     let mut printed = 0usize;
+    let mut next = *tail;
     for idx in *tail..head {
-        let Some(len) = read_slot(idx, &mut line) else {
-            continue;
-        };
-        if let Ok(text) = std::str::from_utf8(&line[..len]) {
-            emit(text);
-            printed += 1;
+        match read_slot(idx, &mut line) {
+            SlotRead::Ready(len) => {
+                if let Ok(text) = std::str::from_utf8(&line[..len]) {
+                    emit(text);
+                    printed += 1;
+                }
+                next = idx + 1;
+            }
+            SlotRead::Lapped => {
+                RT_DIAG_DROPPED.fetch_add(1, Ordering::Relaxed);
+                next = idx + 1;
+            }
+            SlotRead::InFlight => {
+                // The producer bumped `head` and has not finished its store
+                // yet. Stopping here and retrying leaves the line to the next
+                // drain, 25 ms away; advancing past it -- which is what this
+                // loop used to do for every unreadable slot -- discarded a line
+                // that was in the middle of being written. That is a race the
+                // producer always loses on a contended machine, and it is how a
+                // one-line diagnostic followed by an immediate shutdown went
+                // missing on CI while passing everywhere else.
+                //
+                // Bounded, because a producer that panics between claiming the
+                // index and completing the store would otherwise wedge the ring
+                // for the life of the process and cost every LATER line too.
+                // Stalling twice on the same index is taken as a dead producer:
+                // give up that one line and keep going.
+                if RT_DIAG_STALLED_AT.swap(idx, Ordering::Relaxed) == idx {
+                    RT_DIAG_DROPPED.fetch_add(1, Ordering::Relaxed);
+                    next = idx + 1;
+                    continue;
+                }
+                break;
+            }
         }
     }
-    *tail = head;
+    // Only a drain that consumed the whole range clears the marker. `next >
+    // *tail` would also be true of a drain that emitted three lines and then
+    // stalled on the fourth -- clearing it there would reset the counter every
+    // round and the bounded skip could never fire.
+    if next == head {
+        RT_DIAG_STALLED_AT.store(u64::MAX, Ordering::Relaxed);
+    }
+    *tail = next;
     drop(tail);
 
     let dropped = RT_DIAG_DROPPED.swap(0, Ordering::Relaxed);
@@ -2234,6 +2299,95 @@ impl Drop for RtExecutor {
         for handle in self.handles.drain(..) {
             let _ = handle.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod diag_ring_inflight {
+    use super::*;
+
+    /// Both tests below drive the one process-global ring by hand, and the
+    /// second one's repeated drains perform the bounded skip -- which steps
+    /// past the first one's deliberately in-flight slot. Run in parallel they
+    /// fail each other; the lock is what keeps each in sole possession.
+    static RING_TESTS: Mutex<()> = Mutex::new(());
+
+    /// A drain must not step over a line that is still being written.
+    ///
+    /// `rt_diag` bumps `RT_DIAG_HEAD` first and only then marks the slot
+    /// complete. A drain landing in that window used to get `None` from
+    /// `read_slot`, `continue`, and then set `tail = head` -- stepping over the
+    /// line permanently. The producer had done nothing wrong and the line was
+    /// never recoverable, so neither the 25 ms drainer nor the flush in
+    /// `stop()` could ever print it.
+    ///
+    /// Nanoseconds wide on an idle machine, which is why it showed up as a CI
+    /// failure on a contended runner and nowhere else.
+    ///
+    /// Asserts on the tail rather than on what got emitted: the background
+    /// drainer may be running in this process and would race a
+    /// "the next drain emits it" assertion.
+    #[test]
+    fn a_drain_does_not_step_over_a_line_still_being_written() {
+        let _guard = RING_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        const MARKER: &str = "inflight-slot-marker";
+
+        // Claim an index and stop where a preempted producer stops: head bumped,
+        // sequence odd, payload not yet written.
+        let idx = RT_DIAG_HEAD.fetch_add(1, Ordering::Relaxed);
+        let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+        slot.seq
+            .store(idx.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+
+        rt_diag_drain(|_| {});
+
+        let tail_now = *RT_DIAG_TAIL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            tail_now <= idx,
+            "a drain advanced the tail to {tail_now}, past index {idx}, whose \
+             producer had not finished writing. That line can never be emitted \
+             by anyone: the slot is skipped now and the tail never goes back."
+        );
+
+        // Finish the write and drain, so the ring is not left blocked for the
+        // rest of this test binary.
+        for (i, b) in MARKER.as_bytes().iter().enumerate() {
+            slot.bytes[i].store(*b, Ordering::Relaxed);
+        }
+        slot.len.store(MARKER.len() as u32, Ordering::Relaxed);
+        slot.seq
+            .store(idx.wrapping_mul(2).wrapping_add(2), Ordering::Release);
+        rt_diag_drain(|_| {});
+    }
+
+    /// ...but a producer that dies mid-write must not wedge the ring forever.
+    ///
+    /// Retrying an in-flight slot is only safe if it is bounded. A panic
+    /// between the head bump and the completing store leaves a slot odd for
+    /// good; without a bound every later diagnostic in the process would queue
+    /// behind it. The second stall on the same index gives up that one line.
+    #[test]
+    fn a_producer_that_dies_mid_write_does_not_wedge_the_ring() {
+        let _guard = RING_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let idx = RT_DIAG_HEAD.fetch_add(1, Ordering::Relaxed);
+        let slot = &RT_DIAG_RING[(idx & RT_DIAG_SLOT_MASK) as usize];
+        slot.seq
+            .store(idx.wrapping_mul(2).wrapping_add(1), Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
+
+        // First drain stalls on it, second gives up on it.
+        rt_diag_drain(|_| {});
+        rt_diag_drain(|_| {});
+        rt_diag_drain(|_| {});
+
+        let tail_now = *RT_DIAG_TAIL.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            tail_now > idx,
+            "the ring is still stuck at {idx} after repeated drains: a producer \
+             that never completes its write would block every later diagnostic \
+             for the life of the process."
+        );
     }
 }
 
@@ -5229,7 +5383,7 @@ mod tests {
     fn find_queued(range: std::ops::Range<u64>, pred: impl Fn(&str) -> bool) -> Option<String> {
         let mut buf = [0u8; RT_DIAG_LINE_CAP];
         for idx in range {
-            let Some(len) = read_slot(idx, &mut buf) else {
+            let SlotRead::Ready(len) = read_slot(idx, &mut buf) else {
                 continue;
             };
             if let Ok(text) = std::str::from_utf8(&buf[..len]) {
@@ -5318,7 +5472,7 @@ mod tests {
 
         let mut buf = [0u8; RT_DIAG_LINE_CAP];
         assert!(
-            read_slot(start, &mut buf).is_none(),
+            matches!(read_slot(start, &mut buf), SlotRead::Lapped),
             "after {flood} emits into {RT_DIAG_SLOTS} slots the first line must have \
              been recycled — an unbounded queue is a memory leak on the RT path"
         );
