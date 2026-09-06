@@ -215,6 +215,18 @@ pub(crate) mod blackbox {
         }
         pub fn flush_wal(&mut self) {}
         pub fn record(&mut self, _event: BlackBoxEvent) {}
+        /// No-op counterpart of the real `record_prestamped`.
+        ///
+        /// `blackbox_ring` is NOT feature-gated — the scheduler drains its ring
+        /// into whichever `BlackBox` is in scope — so the drain calls this
+        /// unconditionally and the stub has to answer.
+        pub(crate) fn record_prestamped(
+            &mut self,
+            _event: BlackBoxEvent,
+            _tick: u64,
+            _timestamp_us: u64,
+        ) {
+        }
         pub(crate) fn tick(&mut self) {}
         pub fn events(&self) -> Vec<BlackBoxRecord> {
             Vec::new()
