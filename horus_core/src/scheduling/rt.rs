@@ -779,18 +779,44 @@ mod capabilities_tests {
         use horus_sys::rt::{PreemptModel, PreemptSource};
         let caps = RuntimeCapabilities::detect();
 
-        // An unknown model must never claim a source, and a known one must
-        // always name where it came from — otherwise a report could present an
-        // inference as a reading.
-        if caps.preempt.model == PreemptModel::Unknown {
-            assert_eq!(caps.preempt.source, PreemptSource::Unavailable);
-        } else {
+        // A model that was READ must name the rung that answered, and a model
+        // that was not read must not claim one — otherwise a report could
+        // present an inference as a reading.
+        //
+        // `Unknown` and `NotApplicable` are both "nothing was read", and they
+        // are different admissions: `Unknown` means this is a Linux box whose
+        // model could not be established, `NotApplicable` means the platform has
+        // no such model at all (macOS, Windows). `PreemptSource::Unavailable`
+        // documents itself as pairing with either. Accepting only `Unknown`
+        // here asserted that every non-Linux host had read a preemption model
+        // it does not have, which is how this failed on Windows.
+        let was_read = !matches!(
+            caps.preempt.model,
+            PreemptModel::Unknown | PreemptModel::NotApplicable
+        );
+        if was_read {
             assert_ne!(
                 caps.preempt.source,
                 PreemptSource::Unavailable,
                 "a model was established but nothing recorded which rung answered"
             );
+        } else {
+            assert_eq!(
+                caps.preempt.source,
+                PreemptSource::Unavailable,
+                "no model was read, so nothing may be cited as having supplied one"
+            );
         }
+
+        // `NotApplicable` is a platform property, not a runtime outcome: it must
+        // appear on exactly the platforms that have no preemption model, or the
+        // two admissions have been conflated.
+        assert_eq!(
+            caps.preempt.model == PreemptModel::NotApplicable,
+            !cfg!(target_os = "linux"),
+            "NotApplicable means the platform has no preemption model; Unknown \
+             means it has one that could not be read"
+        );
 
         // The bool and the model must agree, or two consumers reading different
         // fields would disagree about the same kernel.
