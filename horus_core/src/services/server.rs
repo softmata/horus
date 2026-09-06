@@ -137,9 +137,10 @@ where
         // The CLI resolves user-provided names (CamelCase or snake_case) to this.
         let svc_name = S::name().to_string();
 
-        let handle = thread::Builder::new()
-            .name(format!("horus_srv_{}", S::name()))
-            .spawn(move || {
+        let handle = crate::scheduling::rt::spawn_best_effort(
+            format!("horus_srv_{}", S::name()),
+            0,
+            move || {
                 // File-based JSON gateway: no Topic needed. Server polls a request file,
                 // CLI writes JSON to it. Simple, no IPC migration issues.
                 run_server_loop(
@@ -150,13 +151,14 @@ where
                     poll_interval,
                     svc_name,
                 );
-            })
-            .map_err(|e| {
-                crate::error::HorusError::Config(crate::error::ConfigError::Other(format!(
-                    "failed to spawn service server thread: {}",
-                    e
-                )))
-            })?;
+            },
+        )
+        .map_err(|e| {
+            crate::error::HorusError::Config(crate::error::ConfigError::Other(format!(
+                "failed to spawn service server thread: {}",
+                e
+            )))
+        })?;
 
         Ok(ServiceServer {
             _shutdown: shutdown,

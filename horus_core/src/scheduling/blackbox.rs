@@ -148,12 +148,20 @@ struct BlackBoxSnapshot {
 impl BlackBox {
     /// Create a new black box recorder
     pub fn new(max_size_mb: usize) -> Self {
-        // Estimate ~200 bytes per record
-        let max_records = (max_size_mb * 1024 * 1024) / 200;
+        // Estimate ~200 bytes per record.
+        //
+        // Capacity and cap are the SAME number on purpose. They were not:
+        // capacity was `max_records.min(100_000)` while the eviction cap was
+        // `max_records.max(1000)`, so the documented `.blackbox(64)` gave a cap
+        // of 335,544 against a capacity of 100,000 — and the deque doubled
+        // twice on the way there, a ~16 MB and then a ~32 MB allocation plus
+        // memcpy, on whichever thread happened to push record 100,001 and
+        // 200,001. On a tick thread.
+        let max_records = ((max_size_mb * 1024 * 1024) / 200).max(1000);
 
         Self {
-            buffer: VecDeque::with_capacity(max_records.min(100000)),
-            max_size: max_records.max(1000),
+            buffer: VecDeque::with_capacity(max_records),
+            max_size: max_records,
             tick_counter: 0,
             persist_path: None,
             wal_file: None,
@@ -208,25 +216,47 @@ impl BlackBox {
         self
     }
 
-    /// Record an event
+    /// Record an event, stamped with the current time and tick.
+    ///
+    /// This is the COLD path — scheduler start and stop, and anything else
+    /// outside the tick loop. Tick-path callers go through
+    /// [`BbRing`](super::blackbox_ring::BbRing), because everything below runs
+    /// on the calling thread: `serde_json::to_string`, a `BufWriter` write, and
+    /// a `flush()` — that is, a `write(2)` — every `wal_flush_interval`
+    /// records.
     pub fn record(&mut self, event: BlackBoxEvent) {
+        if !self.enabled {
+            return;
+        }
+        let timestamp_us = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        self.record_prestamped(event, self.tick_counter, timestamp_us);
+    }
+
+    /// Record an event that already carries its own tick and timestamp.
+    ///
+    /// The entry point the ring drain uses, so a queued event keeps the moment
+    /// it HAPPENED rather than the moment the drain reached it — a flight
+    /// recorder whose timestamps are the drain's cannot order a fault.
+    pub(crate) fn record_prestamped(&mut self, event: BlackBoxEvent, tick: u64, timestamp_us: u64) {
         if !self.enabled {
             return;
         }
 
         let record = BlackBoxRecord {
-            timestamp_us: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_micros() as u64,
-            tick: self.tick_counter,
+            timestamp_us,
+            tick,
             event,
         };
 
         // Write to WAL first (for crash recovery).
         //
         // BufWriter batches writes in user-space; `flush()` drains the buffer
-        // to the OS (fsync-equivalent).  Flushing on every record would cause
+        // to the OS. NOT fsync-equivalent, which this used to claim: it is a
+        // `write(2)` and nothing more, so the WAL survives a process crash but
+        // not a power loss. Flushing on every record would cause
         // thousands of syscalls/second at high scheduler frequencies, stalling
         // the RT thread on disk I/O.  Instead we flush every
         // `wal_flush_interval` records; an explicit `flush_wal()` call on

@@ -43,6 +43,8 @@ pub mod rt_report;
 // What the RT tick threads actually got from the kernel, as opposed to what
 // was asked for. `rt_report` above audits the *system*; this reports the
 // *running scheduler's own threads*.
+pub mod blackbox_ring;
+pub mod rt_bandwidth;
 pub mod rt_status;
 
 // Parallel compute thread pool executor
@@ -213,6 +215,18 @@ pub(crate) mod blackbox {
         }
         pub fn flush_wal(&mut self) {}
         pub fn record(&mut self, _event: BlackBoxEvent) {}
+        /// No-op counterpart of the real `record_prestamped`.
+        ///
+        /// `blackbox_ring` is NOT feature-gated — the scheduler drains its ring
+        /// into whichever `BlackBox` is in scope — so the drain calls this
+        /// unconditionally and the stub has to answer.
+        pub(crate) fn record_prestamped(
+            &mut self,
+            _event: BlackBoxEvent,
+            _tick: u64,
+            _timestamp_us: u64,
+        ) {
+        }
         pub(crate) fn tick(&mut self) {}
         pub fn events(&self) -> Vec<BlackBoxRecord> {
             Vec::new()
@@ -287,6 +301,11 @@ pub use record_replay::{
 };
 #[doc(hidden)]
 pub use registry::SchedulerRegistry;
+/// The best-effort thread class. Re-exported here so `horus_net`, `horus_cpp`
+/// and anything else that spawns a thread inside a scheduler process can reach
+/// it without depending on the `scheduling::rt` module path.
+pub use rt::{enter_best_effort, spawn_best_effort};
+pub use rt_bandwidth::{advisory, classify, LoopDuty, RtBandwidthVerdict};
 #[doc(hidden)]
 pub use safety_monitor::{
     set_emergency_stop_hook, set_safe_state_hook, take_pending_local_estop,

@@ -1,6 +1,9 @@
 // Linux RT: SCHED_FIFO + mlockall + sched_setaffinity + /proc detection
 
-use super::RtCapabilities;
+use super::{
+    BestEffortReport, Clocksource, PreemptInfo, PreemptModel, PreemptSource, RtBandwidth,
+    RtBandwidthSource, RtCapabilities,
+};
 use std::time::Duration;
 
 /// Build a `sched_param` carrying just a priority.
@@ -24,7 +27,9 @@ fn sched_param_with_priority(priority: i32) -> libc::sched_param {
 /// Detect Linux RT capabilities.
 pub(super) fn detect_capabilities() -> RtCapabilities {
     let kernel_version = get_kernel_version();
-    let preempt_rt = detect_preempt_rt(&kernel_version);
+    let preempt = read_preempt_info();
+    let preempt_rt = preempt.model == PreemptModel::PreemptRt;
+    let clocksource = read_clocksource();
     let (min_priority, max_priority) = get_priority_range();
     let memory_locking = check_mlockall_permitted();
     let cpu_count = std::thread::available_parallelism()
@@ -42,11 +47,23 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         cpu_affinity: true,
         kernel_version,
         cpu_count,
-        estimated_jitter: if preempt_rt {
-            Duration::from_micros(10)
-        } else {
-            Duration::from_micros(100)
+        // Derived from the MODEL, not from the bool. The bool put a
+        // `preempt=none` kernel — worst-case scheduling latency in the
+        // milliseconds — in the same bucket as a fully preemptible one, and
+        // quoted 100 us for both.
+        estimated_jitter: match preempt.model {
+            PreemptModel::PreemptRt => Duration::from_micros(10),
+            PreemptModel::Full | PreemptModel::Lazy => Duration::from_micros(100),
+            PreemptModel::Voluntary => Duration::from_micros(1_000),
+            PreemptModel::None => Duration::from_micros(10_000),
+            // An unknown model is not a claim about latency. 100 us is what
+            // this reported before the model was read at all, so an
+            // undetectable kernel keeps the number it always had.
+            PreemptModel::Unknown | PreemptModel::NotApplicable => Duration::from_micros(100),
         },
+        preempt,
+        deepest_idle_state: deepest_idle_exit_latency_at(std::path::Path::new(CPU_SYSFS_ROOT), 0),
+        clocksource,
     }
 }
 
@@ -134,11 +151,66 @@ pub(super) fn timer_slack_ns() -> Option<u64> {
     }
 }
 
+// ── The reset-on-fork flag, and the masking it forces on every readback ──
+//
+// A thread's scheduling policy is inherited. `copy_process()` duplicates
+// `policy` and `rt_priority` into every `clone(2)` child, and glibc's
+// `pthread_create` defaults to `PTHREAD_INHERIT_SCHED`, so nothing at the libc
+// layer undoes it either. RT setup runs before the lifecycle hooks, on the
+// thread that builds the scheduler — so the net replicator, the telemetry HTTP
+// thread, the log drain and every per-goal action thread came up at real-time
+// priority without asking for it.
+//
+// `SCHED_RESET_ON_FORK` is the kernel's opt-out: a child of a thread carrying
+// it starts at SCHED_OTHER, nice 0. It is a backstop, not the fix — it does
+// nothing for CPU affinity, which is inherited through a separate channel with
+// no equivalent flag (measured: a `SCHED_BATCH|SCHED_RESET_ON_FORK` parent
+// pinned to one CPU produces a child with `policy=SCHED_OTHER` and a
+// one-CPU mask). The real guarantee is the explicit demotion in
+// `set_best_effort_class`, which resets both.
+
+/// `SCHED_RESET_ON_FORK` from the kernel's `include/uapi/linux/sched.h`.
+///
+/// Spelled out rather than reached for through `libc::`: in libc 0.2.189 the
+/// constant exists only under `linux_like/android` and `linux_l4re_shared`,
+/// neither of which is compiled for `*-linux-gnu` or `*-linux-musl`.
+pub(super) const SCHED_RESET_ON_FORK: libc::c_int = 0x4000_0000;
+
+/// Strip the reset-on-fork bit from a `sched_getscheduler` return value.
+///
+/// The kernel ORs the flag INTO the readback — a thread set to
+/// `SCHED_FIFO|SCHED_RESET_ON_FORK` reads back `0x40000001`, not `1`. Every
+/// `== SCHED_FIFO`-shaped comparison in this workspace therefore has to go
+/// through here, or setting the flag silently stops that comparison
+/// recognising the very threads it exists to recognise: `can_set_rt_priority`
+/// would stop short-circuiting on an already-RT thread and start probing it,
+/// `has_deadline_capability` would re-probe a live SCHED_DEADLINE reservation,
+/// and `RtConfig::get_current_scheduler` would report `Normal` for a
+/// SCHED_FIFO thread.
+pub(super) fn policy_of(raw: libc::c_int) -> libc::c_int {
+    raw & !SCHED_RESET_ON_FORK
+}
+
+/// This thread's scheduling policy with the reset-on-fork bit removed.
+pub(super) fn current_policy() -> libc::c_int {
+    // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+    policy_of(unsafe { libc::sched_getscheduler(0) })
+}
+
 /// Set SCHED_FIFO priority for the current thread.
 pub(super) fn set_realtime_priority(priority: i32) -> anyhow::Result<()> {
     // SAFETY: pid 0 = current thread; sched_param is properly initialized
     let param = sched_param_with_priority(priority);
-    let result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+    // `|SCHED_RESET_ON_FORK` so a thread spawned from this one does not silently
+    // start at real-time priority. Kernels before 2.6.32, and some seccomp
+    // filters, reject the unknown policy bit with EINVAL — fall back rather
+    // than lose the RT policy entirely, since the explicit demotion in
+    // `set_best_effort_class` is the real guarantee and this is the backstop.
+    let mut result =
+        unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO | SCHED_RESET_ON_FORK, &param) };
+    if result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINVAL) {
+        result = unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
+    }
 
     if result == 0 {
         Ok(())
@@ -208,7 +280,11 @@ pub(super) fn set_deadline_scheduling(
     let attr = SchedAttr {
         size: std::mem::size_of::<SchedAttr>() as u32,
         sched_policy: SCHED_DEADLINE_POLICY,
-        sched_flags: 0,
+        // Same reasoning as the `SCHED_RESET_ON_FORK` on the SCHED_FIFO path: a
+        // child of a SCHED_DEADLINE thread would otherwise inherit the
+        // reservation. `SCHED_FLAG_RESET_ON_FORK` is the `sched_attr` spelling
+        // of the same request, and libc does export this one.
+        sched_flags: libc::SCHED_FLAG_RESET_ON_FORK as u64,
         sched_nice: 0,
         sched_priority: 0, // must be 0 for SCHED_DEADLINE
         sched_runtime: runtime_ns,
@@ -263,6 +339,10 @@ struct SchedSnapshot {
 /// Returns `None` when either query fails, which is the signal to decline the
 /// probe rather than guess at a restore target.
 fn snapshot_scheduling() -> Option<SchedSnapshot> {
+    // Deliberately NOT run through `policy_of`: this value is a restore target,
+    // and `restore_scheduling` must put the reset-on-fork bit back exactly as
+    // it found it. Masking here would quietly strip the flag off every thread a
+    // capability probe touched.
     // SAFETY: pid 0 = current thread; both calls only read, and `param` is a
     // local POD struct for which all-zero is a valid bit pattern.
     unsafe {
@@ -297,8 +377,7 @@ fn restore_scheduling(snapshot: &SchedSnapshot) {
 pub(super) fn has_deadline_capability() -> bool {
     // A thread already running SCHED_DEADLINE proves the kernel supports it,
     // and probing would clobber its reservation.
-    // SAFETY: pid 0 = current thread; sched_getscheduler only reads.
-    if unsafe { libc::sched_getscheduler(0) } == SCHED_DEADLINE_POLICY as i32 {
+    if current_policy() == SCHED_DEADLINE_POLICY as i32 {
         return true;
     }
 
@@ -361,8 +440,7 @@ pub(super) fn lock_memory() -> anyhow::Result<()> {
 pub(super) fn can_set_rt_priority() -> bool {
     // A thread already on an RT policy demonstrably holds the privilege, so
     // there is nothing to probe — and probing is exactly what used to break it.
-    // SAFETY: pid 0 = current thread; sched_getscheduler only reads.
-    let current_policy = unsafe { libc::sched_getscheduler(0) };
+    let current_policy = current_policy();
     if current_policy == libc::SCHED_FIFO
         || current_policy == libc::SCHED_RR
         || current_policy == SCHED_DEADLINE_POLICY as i32
@@ -406,6 +484,747 @@ pub(super) fn can_set_rt_priority() -> bool {
         true
     } else {
         false
+    }
+}
+
+/// What a `sched_getscheduler` result means for a demotion.
+struct PolicyRead {
+    /// Reported as-is on `BestEffortReport::prior_policy`.
+    prior_policy: libc::c_int,
+    /// Whether issuing `sched_setscheduler` could accomplish anything.
+    actionable: bool,
+    /// An errno worth reporting, as distinct from one that is not our problem.
+    refusal: Option<i32>,
+}
+
+/// Classify a `sched_getscheduler` return value, separated from the syscall so
+/// the musl case can be tested on glibc — where the stub it exists for cannot
+/// be reproduced.
+///
+/// musl does not wire `sched_getscheduler`/`sched_setscheduler` to the kernel at
+/// all: both are stubs returning `ENOSYS`. That is a property of the libc, not
+/// of the kernel and not of privilege — such a libc exposes exactly one
+/// scheduling class, every thread is already in it, and there is nothing to
+/// demote.
+///
+/// Masking the stub's `-1` through `policy_of` instead produced
+/// `prior_policy: -1073741825`, which is not `SCHED_OTHER`, so the demotion was
+/// attempted, failed with `ENOSYS`, and was recorded as a `refusal`. An Alpine
+/// operator reading that goes hunting a `CAP_SYS_NICE` problem that does not
+/// exist.
+///
+/// Only `ENOSYS` is absolved. `sched_getscheduler(0)` reads the caller's own
+/// policy and has no permission check, so any other errno is genuinely
+/// surprising and is reported rather than swallowed.
+fn classify_policy_read(raw: libc::c_int, errno: Option<i32>) -> PolicyRead {
+    if raw >= 0 {
+        return PolicyRead {
+            prior_policy: policy_of(raw),
+            actionable: true,
+            refusal: None,
+        };
+    }
+    PolicyRead {
+        // There is one class on such a libc and this thread is in it, which is
+        // what `SCHED_OTHER` says. It is also what the field documents for
+        // platforms that have no policies at all.
+        prior_policy: libc::SCHED_OTHER,
+        actionable: false,
+        refusal: match errno {
+            Some(libc::ENOSYS) => None,
+            other => other,
+        },
+    }
+}
+
+/// Put the calling thread on the ordinary time-shared class and give it back
+/// the helper CPU set.
+///
+/// Both halves are conditional on the thread actually being somewhere else, so
+/// the common case — a helper spawned in a process where no RT setup ever ran —
+/// issues ZERO syscalls beyond the two reads. That is what makes the
+/// syscall-count test meaningful.
+pub(super) fn set_best_effort_class(nice_increment: i32, target: &[usize]) -> BestEffortReport {
+    // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+    let raw_policy = unsafe { libc::sched_getscheduler(0) };
+    let errno = (raw_policy < 0)
+        .then(|| std::io::Error::last_os_error().raw_os_error())
+        .flatten();
+    let PolicyRead {
+        prior_policy,
+        actionable: policy_is_actionable,
+        refusal: read_refusal,
+    } = classify_policy_read(raw_policy, errno);
+
+    let mut report = BestEffortReport {
+        prior_policy,
+        refusal: read_refusal,
+        ..BestEffortReport::default()
+    };
+
+    if policy_is_actionable && report.prior_policy != libc::SCHED_OTHER {
+        // SAFETY: `sched_param` is a POD struct of integer fields for which
+        // all-zero is a valid bit pattern. It is zeroed rather than
+        // literal-constructed because musl carries four extra sporadic-server
+        // members that glibc does not (the same portability trap documented on
+        // `sched_param_with_priority`); SCHED_OTHER ignores every member but
+        // `sched_priority`, which must be 0.
+        let rc = unsafe {
+            let mut param: libc::sched_param = std::mem::zeroed();
+            param.sched_priority = 0;
+            libc::sched_setscheduler(0, libc::SCHED_OTHER, &param)
+        };
+        if rc == 0 {
+            report.policy_changed = true;
+        } else {
+            report.refusal = report
+                .refusal
+                .or(std::io::Error::last_os_error().raw_os_error());
+        }
+    }
+
+    if nice_increment > 0 {
+        // SAFETY: `nice` adjusts only the calling thread's CFS weight (the nice
+        // value is a per-thread attribute on Linux/NPTL). Raising it never
+        // requires privilege. The return value is deliberately ignored: it
+        // cannot be distinguished from a legitimate -1 result without errno
+        // handling, and the failure mode — the helper keeps its inherited
+        // weight — is not worth a diagnostic on a path that cannot fail.
+        let _ = unsafe { libc::nice(nice_increment) };
+    }
+
+    // The affinity half. There is no kernel flag for this: `cpus_allowed` is
+    // copied by `dup_task_struct` and `SCHED_RESET_ON_FORK` explicitly does not
+    // reset it, so a helper spawned after `apply_rt_optimizations` stays pinned
+    // to the reserved RT core no matter what its scheduling class is.
+    if !target.is_empty() {
+        match current_affinity() {
+            Ok(now) if now == target => {}
+            Ok(_) => match set_affinity(target) {
+                Ok(_) => report.affinity_changed = true,
+                Err(_) => {
+                    report.refusal = report
+                        .refusal
+                        .or(std::io::Error::last_os_error().raw_os_error());
+                }
+            },
+            Err(_) => {
+                report.refusal = report
+                    .refusal
+                    .or(std::io::Error::last_os_error().raw_os_error());
+            }
+        }
+    }
+
+    report
+}
+
+// ── CPU affinity, addressed by kernel CPU id ────────────────────────────
+//
+// The distinction this section exists to enforce: a CPU *id* is what the kernel
+// calls a processor, and it is what `isolcpus=6,7`, `taskset -c 6`, `/proc/stat`
+// and every operator instruction mean. A CPU *index* is a position in some
+// vector this process happens to hold. They coincide on an untuned machine and
+// diverge on exactly the tuned host an RT deployment runs on: with
+// `isolcpus=6,7` the process inherits an affinity mask of {0..5}, so a list of
+// "the CPUs I may run on" has six entries and position 6 does not exist. Code
+// that pins "to core 6" by indexing that list therefore silently declines to
+// pin at all, and the isolated cores the operator rebooted for are never used.
+//
+// `sched_setaffinity` takes ids, and — this is the part that makes the whole
+// approach work — it SUCCEEDS on an isolated CPU. `isolcpus` changes the mask
+// init hands out; it is not a permission. So a request for CPU 6 on an
+// `isolcpus=6,7` host is granted, while the same request expressed as an index
+// into the inherited mask is refused.
+
+/// The CPU ids the kernel has enumerated, from `/sys/devices/system/cpu/present`.
+///
+/// `present` rather than `online` or the inherited affinity mask: it is the set
+/// that validates a *request*. An offline CPU can come back and an isolated CPU
+/// is deliberately absent from the inherited mask, so both are legitimate pin
+/// targets; a CPU that is not present never will be, and a request naming one
+/// is a configuration error worth reporting.
+///
+/// Empty when the file cannot be read (a container with a trimmed `/sys`, a
+/// non-standard kernel). Callers treat empty as "cannot validate" and let the
+/// kernel arbitrate rather than refusing the pin.
+pub(super) fn present_cpus() -> Vec<usize> {
+    match std::fs::read_to_string("/sys/devices/system/cpu/present") {
+        Ok(content) => super::parse_cpu_list(content.trim()),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// The CPUs the calling thread may currently run on, as kernel CPU ids.
+///
+/// This is the read-back that makes a pin verifiable. `sched_setaffinity`
+/// intersects the requested mask with what a cpuset cgroup allows and reports
+/// success on a partial application, so "the call returned 0" and "the thread
+/// is on the CPUs I asked for" are different statements.
+pub(super) fn current_affinity() -> anyhow::Result<Vec<usize>> {
+    // SAFETY: `set` is a stack-allocated `cpu_set_t` for which all-zero is a
+    // valid bit pattern, and `sched_getaffinity` only writes into it. `pid == 0`
+    // addresses the calling thread.
+    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
+    let rc =
+        unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
+    if rc != 0 {
+        anyhow::bail!(
+            "sched_getaffinity failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    let mut cpus = Vec::new();
+    for cpu in 0..libc::CPU_SETSIZE as usize {
+        // SAFETY: `cpu` is below `CPU_SETSIZE`, which is the bound the macro
+        // indexes within, and `set` was filled by the call above.
+        if unsafe { libc::CPU_ISSET(cpu, &set) } {
+            cpus.push(cpu);
+        }
+    }
+    Ok(cpus)
+}
+
+/// Pin the calling thread to exactly `cpus`, addressed by kernel CPU id.
+///
+/// Returns the mask the kernel actually installed, read back with
+/// [`current_affinity`]. The return value is the point: a caller that reports
+/// "pinned to {2,3}" because the call returned `Ok` is reporting its request,
+/// not the outcome, and that is how a thread ends up running everywhere while
+/// the log says it is isolated.
+///
+/// Errors when the request is empty, names a CPU outside `cpu_set_t`, names a
+/// CPU that is not present, or when the kernel refuses the call outright.
+pub(super) fn set_affinity(cpus: &[usize]) -> anyhow::Result<Vec<usize>> {
+    if cpus.is_empty() {
+        anyhow::bail!("refusing to install an empty CPU affinity mask");
+    }
+
+    let setsize = libc::CPU_SETSIZE as usize;
+    if let Some(&too_big) = cpus.iter().find(|&&c| c >= setsize) {
+        anyhow::bail!(
+            "CPU {} does not fit in a cpu_set_t (CPU_SETSIZE = {})",
+            too_big,
+            setsize
+        );
+    }
+
+    // Validate against `present` when it is readable. Skipping the check when
+    // the file is missing is deliberate: refusing a pin because `/sys` was not
+    // mounted would break containers that can pin perfectly well.
+    let present = present_cpus();
+    if !present.is_empty() {
+        let missing: Vec<usize> = cpus
+            .iter()
+            .copied()
+            .filter(|c| !present.contains(c))
+            .collect();
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "CPU(s) {:?} are not present on this machine (present: {:?})",
+                missing,
+                present
+            );
+        }
+    }
+
+    // SAFETY: `set` is a stack-allocated `cpu_set_t` for which all-zero is a
+    // valid bit pattern. Every `cpu` was bounds-checked against `CPU_SETSIZE`
+    // above, which is the range `CPU_SET` indexes within. `pid == 0` addresses
+    // the calling thread and `sched_setaffinity` only reads through the pointer.
+    let rc = unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        for &cpu in cpus {
+            libc::CPU_SET(cpu, &mut set);
+        }
+        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set)
+    };
+
+    if rc != 0 {
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EPERM) => anyhow::bail!(
+                "sched_setaffinity({:?}) refused: {} — the process lacks permission to \
+                 move this thread (a cpuset cgroup or a seccomp filter, not isolcpus: \
+                 isolcpus changes the inherited mask, it is not a permission)",
+                cpus,
+                err
+            ),
+            Some(libc::EINVAL) => anyhow::bail!(
+                "sched_setaffinity({:?}) rejected the mask: {} — none of the requested \
+                 CPUs is available to this process (check the cpuset cgroup)",
+                cpus,
+                err
+            ),
+            _ => anyhow::bail!("sched_setaffinity({:?}) failed: {}", cpus, err),
+        }
+    }
+
+    current_affinity()
+}
+
+// ── CPU idle-state exit latency ─────────────────────────────────────────
+//
+// The absolute-sleep tick loop deliberately gives the core back for most of
+// every period — which is exactly the condition under which the cpuidle
+// governor promotes it into a deep C-state. The `menu` governor admits a state
+// when predicted idle time exceeds that state's target residency, so the SLOWER
+// the loop the DEEPER the state it licenses, and a 100 Hz mobile base is worse
+// off than a 4 kHz drone.
+//
+// On the reference box (`intel_idle`, `menu`): C1 exit 1 us, C2 exit 151 us
+// with a 453 us residency target, C3 exit 1034 us with 3102 us. Against a guard
+// spin of 20 us, that is 7.5x at 1 kHz and 51x at 100 Hz — and the guard cannot
+// prevent it, because the guard runs AFTER the wake the exit has already
+// delayed.
+//
+// Setting the cpufreq governor to `performance`, which this crate does do, is a
+// DIFFERENT SUBSYSTEM. It addresses frequency scaling and has no effect
+// whatsoever on idle states. The two are routinely conflated, including in this
+// project's own setup script until now.
+
+pub(super) const CPU_DMA_LATENCY_DEV: &str = "/dev/cpu_dma_latency";
+pub(super) const CPU_SYSFS_ROOT: &str = "/sys/devices/system/cpu";
+
+/// The four bytes for a `/dev/cpu_dma_latency` write.
+///
+/// NATIVE endian: the kernel does a raw `copy_from_user` of an `s32`, so this
+/// follows the target rather than a wire format. Exactly four bytes — a short
+/// write is a failure, never a partial constraint.
+pub(super) fn cpu_dma_latency_bytes(budget_us: u32) -> [u8; 4] {
+    (budget_us as i32).to_ne_bytes()
+}
+
+/// The string for a per-CPU `pm_qos_resume_latency_us` write.
+///
+/// Refuses 0. The two interfaces disagree about that value: 0 written to
+/// `/dev/cpu_dma_latency` means "tolerate no exit latency at all", pinning
+/// every core in POLL; 0 in `pm_qos_resume_latency_us` means "no constraint" —
+/// the exact opposite. Passing a zero budget to the per-CPU path would silently
+/// REMOVE the bound and report success.
+pub(super) fn resume_latency_value(budget_us: u32) -> anyhow::Result<String> {
+    if budget_us == 0 {
+        anyhow::bail!(
+            "a 0 us budget means `no constraint` to pm_qos_resume_latency_us and \
+             `tolerate nothing` to /dev/cpu_dma_latency; refusing rather than silently \
+             removing the bound"
+        );
+    }
+    Ok(budget_us.to_string())
+}
+
+/// Open `dev_path`, write the budget, and return the STILL-OPEN file.
+///
+/// The constraint lives exactly as long as the returned handle — the kernel
+/// releases it the instant the fd closes, including on SIGKILL. That is why the
+/// handle is returned rather than dropped, and why this needs no cleanup path.
+pub(super) fn bound_idle_latency_global_at(
+    dev_path: &std::path::Path,
+    budget_us: u32,
+) -> std::io::Result<std::fs::File> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().write(true).open(dev_path)?;
+    let bytes = cpu_dma_latency_bytes(budget_us);
+    f.write_all(&bytes)?;
+    f.flush()?;
+    Ok(f)
+}
+
+/// A per-CPU `pm_qos_resume_latency_us` hold, with the previous values kept so
+/// `Drop` restores them verbatim.
+///
+/// Unlike the global device, this is sysfs state: it does NOT go away when the
+/// process dies, so a hard kill leaks it. That is the reason `Global` is the
+/// default and this is opt-in.
+#[derive(Debug)]
+pub struct PerCpuIdleHold {
+    cpu_root: std::path::PathBuf,
+    /// `(cpu, previous file contents)`.
+    previous: Vec<(usize, String)>,
+}
+
+fn resume_latency_path(cpu_root: &std::path::Path, cpu: usize) -> std::path::PathBuf {
+    cpu_root
+        .join(format!("cpu{cpu}"))
+        .join("power")
+        .join("pm_qos_resume_latency_us")
+}
+
+/// Write the budget into each CPU's `pm_qos_resume_latency_us`, reading back to
+/// confirm sysfs took the value.
+pub(super) fn bound_idle_latency_per_cpu_at(
+    cpu_root: &std::path::Path,
+    cpus: &[usize],
+    budget_us: u32,
+) -> std::io::Result<PerCpuIdleHold> {
+    let value = resume_latency_value(budget_us)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut hold = PerCpuIdleHold {
+        cpu_root: cpu_root.to_path_buf(),
+        previous: Vec::with_capacity(cpus.len()),
+    };
+    for &cpu in cpus {
+        let path = resume_latency_path(cpu_root, cpu);
+        let prev = std::fs::read_to_string(&path)?;
+        std::fs::write(&path, &value)?;
+        // Read back: sysfs can accept a write and clamp it, and a constraint
+        // that was silently clamped is a constraint the operator does not have.
+        let now = std::fs::read_to_string(&path)?;
+        if now.trim() != value {
+            // Undo what we did before reporting, so a partial application does
+            // not outlive the failure.
+            let _ = std::fs::write(&path, &prev);
+            for (c, p) in hold.previous.drain(..) {
+                let _ = std::fs::write(resume_latency_path(cpu_root, c), p);
+            }
+            return Err(std::io::Error::other(format!(
+                "wrote {value} to {} but it reads back {}",
+                path.display(),
+                now.trim()
+            )));
+        }
+        hold.previous.push((cpu, prev));
+    }
+    Ok(hold)
+}
+
+impl Drop for PerCpuIdleHold {
+    fn drop(&mut self) {
+        for (cpu, prev) in self.previous.drain(..) {
+            let _ = std::fs::write(resume_latency_path(&self.cpu_root, cpu), prev);
+        }
+    }
+}
+
+/// The deepest ENABLED idle state under `cpu_root/cpu{n}/cpuidle`, as
+/// `(name, exit latency in microseconds)`.
+///
+/// "Deepest" is the largest exit latency, which is also the worst case a wake
+/// can pay. States whose `disable` file reads non-zero are skipped: the
+/// governor cannot enter them, so counting them would overstate the exposure.
+pub(super) fn deepest_idle_exit_latency_at(
+    cpu_root: &std::path::Path,
+    cpu: usize,
+) -> Option<(String, u32)> {
+    let dir = cpu_root.join(format!("cpu{cpu}")).join("cpuidle");
+    let mut best: Option<(String, u32)> = None;
+    for entry in std::fs::read_dir(dir).ok()? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if std::fs::read_to_string(path.join("disable"))
+            .map(|s| s.trim() != "0")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let Some(latency) = std::fs::read_to_string(path.join("latency"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let name = std::fs::read_to_string(path.join("name"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+        if best.as_ref().is_none_or(|(_, l)| latency > *l) {
+            best = Some((name, latency));
+        }
+    }
+    best
+}
+
+/// What is holding an idle-latency bound open.
+///
+/// Neither payload is ever read, and that is the point: the VALUE is the
+/// mechanism. An open `/dev/cpu_dma_latency` fd holds the constraint for as
+/// long as it is open, and `PerCpuIdleHold` restores the previous sysfs values
+/// in its `Drop`. Dropping this enum is what releases the bound.
+#[derive(Debug)]
+#[allow(dead_code, reason = "held for its lifetime and its Drop, never read")]
+pub(super) enum IdleHold {
+    /// The open `/dev/cpu_dma_latency` fd. Closing it releases the constraint.
+    Global(std::fs::File),
+    /// Per-CPU sysfs writes, restored on drop.
+    PerCpu(PerCpuIdleHold),
+}
+
+// ── RT bandwidth control ────────────────────────────────────────────────
+
+fn read_i64(path: &str) -> Option<i64> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// This task's cgroup cpu-controller path, from `/proc/self/cgroup`.
+///
+/// Split out from the file read so both formats are testable on a string: a
+/// unified v2 line `0::/user.slice/...`, and a v1 line
+/// `4:cpu,cpuacct:/docker/<id>`.
+pub(crate) fn cgroup_cpu_path(proc_self_cgroup: &str) -> Option<String> {
+    let mut unified: Option<String> = None;
+    for line in proc_self_cgroup.lines() {
+        let mut parts = line.splitn(3, ':');
+        let (_hier, controllers, path) = (parts.next()?, parts.next()?, parts.next()?);
+        if controllers.split(',').any(|c| c == "cpu") {
+            return Some(path.to_string());
+        }
+        if controllers.is_empty() {
+            unified = Some(path.to_string());
+        }
+    }
+    unified
+}
+
+/// `cpu.rt_runtime_us` / `cpu.rt_period_us` for this task's cgroup.
+///
+/// Present only where `CONFIG_RT_GROUP_SCHED` is compiled in, which most
+/// distributions do not do — the files being absent is the NORMAL case, not an
+/// error.
+fn read_cgroup_rt_budget() -> Option<RtBandwidth> {
+    let path = std::fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|s| cgroup_cpu_path(&s))?;
+    for root in ["/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpu,cpuacct"] {
+        let base = format!("{root}{path}");
+        if let (Some(r), Some(p)) = (
+            read_i64(&format!("{base}/cpu.rt_runtime_us")),
+            read_i64(&format!("{base}/cpu.rt_period_us")),
+        ) {
+            return Some(RtBandwidth::from_raw(r, p, RtBandwidthSource::CgroupV1));
+        }
+    }
+    None
+}
+
+/// The RT class budget that actually binds this task.
+pub(super) fn read_rt_bandwidth() -> RtBandwidth {
+    let global = match (
+        read_i64("/proc/sys/kernel/sched_rt_runtime_us"),
+        read_i64("/proc/sys/kernel/sched_rt_period_us"),
+    ) {
+        (Some(r), Some(p)) => RtBandwidth::from_raw(r, p, RtBandwidthSource::ProcSys),
+        _ => return RtBandwidth::UNAVAILABLE,
+    };
+
+    // A cgroup budget, where one exists, is the tighter of the two and is what
+    // the kernel will enforce. `cpu.rt_runtime_us == 0` is the default for a
+    // non-root group and is why `sched_setscheduler(SCHED_FIFO)` fails with
+    // EPERM inside an ordinary container.
+    match read_cgroup_rt_budget() {
+        Some(cg) if tighter_than(cg, global) => cg,
+        _ => global,
+    }
+}
+
+/// Whether `a` permits strictly less RT execution than `b`.
+fn tighter_than(a: RtBandwidth, b: RtBandwidth) -> bool {
+    if !a.is_known() {
+        return false;
+    }
+    if !b.is_known() || b.is_unlimited() {
+        return !a.is_unlimited();
+    }
+    match (a.duty_fraction(), b.duty_fraction()) {
+        (Some(x), Some(y)) => x < y,
+        _ => false,
+    }
+}
+
+// ── Preemption model: a ladder, with the rung recorded ──────────────────
+
+const DEBUGFS_PREEMPT: &str = "/sys/kernel/debug/sched/preempt";
+const REALTIME_SYSFS: &str = "/sys/kernel/realtime";
+const CLOCKSOURCE_PATH: &str = "/sys/devices/system/clocksource/clocksource0/current_clocksource";
+
+/// Parse `/sys/kernel/debug/sched/preempt`.
+///
+/// The kernel prints every mode with the ACTIVE one in parentheses:
+/// `none voluntary (full) lazy`. Returns `None` when nothing is parenthesised —
+/// a format change must read as "unknown", never as a guess.
+pub(crate) fn parse_debugfs_preempt(s: &str) -> Option<PreemptModel> {
+    s.split_whitespace()
+        .find_map(|tok| tok.strip_prefix('(')?.strip_suffix(')'))
+        .and_then(model_from_mode_name)
+}
+
+/// Map a kernel mode name to a model.
+fn model_from_mode_name(name: &str) -> Option<PreemptModel> {
+    match name {
+        "none" => Some(PreemptModel::None),
+        "voluntary" => Some(PreemptModel::Voluntary),
+        "full" => Some(PreemptModel::Full),
+        "lazy" => Some(PreemptModel::Lazy),
+        _ => None,
+    }
+}
+
+/// Parse a `preempt=` boot override out of `/proc/cmdline`.
+///
+/// Whole-token match on whitespace-split fields, so `nopreempt=full` cannot
+/// match.
+pub(crate) fn parse_cmdline_preempt(cmdline: &str) -> Option<PreemptModel> {
+    cmdline
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("preempt="))
+        .and_then(model_from_mode_name)
+}
+
+/// Map `CONFIG_PREEMPT_*` to the model the kernel boots with.
+///
+/// Follows the kernel's own `preempt_dynamic_init()` if/else chain exactly:
+/// RT > NONE > VOLUNTARY > LAZY > PREEMPT(full).
+///
+/// Matches whole `CONFIG_X=y` lines only. Both traps this avoids are live on an
+/// ordinary Ubuntu kernel: `# CONFIG_PREEMPT is not set` must not satisfy the
+/// `CONFIG_PREEMPT` arm, and `CONFIG_PREEMPT_BUILD=y` must not masquerade as
+/// `CONFIG_PREEMPT=y`.
+pub(crate) fn model_from_kernel_config(config: &str) -> Option<PreemptModel> {
+    let has = |key: &str| config.lines().any(|l| l.trim() == format!("{key}=y"));
+    if has("CONFIG_PREEMPT_RT") {
+        Some(PreemptModel::PreemptRt)
+    } else if has("CONFIG_PREEMPT_NONE") {
+        Some(PreemptModel::None)
+    } else if has("CONFIG_PREEMPT_VOLUNTARY") {
+        Some(PreemptModel::Voluntary)
+    } else if has("CONFIG_PREEMPT_LAZY") {
+        Some(PreemptModel::Lazy)
+    } else if has("CONFIG_PREEMPT") {
+        Some(PreemptModel::Full)
+    } else {
+        None
+    }
+}
+
+/// Whether the kernel config says the model is runtime-settable.
+pub(crate) fn config_is_dynamic(config: &str) -> bool {
+    config
+        .lines()
+        .any(|l| l.trim() == "CONFIG_PREEMPT_DYNAMIC=y")
+}
+
+/// The `PREEMPT*` token in `/proc/version`, for a kernel with no other source.
+///
+/// Returns `None` for a bare `PREEMPT_DYNAMIC` — that token announces
+/// runtime-settability, not a mode — and `None` for no token at all, because
+/// `none` and `voluntary` both emit nothing and are indistinguishable here.
+/// Guessing between them is exactly the one-bucket error this ladder exists to
+/// remove.
+pub(crate) fn model_from_version_token(v: &str) -> Option<PreemptModel> {
+    if version_says_rt(v) {
+        return Some(PreemptModel::PreemptRt);
+    }
+    let has = |t: &str| v.split_whitespace().any(|tok| tok == t);
+    if has("PREEMPT_LAZY") {
+        Some(PreemptModel::Lazy)
+    } else if has("PREEMPT") {
+        Some(PreemptModel::Full)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn version_says_dynamic(v: &str) -> bool {
+    v.split_whitespace().any(|tok| tok == "PREEMPT_DYNAMIC")
+}
+
+pub(crate) fn version_says_rt(v: &str) -> bool {
+    v.contains("PREEMPT_RT") || v.contains("PREEMPT RT")
+}
+
+/// `(model, dynamic)` from `/boot/config-<osrelease>`, read at most once.
+///
+/// `/proc/config.gz` is deliberately NOT read: it needs gzip, and adding a
+/// decompressor to a crate every HORUS binary links, for a diagnostic present
+/// on a minority of distros, is the wrong trade.
+fn kernel_config_facts() -> &'static Option<(Option<PreemptModel>, bool)> {
+    static FACTS: std::sync::OnceLock<Option<(Option<PreemptModel>, bool)>> =
+        std::sync::OnceLock::new();
+    FACTS.get_or_init(|| {
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").ok()?;
+        let config = std::fs::read_to_string(format!("/boot/config-{}", release.trim())).ok()?;
+        Some((
+            model_from_kernel_config(&config),
+            config_is_dynamic(&config),
+        ))
+    })
+}
+
+/// Establish the preemption model, recording which rung answered.
+pub(super) fn read_preempt_info() -> PreemptInfo {
+    let version = get_kernel_version();
+    let config = kernel_config_facts();
+    let dynamic = config.map(|(_, d)| d).unwrap_or(false) || version_says_dynamic(&version);
+
+    // 1. The running value. Root-only in practice, and the only rung that
+    //    survives a runtime `echo full > .../preempt`.
+    if let Some(model) = std::fs::read_to_string(DEBUGFS_PREEMPT)
+        .ok()
+        .and_then(|s| parse_debugfs_preempt(&s))
+    {
+        return PreemptInfo {
+            model,
+            dynamic,
+            source: PreemptSource::Debugfs,
+        };
+    }
+
+    // 2. PREEMPT_RT is not dynamic — a kernel either has sleeping spinlocks or
+    //    it does not — so these two rungs are conclusive wherever they fire.
+    if version_says_rt(&version) || std::path::Path::new(REALTIME_SYSFS).exists() {
+        return PreemptInfo {
+            model: PreemptModel::PreemptRt,
+            dynamic: false,
+            source: if version_says_rt(&version) {
+                PreemptSource::ProcVersion
+            } else {
+                PreemptSource::RealtimeSysfs
+            },
+        };
+    }
+
+    // 3. The boot override, if the operator set one.
+    if let Some(model) = std::fs::read_to_string("/proc/cmdline")
+        .ok()
+        .and_then(|s| parse_cmdline_preempt(&s))
+    {
+        return PreemptInfo {
+            model,
+            dynamic,
+            source: PreemptSource::Cmdline,
+        };
+    }
+
+    // 4. The build default.
+    if let Some((Some(model), _)) = config {
+        return PreemptInfo {
+            model: *model,
+            dynamic,
+            source: PreemptSource::KernelConfig,
+        };
+    }
+
+    // 5. The token, which can only distinguish full and lazy from each other.
+    if let Some(model) = model_from_version_token(&version) {
+        return PreemptInfo {
+            model,
+            dynamic,
+            source: PreemptSource::ProcVersion,
+        };
+    }
+
+    PreemptInfo {
+        model: PreemptModel::Unknown,
+        dynamic,
+        source: PreemptSource::Unavailable,
+    }
+}
+
+/// The clocksource currently serving `clock_gettime`.
+pub(super) fn read_clocksource() -> Clocksource {
+    match std::fs::read_to_string(CLOCKSOURCE_PATH) {
+        Ok(s) => Clocksource::from_name(s.trim()),
+        Err(_) => Clocksource::unknown(),
     }
 }
 
@@ -631,12 +1450,6 @@ fn get_kernel_version() -> String {
         .to_string()
 }
 
-fn detect_preempt_rt(kernel_version: &str) -> bool {
-    kernel_version.contains("PREEMPT_RT")
-        || kernel_version.contains("PREEMPT RT")
-        || std::path::Path::new("/sys/kernel/realtime").exists()
-}
-
 fn get_priority_range() -> (i32, i32) {
     // SAFETY: safe libc calls that query system limits
     unsafe {
@@ -663,6 +1476,549 @@ fn check_mlockall_permitted() -> bool {
 
 #[cfg(test)]
 mod tests {
+    // ── Idle-state exit latency ─────────────────────────────────────────
+
+    /// The two kernel interfaces disagree about what 0 means, and the
+    /// disagreement is a silent-wrong-answer trap.
+    #[test]
+    fn a_zero_budget_is_refused_by_the_per_cpu_path_and_encoded_by_the_global_one() {
+        // /dev/cpu_dma_latency: 0 means "tolerate no exit latency at all".
+        assert_eq!(cpu_dma_latency_bytes(0), 0i32.to_ne_bytes());
+        assert_eq!(cpu_dma_latency_bytes(20), 20i32.to_ne_bytes());
+        assert_eq!(cpu_dma_latency_bytes(1_034), 1_034i32.to_ne_bytes());
+
+        // pm_qos_resume_latency_us: 0 means "no constraint" — the opposite.
+        // Writing it would silently REMOVE the bound and report success.
+        assert_eq!(resume_latency_value(20).unwrap(), "20");
+        let err = resume_latency_value(0).unwrap_err().to_string();
+        assert!(
+            err.contains("no constraint"),
+            "the refusal must say why the two interfaces cannot share a 0: {err}"
+        );
+    }
+
+    /// The per-CPU path is sysfs state: it must restore what it found, and it
+    /// must not leave a partial application behind on failure.
+    #[test]
+    fn the_per_cpu_bound_restores_the_previous_values_on_drop() {
+        let tmp = std::env::temp_dir().join(format!(
+            "horus_idle_test_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        let cpus = [2usize, 3];
+        for cpu in cpus {
+            let dir = tmp.join(format!("cpu{cpu}")).join("power");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("pm_qos_resume_latency_us"), "0\n").unwrap();
+        }
+
+        {
+            let _hold = bound_idle_latency_per_cpu_at(&tmp, &cpus, 20).expect("bound");
+            for cpu in cpus {
+                let v = std::fs::read_to_string(
+                    tmp.join(format!("cpu{cpu}"))
+                        .join("power")
+                        .join("pm_qos_resume_latency_us"),
+                )
+                .unwrap();
+                assert_eq!(v.trim(), "20", "cpu{cpu} must carry the bound while held");
+            }
+        }
+
+        for cpu in cpus {
+            let v = std::fs::read_to_string(
+                tmp.join(format!("cpu{cpu}"))
+                    .join("power")
+                    .join("pm_qos_resume_latency_us"),
+            )
+            .unwrap();
+            assert_eq!(
+                v.trim(),
+                "0",
+                "cpu{cpu} must be back to what it was — this is sysfs, so a value left \
+                 behind outlives the process"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// "Deepest" means the largest exit latency, and a state the governor
+    /// cannot enter must not be counted — that would overstate the exposure.
+    #[test]
+    fn the_deepest_idle_state_skips_disabled_states() {
+        let tmp = std::env::temp_dir().join(format!(
+            "horus_cpuidle_test_{}_{}",
+            std::process::id(),
+            line!()
+        ));
+        // The reference box's real states.
+        let states = [
+            ("state0", "POLL", "0", "0"),
+            ("state1", "C1_ACPI", "1", "0"),
+            ("state2", "C2_ACPI", "151", "0"),
+            ("state3", "C3_ACPI", "1034", "1"), // disabled
+        ];
+        for (dir, name, latency, disable) in states {
+            let d = tmp.join("cpu0").join("cpuidle").join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("name"), format!("{name}\n")).unwrap();
+            std::fs::write(d.join("latency"), format!("{latency}\n")).unwrap();
+            std::fs::write(d.join("disable"), format!("{disable}\n")).unwrap();
+        }
+
+        assert_eq!(
+            deepest_idle_exit_latency_at(&tmp, 0),
+            Some(("C2_ACPI".to_string(), 151)),
+            "C3 is disabled, so the governor cannot enter it and counting its 1034us \
+             exit would overstate what this machine is exposed to"
+        );
+
+        // Re-enable it and the answer changes.
+        std::fs::write(
+            tmp.join("cpu0")
+                .join("cpuidle")
+                .join("state3")
+                .join("disable"),
+            "0\n",
+        )
+        .unwrap();
+        assert_eq!(
+            deepest_idle_exit_latency_at(&tmp, 0),
+            Some(("C3_ACPI".to_string(), 1034))
+        );
+
+        // A host with no cpuidle sysfs at all — a VM, or `cpuidle.off=1`.
+        assert_eq!(deepest_idle_exit_latency_at(&tmp, 99), None);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The global path holds the constraint by keeping the fd OPEN. A version
+    /// that wrote and closed would report success and constrain nothing.
+    #[test]
+    fn the_global_bound_writes_four_native_endian_bytes() {
+        let tmp =
+            std::env::temp_dir().join(format!("horus_dma_test_{}_{}", std::process::id(), line!()));
+        std::fs::write(&tmp, b"").unwrap();
+
+        let file = bound_idle_latency_global_at(&tmp, 20).expect("write");
+        drop(file);
+        let written = std::fs::read(&tmp).unwrap();
+        assert_eq!(
+            written,
+            20i32.to_ne_bytes(),
+            "the kernel copy_from_user's an s32, so this follows the target's endianness \
+             rather than a wire format, and it is exactly four bytes"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    // ── RT bandwidth ────────────────────────────────────────────────────
+
+    #[test]
+    fn the_cgroup_cpu_path_is_parsed_in_both_formats() {
+        // cgroup v2: one unified line, empty controller field.
+        assert_eq!(
+            cgroup_cpu_path("0::/user.slice/user-1000.slice/app.slice/x.scope\n"),
+            Some("/user.slice/user-1000.slice/app.slice/x.scope".to_string())
+        );
+        // cgroup v1: the cpu controller may be joined with cpuacct, and the
+        // matching line is not the first.
+        assert_eq!(
+            cgroup_cpu_path("11:devices:/docker/abc\n4:cpu,cpuacct:/docker/abc\n0::/init.scope\n"),
+            Some("/docker/abc".to_string()),
+            "a v1 cpu line must win over the unified fallback"
+        );
+        assert_eq!(cgroup_cpu_path(""), None);
+        assert_eq!(
+            cgroup_cpu_path("11:devices:/docker/abc\n"),
+            None,
+            "no cpu controller and no unified line means no path, not a guess"
+        );
+    }
+
+    /// The read must be self-consistent on whatever host runs the suite.
+    #[test]
+    fn reading_the_rt_budget_on_this_machine_is_self_consistent() {
+        let bw = read_rt_bandwidth();
+        if bw.is_known() {
+            assert!(bw.period_us > 0);
+            assert!(bw.runtime_us >= -1);
+            // Exactly one of the three states holds.
+            let states = [bw.is_unlimited(), bw.is_finite()];
+            assert_eq!(
+                states.iter().filter(|b| **b).count(),
+                1,
+                "unlimited and finite are mutually exclusive: {bw:?}"
+            );
+            if bw.is_finite() {
+                assert!(bw.throttle_window().is_some());
+                assert!(bw.duty_fraction().is_some());
+            }
+        }
+        assert!(!bw.describe().is_empty());
+    }
+
+    /// A garbled or unreadable budget must not be mistaken for "no throttle".
+    #[test]
+    fn an_inconsistent_budget_is_unknown_rather_than_unlimited() {
+        let garbled = RtBandwidth::from_raw(-1, 0, RtBandwidthSource::ProcSys);
+        assert!(!garbled.is_known());
+        assert!(
+            !garbled.is_unlimited(),
+            "period_us == 0 is not a documented kernel state; reading it as unlimited \
+             would suppress the throttle warning in exactly the case where nothing \
+             about the host is understood"
+        );
+        assert_eq!(garbled.describe(), "unknown");
+        assert!(!RtBandwidth::UNAVAILABLE.is_known());
+        assert!(!RtBandwidth::UNAVAILABLE.is_unlimited());
+    }
+
+    #[test]
+    fn a_tighter_cgroup_budget_wins_over_the_host_wide_one() {
+        let host = RtBandwidth::from_raw(950_000, 1_000_000, RtBandwidthSource::ProcSys);
+        let container = RtBandwidth::from_raw(0, 1_000_000, RtBandwidthSource::CgroupV1);
+        assert!(
+            tighter_than(container, host),
+            "a zero cgroup budget is what actually binds — it is why \
+             sched_setscheduler(SCHED_FIFO) fails with EPERM inside a container"
+        );
+        assert!(!tighter_than(host, container));
+
+        // An unlimited host budget loses to any finite cgroup budget.
+        let unlimited = RtBandwidth::from_raw(-1, 1_000_000, RtBandwidthSource::ProcSys);
+        assert!(tighter_than(container, unlimited));
+        assert!(!tighter_than(unlimited, host));
+    }
+
+    // ── Preemption model: the parsers, each rung on its own ─────────────
+
+    #[test]
+    fn debugfs_names_the_active_mode_by_its_parentheses() {
+        assert_eq!(
+            parse_debugfs_preempt("none voluntary (full) lazy"),
+            Some(PreemptModel::Full)
+        );
+        assert_eq!(
+            parse_debugfs_preempt("(none) voluntary full lazy"),
+            Some(PreemptModel::None)
+        );
+        assert_eq!(
+            parse_debugfs_preempt("none voluntary full (lazy)\n"),
+            Some(PreemptModel::Lazy)
+        );
+        // A format change must read as "unknown", never as a guess: this file
+        // is the only authoritative source, so a wrong answer from it is worse
+        // than no answer.
+        assert_eq!(parse_debugfs_preempt("none voluntary full lazy"), None);
+        assert_eq!(parse_debugfs_preempt(""), None);
+        assert_eq!(parse_debugfs_preempt("(banana)"), None);
+    }
+
+    #[test]
+    fn a_boot_override_is_matched_as_a_whole_token() {
+        assert_eq!(
+            parse_cmdline_preempt("ro quiet preempt=voluntary splash"),
+            Some(PreemptModel::Voluntary)
+        );
+        assert_eq!(parse_cmdline_preempt("ro quiet splash"), None);
+        assert_eq!(
+            parse_cmdline_preempt("nopreempt=full"),
+            None,
+            "a substring match would read `nopreempt=full` as a request for full \
+             preemption, which is the opposite of what it says"
+        );
+    }
+
+    /// Both traps here are live on an ordinary Ubuntu kernel config.
+    #[test]
+    fn kernel_config_is_matched_line_wise_not_by_substring() {
+        // The real shape of /boot/config-* on the reference box.
+        let ubuntu = "\
+CONFIG_PREEMPT_BUILD=y
+# CONFIG_PREEMPT is not set
+CONFIG_PREEMPT_LAZY=y
+# CONFIG_PREEMPT_RT is not set
+CONFIG_PREEMPT_DYNAMIC=y
+";
+        assert_eq!(
+            model_from_kernel_config(ubuntu),
+            Some(PreemptModel::Lazy),
+            "`# CONFIG_PREEMPT is not set` must not satisfy the CONFIG_PREEMPT arm, \
+             and CONFIG_PREEMPT_BUILD=y must not masquerade as CONFIG_PREEMPT=y"
+        );
+        assert!(config_is_dynamic(ubuntu));
+
+        assert_eq!(
+            model_from_kernel_config("CONFIG_PREEMPT_RT=y\nCONFIG_PREEMPT=y\n"),
+            Some(PreemptModel::PreemptRt),
+            "the kernel's own preempt_dynamic_init() chain tries RT first"
+        );
+        assert_eq!(
+            model_from_kernel_config("CONFIG_PREEMPT_NONE=y\nCONFIG_PREEMPT_LAZY=y\n"),
+            Some(PreemptModel::None),
+            "NONE precedes LAZY in preempt_dynamic_init()"
+        );
+        assert_eq!(model_from_kernel_config("CONFIG_HZ=250\n"), None);
+        assert!(!config_is_dynamic("# CONFIG_PREEMPT_DYNAMIC is not set\n"));
+    }
+
+    #[test]
+    fn the_proc_version_token_refuses_to_guess() {
+        let dynamic = "Linux version 7.0.0-30-generic #30-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul 31";
+        assert_eq!(
+            model_from_version_token(dynamic),
+            None,
+            "PREEMPT_DYNAMIC announces runtime-settability, not a mode — reading it \
+             as `full` is exactly the one-bucket error this ladder exists to remove"
+        );
+        assert!(version_says_dynamic(dynamic));
+
+        assert_eq!(
+            model_from_version_token("Linux version 6.1.0 #1 SMP PREEMPT Wed"),
+            Some(PreemptModel::Full)
+        );
+        assert_eq!(
+            model_from_version_token("Linux version 6.14.0 #1 SMP PREEMPT_LAZY Wed"),
+            Some(PreemptModel::Lazy)
+        );
+        assert_eq!(
+            model_from_version_token("Linux version 6.1.0-rt7 #1 SMP PREEMPT_RT Wed"),
+            Some(PreemptModel::PreemptRt)
+        );
+        assert_eq!(
+            model_from_version_token("Linux version 6.1.0 #1 SMP Wed"),
+            None,
+            "`none` and `voluntary` both emit no token and are indistinguishable here"
+        );
+    }
+
+    /// The ladder must not claim to know a runtime value it never read.
+    #[test]
+    fn an_inferred_dynamic_model_is_not_authoritative() {
+        let inferred = PreemptInfo {
+            model: PreemptModel::Lazy,
+            dynamic: true,
+            source: PreemptSource::KernelConfig,
+        };
+        assert!(!inferred.is_authoritative());
+        assert!(inferred.describe().contains("inferred"));
+
+        let running = PreemptInfo {
+            source: PreemptSource::Debugfs,
+            ..inferred
+        };
+        assert!(running.is_authoritative());
+
+        // A non-dynamic kernel cannot have its model changed underneath us, so
+        // the build default IS the running value.
+        let fixed = PreemptInfo {
+            model: PreemptModel::Full,
+            dynamic: false,
+            source: PreemptSource::KernelConfig,
+        };
+        assert!(fixed.is_authoritative());
+    }
+
+    #[test]
+    fn reading_the_preempt_model_on_this_machine_answers_something_defensible() {
+        let info = read_preempt_info();
+        // No assertion on WHICH model — that is a property of the test host.
+        // What must hold is that an unknown model never claims a source, and a
+        // known one always names where it came from.
+        if info.model == PreemptModel::Unknown {
+            assert_eq!(info.source, PreemptSource::Unavailable);
+        } else {
+            assert_ne!(info.source, PreemptSource::Unavailable);
+        }
+        assert!(!info.describe().is_empty());
+    }
+
+    // ── Clocksource ─────────────────────────────────────────────────────
+
+    #[test]
+    fn the_clocksource_table_separates_vdso_reads_from_syscalls() {
+        assert_eq!(Clocksource::from_name("tsc").vdso_fast(), Some(true));
+        assert_eq!(Clocksource::from_name("kvm-clock").vdso_fast(), Some(true));
+        assert_eq!(
+            Clocksource::from_name("arch_sys_counter").vdso_fast(),
+            Some(true)
+        );
+        // hpet lost its vDSO page in 4.20; acpi_pm never had one.
+        assert_eq!(Clocksource::from_name("hpet").vdso_fast(), Some(false));
+        assert_eq!(Clocksource::from_name("acpi_pm").vdso_fast(), Some(false));
+        // An unrecognised name has an unknown cost, and saying so beats
+        // guessing in either direction.
+        assert_eq!(Clocksource::from_name("something_new").vdso_fast(), None);
+        assert_eq!(Clocksource::unknown().name(), "unknown");
+        assert_eq!(Clocksource::unknown().vdso_fast(), None);
+    }
+
+    #[test]
+    fn reading_the_clocksource_on_this_machine_does_not_panic() {
+        let cs = read_clocksource();
+        assert!(!cs.describe().is_empty());
+    }
+
+    /// The Alpine failure, reproduced on glibc.
+    ///
+    /// musl's `sched_getscheduler` stub cannot be produced on this host, so the
+    /// decision it feeds is tested directly. Without this the ENOSYS branch is
+    /// only reachable in the one CI job that first found it.
+    #[test]
+    fn a_libc_without_policy_syscalls_has_not_refused_anything() {
+        // The exact shape Alpine produced: -1/ENOSYS, which used to become
+        // prior_policy -1073741825 and refusal Some(38).
+        let musl = classify_policy_read(-1, Some(libc::ENOSYS));
+        assert_eq!(musl.prior_policy, libc::SCHED_OTHER);
+        assert!(
+            !musl.actionable,
+            "there is no policy interface to issue a demotion through"
+        );
+        assert_eq!(
+            musl.refusal, None,
+            "a libc that never implemented the syscall has refused nothing, and \
+             reporting a refusal sends an operator after a privilege problem \
+             that does not exist"
+        );
+        assert_ne!(
+            policy_of(-1),
+            libc::SCHED_OTHER,
+            "the bug was masking -1 through policy_of, which yields neither \
+             SCHED_OTHER nor any real policy — if this ever stops being true the \
+             classifier above is no longer load-bearing"
+        );
+    }
+
+    /// The absolution is for exactly one errno.
+    #[test]
+    fn any_other_errno_from_the_policy_read_is_still_reported() {
+        for errno in [libc::EPERM, libc::EINVAL, libc::ESRCH] {
+            let read = classify_policy_read(-1, Some(errno));
+            assert_eq!(
+                read.refusal,
+                Some(errno),
+                "sched_getscheduler(0) reads the caller's own policy and has no \
+                 permission check, so {errno} is surprising and must surface"
+            );
+            assert!(!read.actionable);
+        }
+    }
+
+    /// A readable policy is unaffected, reset-on-fork bit included.
+    #[test]
+    fn a_readable_policy_still_drives_the_demotion() {
+        let fifo = classify_policy_read(libc::SCHED_FIFO, None);
+        assert_eq!(fifo.prior_policy, libc::SCHED_FIFO);
+        assert!(fifo.actionable, "an RT thread must still be demoted");
+        assert_eq!(fifo.refusal, None);
+
+        // The reset-on-fork bit must be masked off, or the demotion would fire
+        // on a thread already in the best-effort class.
+        let flagged = classify_policy_read(libc::SCHED_OTHER | SCHED_RESET_ON_FORK, None);
+        assert_eq!(flagged.prior_policy, libc::SCHED_OTHER);
+        assert!(flagged.actionable);
+
+        let plain = classify_policy_read(libc::SCHED_OTHER, None);
+        assert_eq!(plain.prior_policy, libc::SCHED_OTHER);
+        assert!(
+            plain.actionable,
+            "actionable means the interface exists, not that work is needed — \
+             the SCHED_OTHER check downstream is what skips the syscall"
+        );
+    }
+
+    /// The reset-on-fork bit must not break policy readback.
+    ///
+    /// The kernel ORs `SCHED_RESET_ON_FORK` INTO the value `sched_getscheduler`
+    /// returns. Setting the flag without masking every readback would have
+    /// silently stopped `can_set_rt_priority` short-circuiting on an already-RT
+    /// thread (sending it to the live probe that used to strip a deployed
+    /// thread of its policy), made `has_deadline_capability` re-probe a live
+    /// SCHED_DEADLINE reservation, and made `RtConfig::get_current_scheduler`
+    /// report `Normal` for a SCHED_FIFO thread.
+    ///
+    /// SCHED_BATCH stands in for SCHED_FIFO: same inheritance mechanism, and
+    /// settable without CAP_SYS_NICE.
+    #[test]
+    fn reset_on_fork_bit_does_not_break_policy_readback() {
+        // The masking itself is arithmetic and holds everywhere, including on a
+        // libc with no policy syscalls at all. Assert it before anything can
+        // skip out, so the property this function is named for is never left
+        // untested.
+        assert_eq!(
+            policy_of(libc::SCHED_BATCH | SCHED_RESET_ON_FORK),
+            libc::SCHED_BATCH
+        );
+        assert_eq!(
+            policy_of(libc::SCHED_FIFO | SCHED_RESET_ON_FORK),
+            libc::SCHED_FIFO
+        );
+        assert_eq!(policy_of(libc::SCHED_OTHER), libc::SCHED_OTHER);
+
+        std::thread::spawn(|| {
+            // SAFETY: `sched_param` is a POD struct of integer fields for which
+            // all-zero is a valid bit pattern; SCHED_BATCH requires priority 0.
+            let rc = unsafe {
+                let mut param: libc::sched_param = std::mem::zeroed();
+                param.sched_priority = 0;
+                libc::sched_setscheduler(0, libc::SCHED_BATCH | SCHED_RESET_ON_FORK, &param)
+            };
+
+            // musl stubs `sched_setscheduler` to ENOSYS instead of wiring it to
+            // the kernel, so on an Alpine build there is no policy to set and
+            // no readback to observe. Skip the live half — but ONLY for that
+            // one errno, and only after proving the stub is what answered.
+            // Skipping on any failure would let a real EPERM regression pass
+            // silently on glibc, which is the whole point of the assertion.
+            if rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS) {
+                // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+                let raw = unsafe { libc::sched_getscheduler(0) };
+                assert!(
+                    raw < 0,
+                    "a libc that refuses sched_setscheduler with ENOSYS must not \
+                     then answer sched_getscheduler — that would mean the policy \
+                     interface half-exists and the skip below is unsound"
+                );
+                return;
+            }
+
+            assert_eq!(
+                rc,
+                0,
+                "SCHED_BATCH|SCHED_RESET_ON_FORK must be settable unprivileged: {}",
+                std::io::Error::last_os_error()
+            );
+
+            // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+            let raw = unsafe { libc::sched_getscheduler(0) };
+            assert_eq!(
+                raw,
+                libc::SCHED_BATCH | SCHED_RESET_ON_FORK,
+                "the kernel reports the flag OR'd into the policy — that is the whole \
+                 reason `policy_of` exists"
+            );
+            assert_eq!(policy_of(raw), libc::SCHED_BATCH);
+            assert_eq!(current_policy(), libc::SCHED_BATCH);
+
+            // The snapshot is a restore target and must keep the raw value, or
+            // a capability probe would quietly strip the flag off every thread
+            // it touched.
+            let snapshot = snapshot_scheduling().expect("snapshot");
+            assert_eq!(snapshot.policy, raw, "snapshot_scheduling must not mask");
+            restore_scheduling(&snapshot);
+            // SAFETY: as above.
+            assert_eq!(
+                unsafe { libc::sched_getscheduler(0) },
+                raw,
+                "restore must put the reset-on-fork bit back"
+            );
+        })
+        .join()
+        .expect("the probe thread must not panic");
+    }
+
     use super::*;
 
     /// The property the whole pair exists for. `timer_slack_ns` used to read

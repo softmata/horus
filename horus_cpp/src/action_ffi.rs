@@ -521,9 +521,10 @@ pub fn action_server_process(server: &mut FfiActionServer) {
         publish_status(server, goal_id, FfiGoalStatus::Active);
 
         let events = server.events.clone();
-        let join = std::thread::Builder::new()
-            .name(format!("horus-cpp-action-{}", server.name))
-            .spawn(move || {
+        let join = horus_core::scheduling::spawn_best_effort(
+            format!("horus-cpp-action-{}", server.name),
+            0,
+            move || {
                 let mut handle = FfiActionGoalHandle {
                     goal_id,
                     cancel_flag,
@@ -533,7 +534,8 @@ pub fn action_server_process(server: &mut FfiActionServer) {
                 execute(&mut handle, &goal_bytes);
                 // If the handler returned without finishing, default to Aborted.
                 handle.push_completion(FfiGoalStatus::Aborted, "null");
-            });
+            },
+        );
         match join {
             Ok(j) => {
                 server.threads.insert(goal_id, j);

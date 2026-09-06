@@ -27,13 +27,55 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
         cpu_affinity: true,
         kernel_version: get_windows_version(),
         cpu_count,
+        // Windows has no preemption model to read and no cpuidle sysfs. Idle
+        // depth is governed by the active power plan, a machine-wide setting
+        // with no per-process interface.
+        preempt: super::PreemptInfo::not_applicable(),
+        deepest_idle_state: None,
+        // Our label, not a string any Win32 API returns, and deliberately one
+        // the cost table does NOT recognise: QueryPerformanceCounter is usually
+        // served from KUSER_SHARED_DATA, but the HAL may select HPET or the PM
+        // timer and Windows exposes that choice nowhere ordinary — so
+        // `vdso_fast()` correctly answers "unknown" rather than guessing.
+        clocksource: super::Clocksource::from_name("qpc"),
         estimated_jitter: Duration::from_millis(1), // Windows ~1-10ms jitter
     }
 }
 
-/// Set real-time priority using Windows API.
+/// Environment variable that opts a deployment back into the process-wide
+/// `REALTIME_PRIORITY_CLASS`.
+pub(super) const REALTIME_CLASS_ENV: &str = "HORUS_WIN_REALTIME_CLASS";
+
+/// The outcome of the one process-wide `SetPriorityClass` attempt, so that N RT
+/// tick threads raise it once rather than N times — and so that all N learn
+/// whether it worked.
 ///
-/// Sets process priority to REALTIME_PRIORITY_CLASS and thread to TIME_CRITICAL.
+/// A bare `Once` was wrong: only the thread that ran the initializer saw the
+/// failure, and every later RT thread took the silent path and proceeded as
+/// though the process class had been raised. Storing the result means the
+/// second caller gets the same error the first one did.
+static REALTIME_CLASS: std::sync::OnceLock<Result<(), i32>> = std::sync::OnceLock::new();
+
+/// Give the calling thread real-time priority.
+///
+/// # Why this no longer raises `REALTIME_PRIORITY_CLASS` by default
+///
+/// It is a **process** attribute. Raising it moved every thread in the process
+/// — the helpers, the log drain, the tokio blocking pool, and threads that
+/// already existed — into the 16-31 band, above most driver threads, and no
+/// per-thread `SetThreadPriority` brings one back out: even
+/// `THREAD_PRIORITY_IDLE` inside that class is base 16. So the Windows arm of
+/// this backend reproduced defect 02's Linux shape by a different mechanism,
+/// and unlike the Linux one it could not be undone per thread.
+///
+/// `THREAD_PRIORITY_TIME_CRITICAL` inside the inherited class gives base 15
+/// under `NORMAL_PRIORITY_CLASS`, which preempts every ordinary thread on the
+/// box while leaving the kernel's own alone — the same *relative* guarantee the
+/// Linux `SCHED_FIFO` path gives, and the guarantee
+/// [`set_best_effort_class`] can actually restore a helper out of.
+///
+/// Set `HORUS_WIN_REALTIME_CLASS=1` on a machine genuinely dedicated to the
+/// robot to get the old behaviour.
 pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentThread, SetPriorityClass, SetThreadPriority,
@@ -41,16 +83,25 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     };
 
     // SAFETY: GetCurrentProcess/Thread always return valid pseudo-handles
-    let process = unsafe { GetCurrentProcess() };
     let thread = unsafe { GetCurrentThread() };
 
-    // SAFETY: process is a valid handle, REALTIME_PRIORITY_CLASS is a valid priority class
-    let result = unsafe { SetPriorityClass(process, REALTIME_PRIORITY_CLASS) };
-    if result == 0 {
-        anyhow::bail!(
-            "SetPriorityClass(REALTIME) failed: {}",
-            std::io::Error::last_os_error()
-        );
+    if std::env::var(REALTIME_CLASS_ENV).as_deref() == Ok("1") {
+        let outcome = REALTIME_CLASS.get_or_init(|| {
+            // SAFETY: pseudo-handle as above; REALTIME_PRIORITY_CLASS is a
+            // valid priority class.
+            let process = unsafe { GetCurrentProcess() };
+            if unsafe { SetPriorityClass(process, REALTIME_PRIORITY_CLASS) } == 0 {
+                Err(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 })
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(code) = outcome {
+            anyhow::bail!(
+                "SetPriorityClass(REALTIME) failed: {}",
+                std::io::Error::from_raw_os_error(*code)
+            );
+        }
     }
 
     // SAFETY: thread is a valid handle, THREAD_PRIORITY_TIME_CRITICAL is valid
@@ -62,7 +113,7 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
         );
     }
 
-    log::debug!("Windows: Set REALTIME_PRIORITY_CLASS + THREAD_PRIORITY_TIME_CRITICAL");
+    log::debug!("Windows: Set THREAD_PRIORITY_TIME_CRITICAL");
     Ok(())
 }
 
@@ -133,4 +184,74 @@ fn get_windows_version() -> String {
     } else {
         "Windows".to_string()
     }
+}
+
+/// Put the calling thread back on the ordinary priority band and give it back
+/// the helper CPU set.
+///
+/// # What this can and cannot undo
+///
+/// `SetThreadPriority(THREAD_PRIORITY_NORMAL)` restores the *relative*
+/// ordering: an RT tick thread at `THREAD_PRIORITY_TIME_CRITICAL` preempts
+/// this one again. That is the same relative guarantee the Linux path gives.
+///
+/// What it cannot undo is `REALTIME_PRIORITY_CLASS`, which is a **process**
+/// attribute: once raised, every thread in the process sits in the 16-31 band
+/// and no per-thread call brings one back out (even `THREAD_PRIORITY_IDLE`
+/// inside that class is base 16). That is why [`set_realtime_priority`] no
+/// longer raises the class unless the operator opts in.
+pub(super) fn set_best_effort_class(
+    _nice_increment: i32,
+    target: &[usize],
+) -> super::BestEffortReport {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_NORMAL,
+    };
+
+    let mut report = super::BestEffortReport::default();
+
+    // SAFETY: `GetCurrentThread` returns a pseudo-handle that needs no close,
+    // and `SetThreadPriority` only writes the calling thread's priority.
+    let ok = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_NORMAL) };
+    if ok != 0 {
+        report.policy_changed = true;
+    } else {
+        report.refusal = Some(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 });
+    }
+
+    // `SetThreadAffinityMask` takes a bitmask over the process's processor
+    // group, so CPUs at or beyond `usize::BITS` cannot be expressed and are
+    // dropped rather than silently aliased onto a lower bit.
+    if !target.is_empty() {
+        let mut mask: usize = 0;
+        for &cpu in target {
+            if cpu < usize::BITS as usize {
+                mask |= 1 << cpu;
+            }
+        }
+        if mask != 0 {
+            // SAFETY: pseudo-handle as above; the mask is a plain integer.
+            let prev = unsafe { SetThreadAffinityMask(GetCurrentThread(), mask) };
+            if prev != 0 {
+                report.affinity_changed = true;
+            } else if report.refusal.is_none() {
+                report.refusal =
+                    Some(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 });
+            }
+        } else if report.refusal.is_none() {
+            // A non-empty target that produced an empty mask means every CPU in
+            // it sits at or beyond this processor group's bitwidth. Returning
+            // an all-false report there would say "nothing needed doing" about
+            // a helper thread still sitting on the reserved RT core — the
+            // opposite of the truth, and undetectable from the report.
+            //
+            // `ERROR_INVALID_PARAMETER` rather than a HORUS-invented number:
+            // every other refusal on this platform stores a raw `GetLastError`
+            // value, and a reader decoding the field with a Win32 lookup must
+            // not hit a code that means something else there.
+            report.refusal = Some(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32);
+        }
+    }
+
+    report
 }

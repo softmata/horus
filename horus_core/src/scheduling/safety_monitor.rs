@@ -972,17 +972,39 @@ impl EstopTrigger {
     /// Latch the emergency stop. Semantics are identical to
     /// `SafetyMonitor::trigger_emergency_stop`, including the rising-edge gate
     /// that queues a fleet broadcast exactly once per episode.
-    pub(crate) fn trigger(&self, reason: String) {
+    /// Latch the emergency stop, taking the reason as `Arguments`.
+    ///
+    /// Identical semantics to [`trigger`](Self::trigger), including the
+    /// rising-edge gate — but callable from a real-time tick without the three
+    /// costs the `String` form carried on EVERY call:
+    ///
+    /// * the caller's `format!`, and then a `reason.clone()` here;
+    /// * an unbuffered blocking `writeln!` to stderr, which on a slow or
+    ///   stopped reader waits for as long as the reader takes;
+    ///
+    /// and it did all of that from inside `tick_node`, on the RT thread, at the
+    /// exact moment the robot is stopping — which is when timing matters most.
+    ///
+    /// What remains on the rising edge only, once per latch, is one allocation
+    /// and one mutex for the pending-broadcast mailbox. That is deliberate: the
+    /// fleet announcement has to carry an owned reason somewhere, and a second
+    /// lock-free mailbox on a safety path would be more machinery than the
+    /// once-per-latch cost it removes.
+    pub(crate) fn trigger_fmt(&self, reason: std::fmt::Arguments<'_>) {
         // Latch FIRST — the safety action must not depend on logging.
         let rising_edge = !self.emergency_stop.swap(true, Ordering::SeqCst);
         *self.state.lock() = SafetyState::EmergencyStop;
         if rising_edge {
             *PENDING_LOCAL_ESTOP
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(reason.clone());
+                .unwrap_or_else(|e| e.into_inner()) = Some(reason.to_string());
         }
-        use std::io::Write;
-        let _ = writeln!(std::io::stderr(), " EMERGENCY STOP: {}", reason);
+        // Through the log path, which on an RT thread queues into a fixed-size
+        // ring and lets a non-RT drain do the blocking write.
+        crate::core::hlog::log_fmt(
+            crate::core::LogType::Error,
+            format_args!(" EMERGENCY STOP: {reason}"),
+        );
     }
 }
 
@@ -3940,7 +3962,7 @@ mod estop_trigger_tests {
         assert!(!monitor.is_emergency_stop());
         assert_eq!(monitor.get_state(), SafetyState::Normal);
 
-        trigger.trigger("rt node blew its budget".to_string());
+        trigger.trigger_fmt(format_args!("rt node blew its budget"));
 
         assert!(
             monitor.is_emergency_stop(),
@@ -3959,7 +3981,7 @@ mod estop_trigger_tests {
         let monitor = SafetyMonitor::new(10);
         let trigger = monitor.estop_trigger();
 
-        trigger.trigger("deadline miss escalated".to_string());
+        trigger.trigger_fmt(format_args!("deadline miss escalated"));
         let pending = take_pending_local_estop();
         assert!(
             pending.is_some_and(|r| r.contains("deadline miss escalated")),
@@ -3977,10 +3999,10 @@ mod estop_trigger_tests {
         let monitor = SafetyMonitor::new(10);
         let trigger = monitor.estop_trigger();
 
-        trigger.trigger("first".to_string());
+        trigger.trigger_fmt(format_args!("first"));
         let _ = take_pending_local_estop();
 
-        trigger.trigger("second".to_string());
+        trigger.trigger_fmt(format_args!("second"));
         assert!(
             take_pending_local_estop().is_none(),
             "already latched — not a rising edge, so no second broadcast"

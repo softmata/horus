@@ -42,7 +42,7 @@ pub use topic::{set_topic_verbose, TOPIC_VERBOSE_OFFSET};
 #[doc(hidden)]
 pub use topic::{
     read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total,
-    read_topic_sequence, TopicHeaderInfo, TopicSlotRead,
+    read_topic_sequence, shm_map_count, TopicHeaderInfo, TopicReader, TopicSlotRead,
 };
 
 // Topic lifecycle hook for horus_net network replication

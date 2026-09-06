@@ -16,6 +16,23 @@ pub struct RtReport {
     // System capabilities
     pub kernel: String,
     pub preempt_rt: bool,
+    /// The kernel's preemption model, and how confident we are in it.
+    pub preempt: horus_sys::rt::PreemptInfo,
+    /// The real-time class's CPU budget, as it applies to this task.
+    ///
+    /// The sysctls the tick loop's comments blame for the ~50 ms dequeue, read
+    /// rather than assumed — and preferring a tighter cgroup budget, which is
+    /// what actually binds inside a container.
+    pub rt_bandwidth: horus_sys::rt::RtBandwidth,
+    /// The deepest idle state the cpuidle governor may enter, and its exit
+    /// latency in microseconds. `None` where cpuidle sysfs is absent.
+    pub deepest_idle_state: Option<(String, u32)>,
+    /// The clocksource in force when the report was generated.
+    ///
+    /// Read again after the benchmark: a clocksource that changed *during* the
+    /// measurement is the single most important thing this report can say, and
+    /// costs two file reads in a command that already runs for seconds.
+    pub clocksource: horus_sys::rt::Clocksource,
     /// Whether this process may actually obtain an RT policy.
     ///
     /// Not "the kernel defines RT priorities" — that is always true. Filling
@@ -71,7 +88,9 @@ impl RtReport {
         // Run jitter benchmark
         let target_hz = 1000u64; // 1kHz — standard RT benchmark rate
         let target_period_us = 1_000_000.0 / target_hz as f64;
+        let clocksource_before = horus_sys::rt::clocksource();
         let jitter = measure_jitter(target_hz, benchmark_duration);
+        let clocksource_after = horus_sys::rt::clocksource();
 
         // Run IPC benchmark
         let (ipc_lat, ipc_tput) = measure_ipc();
@@ -83,6 +102,113 @@ impl RtReport {
         if !caps.preempt_rt {
             issues.push("PREEMPT_RT kernel not detected".into());
             recs.push("Install PREEMPT_RT kernel for <20μs jitter: https://wiki.linuxfoundation.org/realtime".into());
+        }
+
+        // The preemption model, which `preempt_rt` alone could not distinguish.
+        // `none` and `voluntary` have worst-case scheduling latencies in the
+        // milliseconds — they are a different problem from "not PREEMPT_RT",
+        // and reporting only the latter left the operator with no idea which
+        // one they had.
+        match caps.preempt.model {
+            horus_sys::rt::PreemptModel::None | horus_sys::rt::PreemptModel::Voluntary => {
+                issues.push(format!(
+                    "Kernel preemption model is `{}`: worst-case scheduling latency is \
+                     milliseconds, not microseconds",
+                    caps.preempt.model.as_str()
+                ));
+                recs.push(if caps.preempt.dynamic {
+                    "Boot with `preempt=full` — this kernel is CONFIG_PREEMPT_DYNAMIC, so \
+                     the model is a runtime setting and needs no rebuild"
+                        .into()
+                } else {
+                    "Install a kernel built with CONFIG_PREEMPT or CONFIG_PREEMPT_RT".into()
+                });
+            }
+            horus_sys::rt::PreemptModel::Unknown => {
+                recs.push(
+                    "The preemption model could not be determined: \
+                     /sys/kernel/debug/sched/preempt needs root, no readable kernel config \
+                     was found, and /proc/version carries no distinguishing token — `none` \
+                     and `voluntary` are indistinguishable there"
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+        // Never an issue, always a recommendation: an inferred value is not
+        // evidence of a problem, only of a question this process could not
+        // answer without privilege.
+        if !caps.preempt.is_authoritative() {
+            recs.push(format!(
+                "The effective preemption mode is a runtime setting; this report inferred \
+                 `{}` from {}. Confirm with `sudo cat /sys/kernel/debug/sched/preempt`.",
+                caps.preempt.model.as_str(),
+                caps.preempt.source.as_str()
+            ));
+        }
+
+        // The clocksource. Every latency figure below is conditional on it.
+        match caps.clocksource.vdso_fast() {
+            Some(false) => {
+                issues.push(format!(
+                    "Clocksource is `{}`: every clock read is a syscall plus a device \
+                     access instead of a ~25ns vDSO read, and the RT tick loop reads the \
+                     clock once per guard-spin iteration. Every latency figure in this \
+                     report is inflated by it.",
+                    caps.clocksource.name()
+                ));
+                recs.push(
+                    "echo tsc | sudo tee \
+                     /sys/devices/system/clocksource/clocksource0/current_clocksource, and \
+                     check `dmesg | grep -i clocksource` for 'Marking TSC unstable'"
+                        .into(),
+                );
+            }
+            None => {
+                recs.push(format!(
+                    "Clocksource `{}` is not one this build recognises, so the cost of a \
+                     clock read is unknown rather than assumed",
+                    caps.clocksource.name()
+                ));
+            }
+            Some(true) => {}
+        }
+        // RT bandwidth control. Narrow on purpose: a finite budget is the
+        // correct default on almost every host and must not become an issue,
+        // or every machine would grow one.
+        let bandwidth = horus_sys::rt::rt_bandwidth();
+        if bandwidth.is_starved() {
+            issues.push(
+                "The RT budget for this task is ZERO — SCHED_FIFO cannot be granted here \
+                 at all. The refusal reads as a permission error, but CAP_SYS_NICE is not \
+                 the remedy."
+                    .into(),
+            );
+            recs.push(
+                "Raise cpu.rt_runtime_us for this cgroup, or run outside it. This is the \
+                 default state of a non-root cpu cgroup on a kernel built with \
+                 CONFIG_RT_GROUP_SCHED."
+                    .into(),
+            );
+        } else if bandwidth.is_finite() && std::env::var("HORUS_RT_WAIT").as_deref() == Ok("spin") {
+            let window = bandwidth.throttle_window().unwrap_or_default();
+            recs.push(format!(
+                "HORUS_RT_WAIT=spin against a finite RT budget ({}/{} µs): the kernel will \
+                 dequeue the tick thread for {:?} out of every RT period once its share is \
+                 exhausted. Raise /proc/sys/kernel/sched_rt_runtime_us or use the default \
+                 absolute-sleep wait.",
+                bandwidth.runtime_us, bandwidth.period_us, window
+            ));
+        }
+
+        if clocksource_before != clocksource_after {
+            issues.push(format!(
+                "The clocksource changed DURING this benchmark, from `{}` to `{}` — the \
+                 kernel demoted it mid-measurement (see `dmesg | grep -i clocksource`), so \
+                 the numbers below span two different clock-read costs",
+                clocksource_before.name(),
+                clocksource_after.name()
+            ));
         }
         // `max_priority` is a kernel constant and is never 0 on any supported
         // platform, so this issue and its recommendation could never fire — and
@@ -117,9 +243,37 @@ impl RtReport {
                 "P99 jitter {:.0}μs exceeds 500μs threshold",
                 jitter.p99
             ));
+            // Two causes, ordered by likelihood, and deliberately no longer
+            // one line. The governor line alone conflated two different
+            // subsystems: `performance` addresses FREQUENCY SCALING and has no
+            // effect at all on idle-state exit latency, which on this class of
+            // machine is the larger term by an order of magnitude.
             recs.push(
-                "Check for CPU frequency scaling: cpupower frequency-set -g performance".into(),
+                "Check CPU idle-state exit latency: a deep C-state exit can cost \
+                 hundreds of microseconds, and the cpufreq governor does not affect it. \
+                 HORUS bounds it automatically when it can open /dev/cpu_dma_latency; \
+                 run `horus setup-rt` or scripts/setup-realtime.sh to grant that access."
+                    .into(),
             );
+            recs.push(
+                "Check for CPU frequency scaling: cpupower frequency-set -g performance \
+                 (a different subsystem from the above)"
+                    .into(),
+            );
+        }
+
+        // A state whose exit the guard spin cannot absorb is worth naming with
+        // its own numbers, whatever the measured jitter came out at.
+        if let Some((name, exit_us)) = &caps.deepest_idle_state {
+            let guard_us = target_period_us / 16.0;
+            if (*exit_us as f64) > guard_us {
+                issues.push(format!(
+                    "cpuidle may enter {name}, whose exit costs {exit_us}us — {:.0}% of \
+                     the {target_period_us:.0}us period, against a {guard_us:.0}us guard \
+                     spin that runs AFTER the wake it would have to absorb",
+                    *exit_us as f64 * 100.0 / target_period_us
+                ));
+            }
         }
         if jitter.p99 > 50.0 && caps.preempt_rt {
             issues.push(format!(
@@ -148,6 +302,10 @@ impl RtReport {
         RtReport {
             kernel: caps.kernel_version,
             preempt_rt: caps.preempt_rt,
+            preempt: caps.preempt,
+            rt_bandwidth: horus_sys::rt::rt_bandwidth(),
+            deepest_idle_state: horus_sys::rt::deepest_idle_exit_latency_us(0),
+            clocksource: clocksource_after,
             sched_fifo: caps.rt_priority_permitted,
             memory_locking: caps.memory_locking,
             cpu_count: caps.cpu_count,
@@ -208,6 +366,26 @@ impl RtReport {
         crate::terminal::print_line(&format!(
             "║    PREEMPT_RT:     {}                                        ║",
             check(self.preempt_rt)
+        ));
+        // The two facts every other number in this report is conditional on.
+        crate::terminal::print_line(&format!(
+            "║    Preempt:        {:<40} ║",
+            self.preempt.describe()
+        ));
+        crate::terminal::print_line(&format!(
+            "║    Clocksource:    {:<40} ║",
+            self.clocksource.describe()
+        ));
+        crate::terminal::print_line(&format!(
+            "║    RT budget:      {:<40} ║",
+            self.rt_bandwidth.describe()
+        ));
+        crate::terminal::print_line(&format!(
+            "║    Deepest idle:   {:<40} ║",
+            match &self.deepest_idle_state {
+                Some((name, us)) => format!("{name} (exit {us}us)"),
+                None => "unknown (no cpuidle sysfs)".to_string(),
+            }
         ));
         crate::terminal::print_line(&format!(
             "║    SCHED_FIFO:     {}                                        ║",

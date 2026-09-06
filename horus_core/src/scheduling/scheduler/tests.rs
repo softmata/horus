@@ -5672,7 +5672,7 @@ fn shared_monitors_carry_a_safety_handle_for_executors() {
     // This is what run() hands to every executor thread.
     let shared = crate::scheduling::types::SharedMonitors {
         profiler: scheduler.monitor.profiler.clone(),
-        blackbox: scheduler.monitor.blackbox.clone(),
+        blackbox: scheduler.monitor.blackbox_ring.clone(),
         verbose: false,
         registry: Default::default(),
         registry_slots: Default::default(),

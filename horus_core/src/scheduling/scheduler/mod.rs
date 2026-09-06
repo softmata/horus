@@ -38,6 +38,7 @@ pub fn set_network_auto_wire(f: impl Fn(&mut Scheduler) + Send + Sync + 'static)
     let _ = NETWORK_AUTO_WIRE.set(Box::new(f));
 }
 
+mod dispatch;
 mod recording;
 
 /// Truncate a name to fit in a column width, adding ".." if truncated.
@@ -163,6 +164,12 @@ pub enum RtFeature {
     Watchdog,
     /// Safety monitor
     SafetyMonitor,
+    /// A bound on CPU idle-state exit latency.
+    ///
+    /// Separate from [`RtFeature::CpuAffinity`] because it fails for a
+    /// different reason and has a different remedy: `/dev/cpu_dma_latency` is
+    /// root-only on a stock distribution, and no amount of CAP_SYS_NICE helps.
+    IdleLatency,
 }
 
 impl std::fmt::Display for RtFeature {
@@ -174,6 +181,7 @@ impl std::fmt::Display for RtFeature {
             RtFeature::NumaPinning => write!(f, "NUMA Pinning"),
             RtFeature::Watchdog => write!(f, "Watchdog"),
             RtFeature::SafetyMonitor => write!(f, "Safety Monitor"),
+            RtFeature::IdleLatency => write!(f, "Idle-Exit Latency Bound"),
         }
     }
 }
@@ -283,6 +291,12 @@ pub(crate) struct TickState {
 pub(crate) struct MonitorState {
     pub safety: Option<std::sync::Arc<SafetyMonitor>>,
     pub blackbox: Option<Arc<Mutex<super::blackbox::BlackBox>>>,
+    /// The producer side of the flight recorder, handed to the executors.
+    ///
+    /// Separate from `blackbox` on purpose: the executors get a handle that can
+    /// only queue, and the recorder itself is reached from the cold paths and
+    /// the drain. See [`BbRing`](super::blackbox_ring::BbRing).
+    pub blackbox_ring: Option<Arc<super::blackbox_ring::BbRing>>,
     pub telemetry: Option<super::telemetry::TelemetryManager>,
     pub profiler: Arc<Mutex<RuntimeProfiler>>,
     pub last_snapshot: Instant,
@@ -473,6 +487,26 @@ pub struct Scheduler {
     ///
     /// `None` until an RT executor is started, and on any run with no RT nodes.
     rt_thread_report: Option<std::sync::Arc<super::rt_status::RtThreadReport>>,
+    /// PM QoS constraint bounding CPU idle-state exit latency, held for as long
+    /// as this scheduler runs.
+    ///
+    /// `None` when there are no RT nodes, on a platform with no such interface,
+    /// or when the kernel refused — which is recorded as an
+    /// [`RtFeature::IdleLatency`] degradation rather than passing silently.
+    /// Dropping it releases the constraint, which is why it is a field and not
+    /// a local.
+    idle_latency: Option<horus_sys::rt::IdleLatencyGuard>,
+    /// Persistent lanes for `execute_ready_dispatch`.
+    ///
+    /// `None` until the run loop creates it: deterministic mode, `tick_once()`
+    /// and single-node graphs never dispatch in parallel and must not pay for
+    /// threads they will not use.
+    dispatch: Option<dispatch::ReadyDispatch>,
+    /// Per-tick scratch for `execute_ready_dispatch`, held across ticks so the
+    /// steady state reallocates nothing. Taken and put back around the dispatch
+    /// because the loop needs `&mut self` while it holds them.
+    dispatch_should_tick: Vec<bool>,
+    dispatch_results: Vec<dispatch::JobResult>,
     /// A duplicate node name seen at registration, reported by `run()`.
     ///
     /// Node names key the watchdog map, the SHM registry slot and the
@@ -567,6 +601,12 @@ impl Scheduler {
     /// Configuration is deferred until `run()` via builder methods.
     /// Use `.prefer_rt()`, `.require_rt()`, `.watchdog()`, `.blackbox()` to configure.
     pub fn new() -> Self {
+        // The earliest honest point to record what CPUs this process was given,
+        // which is the set helper threads get restored to. Idempotent and
+        // first-call-wins, so the later capture points in `RtConfig::apply` and
+        // `set_thread_affinity` are harmless duplicates rather than a race.
+        horus_sys::rt::capture_helper_baseline_cpus();
+
         let running = Arc::new(AtomicBool::new(true));
         let now = Instant::now();
 
@@ -613,6 +653,7 @@ impl Scheduler {
             monitor: MonitorState {
                 safety: None,
                 blackbox: None,
+                blackbox_ring: None,
                 telemetry: None,
                 profiler: Arc::new(Mutex::new(RuntimeProfiler::new_default())),
                 last_snapshot: now,
@@ -639,6 +680,10 @@ impl Scheduler {
             rt_require_failed: false,
             rt_memory_locked: false,
             rt_thread_report: None,
+            idle_latency: None,
+            dispatch: None,
+            dispatch_should_tick: Vec::new(),
+            dispatch_results: Vec::new(),
             duplicate_node_name: None,
         };
 
@@ -863,6 +908,10 @@ impl Scheduler {
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
         let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
         self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+        // The producer side, handed to the executors. Created with the recorder
+        // and never separately: an executor holding a ring the drain does not
+        // know about would queue events nothing ever reads.
+        self.monitor.blackbox_ring = Some(Arc::new(super::blackbox_ring::BbRing::new()));
         self
     }
 
@@ -1246,6 +1295,25 @@ impl Scheduler {
             lines.push(format!(
                 "  [{}] PREEMPT_RT kernel",
                 if caps.preempt_rt { "x" } else { " " }
+            ));
+            // A fact only `horus doctor --rt` knows is a fact the operator does
+            // not have at the moment it matters.
+            lines.push(format!(
+                "  [{}] Preemption model: {}",
+                if caps.preempt.model.is_rt_friendly() {
+                    "x"
+                } else {
+                    " "
+                },
+                caps.preempt.describe()
+            ));
+            lines.push(format!(
+                "  [{}] Clocksource: {}",
+                match caps.clocksource.vdso_fast() {
+                    Some(true) => "x",
+                    _ => " ",
+                },
+                caps.clocksource.describe()
             ));
             lines.push(format!(
                 "  [{}] RT Priority (max={})",
@@ -1802,6 +1870,7 @@ impl Scheduler {
                 ),
             });
             self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+            self.monitor.blackbox_ring = Some(Arc::new(super::blackbox_ring::BbRing::new()));
             print_line(&format!(
                 "[SCHEDULER] Black box enabled ({}MB buffer)",
                 monitoring.black_box_size_mb
@@ -2032,6 +2101,122 @@ impl Scheduler {
         super::rt::set_thread_affinity(&[cpu_id])?;
         print_line(&format!("[OK] Scheduler pinned to CPU core {}", cpu_id));
         Ok(())
+    }
+
+    /// Ask the kernel to keep CPU idle-state exit latency inside the guard
+    /// spin, and hold that constraint for the run.
+    ///
+    /// # Why this is not covered by the cpufreq governor
+    ///
+    /// It is a different subsystem. Setting the governor to `performance`,
+    /// which the RT threads already do, addresses FREQUENCY SCALING. Idle
+    /// states are `cpuidle`, and the two are routinely conflated — including in
+    /// this project's own setup script until now.
+    ///
+    /// The absolute-sleep design deliberately gives the core back for most of
+    /// every period, which is exactly the condition under which the `menu`
+    /// governor promotes it into a deep C-state: it admits a state when
+    /// predicted idle exceeds that state's target residency. So the SLOWER the
+    /// loop, the DEEPER the state it licenses. On the reference box, C2 exits in
+    /// 151 us against a 453 us residency target and C3 in 1034 us against
+    /// 3102 us — so a 1 kHz loop licenses a 151 us exit (7.5x its 20 us guard)
+    /// and a 100 Hz loop licenses a 1034 us one (51x). The guard cannot prevent
+    /// it either: the guard runs AFTER the wake the exit has already delayed.
+    fn bound_idle_exit_latency(
+        &mut self,
+        rt_chains: &[Vec<super::types::RegisteredNode>],
+        rt_cpus: &[usize],
+    ) {
+        use horus_sys::rt::{IdleLatencyOutcome, IdleLatencyScope};
+
+        if rt_chains.is_empty() {
+            return;
+        }
+
+        let periods: Vec<Duration> = rt_chains
+            .iter()
+            .map(|chain| super::rt_executor::chain_tick_period(chain, self.tick.period))
+            .collect();
+
+        let budget_us = match std::env::var(super::rt_executor::RT_IDLE_LATENCY_ENV)
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+        {
+            Some(0) => {
+                // Accepted, but never silently: 0 tells the kernel to tolerate
+                // no exit latency at all, which pins every core in POLL.
+                print_line(
+                    "[RT] HORUS_RT_IDLE_LATENCY_US=0 — every CPU will be held in POLL. \
+                     This is the lowest-latency and highest-power setting; on a battery \
+                     robot it is a thermal and runtime cost, not a free win.",
+                );
+                0
+            }
+            Some(us) => us,
+            None => super::rt_executor::idle_latency_budget_us(&periods),
+        };
+
+        // Global by default: the kernel releases `/dev/cpu_dma_latency` the
+        // instant the fd closes, including on SIGKILL, so it cannot leak. The
+        // per-CPU sysfs path lets the perception cores keep their power savings
+        // on a shared box, but it survives the process and must be opted into.
+        let scope = if std::env::var("HORUS_RT_IDLE_LATENCY_SCOPE").as_deref() == Ok("percpu")
+            && !rt_cpus.is_empty()
+        {
+            IdleLatencyScope::PerCpu(rt_cpus.to_vec())
+        } else {
+            IdleLatencyScope::Global
+        };
+
+        match horus_sys::rt::bound_idle_latency(budget_us, scope) {
+            IdleLatencyOutcome::Bounded(guard) => {
+                if self.pending_config.monitoring.verbose {
+                    print_line(&format!(
+                        "[RT] Idle-exit latency bounded: {}",
+                        guard.describe()
+                    ));
+                }
+                self.idle_latency = Some(guard);
+            }
+            IdleLatencyOutcome::Unsupported { platform, note } => {
+                // Not a degradation: nothing was refused, and there is nothing
+                // the operator could do about it.
+                if self.pending_config.monitoring.verbose {
+                    print_line(&format!(
+                        "[RT] Idle-exit latency not bounded on {platform}: {note}"
+                    ));
+                }
+            }
+            IdleLatencyOutcome::Refused { path, error } => {
+                let deepest = horus_sys::rt::deepest_idle_exit_latency_us(
+                    rt_cpus.first().copied().unwrap_or(0),
+                );
+                let exposure = match &deepest {
+                    Some((name, exit_us)) => format!(
+                        "the cpuidle governor may still enter {name} (exit {exit_us}us) on \
+                         the RT cores, against a {budget_us}us guard spin"
+                    ),
+                    None => "the cpuidle states on this host could not be read either".to_string(),
+                };
+                let reason = format!(
+                    "could not bound CPU idle-exit latency via {path} ({error}); {exposure}. \
+                     /dev/cpu_dma_latency is root-only on a stock distribution and \
+                     CAP_SYS_NICE does not help — install a udev rule granting the \
+                     robot's group write access (scripts/setup-realtime.sh does this), or \
+                     set HORUS_RT_IDLE_LATENCY_SCOPE=percpu where the sysfs files are \
+                     writable."
+                );
+                // Unconditional: an operator who believes the constraint is in
+                // force and is not measuring it is exactly who this defect
+                // costs, and a silent pass is what created it.
+                print_line(&format!("[RT] WARNING: {reason}"));
+                self.rt.degradations.push(RtFeatureDegradation {
+                    feature: RtFeature::IdleLatency,
+                    reason,
+                    severity: DegradationSeverity::Medium,
+                });
+            }
+        }
     }
 
     /// Lock all memory pages to prevent page faults (critical for <20μs latency).
@@ -2956,6 +3141,21 @@ impl Scheduler {
         node_filter: Option<&[&str]>,
         duration: Option<Duration>,
     ) -> HorusResult<()> {
+        // Before `finalize_and_init`, which is where `apply_rt_optimizations`
+        // puts THIS thread on SCHED_FIFO and pins it to the reserved cores.
+        //
+        // `ctrlc::set_handler` spawns its own signal thread and offers no hook
+        // to configure it, so the only way to keep that thread off the RT class
+        // and off the RT cores is to create it before there is anything to
+        // inherit. Registering the panic hook earlier is a free improvement on
+        // the same move: a panic during node `init()` is now reported too.
+        self.install_panic_hook();
+        self.setup_signal_handlers();
+        // Deterministic mode and the plain main-thread scheduler have no RT
+        // executor to start the drain, and the RT branch of the panic hook
+        // above needs somewhere for its lines to go.
+        crate::core::hlog_rt::start_drain();
+
         self.finalize_and_init();
         if let Some(ref dup) = self.duplicate_node_name {
             return Err(crate::error::Error::InvalidInput(
@@ -2987,6 +3187,10 @@ impl Scheduler {
         // nodes run on their own dedicated runtime (see AsyncExecutor).
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            // See the same hook in `AsyncExecutor`: the blocking pool is grown
+            // lazily from the calling thread, which by this point is the one
+            // `apply_rt_optimizations` just put on SCHED_FIFO.
+            .on_thread_start(|| super::rt::enter_best_effort("tokio-blocking", 5))
             .build()
             .horus_context("creating scheduler tokio runtime")?;
 
@@ -3005,9 +3209,6 @@ impl Scheduler {
             // `rt.degradations`, which has no clear. The doc comment on
             // `finalize_config` says "Called once from run_with_filter()" —
             // which this call contradicted.
-            self.install_panic_hook();
-            self.setup_signal_handlers();
-
             // Auto-wire network replication if enabled and no manual hook was registered.
             // The `horus` umbrella crate registers the auto-wire function via
             // `set_network_auto_wire()` at import time. This call is a no-op if:
@@ -3232,7 +3433,7 @@ impl Scheduler {
                 // Shared monitors for all executor threads
                 let shared_monitors = super::types::SharedMonitors {
                     profiler: self.monitor.profiler.clone(),
-                    blackbox: self.monitor.blackbox.clone(),
+                    blackbox: self.monitor.blackbox_ring.clone(),
                     verbose: self.pending_config.monitoring.verbose,
                     registry: arc_registry,
                     registry_slots: arc_slots,
@@ -3300,6 +3501,10 @@ impl Scheduler {
                     // the main loop, or synchronise through the data they exchange.
                     let rt_chains: Vec<Vec<super::types::RegisteredNode>> =
                         groups.rt_nodes.into_iter().map(|n| vec![n]).collect();
+
+                    // Before the pool starts, so the very first tick is
+                    // already covered.
+                    self.bound_idle_exit_latency(&rt_chains, &rt_cpus);
 
                     let started = super::rt_executor::RtExecutor::start_pool(
                         rt_chains,
@@ -3466,6 +3671,37 @@ impl Scheduler {
             // kind of thing nobody notices.
             self.tick.next_deadline = Instant::now() + self.effective_tick_period();
 
+            // Persistent lanes for the main-thread ready dispatch.
+            //
+            // Spawned HERE, once, on the loop's own thread — so they inherit
+            // the policy and affinity `finalize_config`'s `RtConfig::apply`
+            // already put this thread in, which is exactly what the per-tick
+            // `crossbeam::scope` gave them, minus the `clone(2)`.
+            //
+            // Only when the loop will actually dispatch in parallel:
+            // deterministic mode runs its steps sequentially and a single-node
+            // graph takes the `execute_single_node` path, so neither should pay
+            // for threads it will never use.
+            if self.nodes.len() > 1
+                && self.dependency_graph.is_some()
+                && !self.pending_config.timing.deterministic_order
+            {
+                self.dispatch = Some(dispatch::ReadyDispatch::new(self.nodes.len()));
+            }
+
+            // The blackbox drain. On the main thread, so it cannot inherit
+            // SCHED_FIFO or the reserved CPU mask, and it is where the
+            // `serde_json` and the `write(2)` that used to run on the tick
+            // threads actually happen.
+            let bb_drain = match (&self.monitor.blackbox_ring, &self.monitor.blackbox) {
+                (Some(ring), Some(bb)) => super::blackbox_ring::start_drain(
+                    std::sync::Arc::clone(ring),
+                    std::sync::Arc::clone(bb),
+                    self.running.clone(),
+                ),
+                _ => None,
+            };
+
             // Main tick loop
             while self.is_running() {
                 if self.should_stop_loop(clock_start, duration) {
@@ -3487,6 +3723,20 @@ impl Scheduler {
 
             // Stop executors and reclaim nodes for shutdown
             self.running.store(false, Ordering::SeqCst);
+
+            // The lanes hold no node and no borrow between ticks, so this is
+            // just a join. `Drop for ReadyDispatch` is the backstop for any
+            // early return above.
+            if let Some(mut d) = self.dispatch.take() {
+                d.shutdown();
+            }
+
+            // `running` is already false, so the drain makes its final pass and
+            // exits. Joined before `finalize_run` so the two cannot interleave
+            // around the stop marker.
+            if let Some(handle) = bb_drain {
+                let _ = handle.join();
+            }
             if let Some(executor) = rt_executor {
                 let rt_nodes = executor.stop();
                 self.nodes.extend(rt_nodes);
@@ -3532,6 +3782,38 @@ impl Scheduler {
         let prev_hook = std::panic::take_hook();
 
         std::panic::set_hook(Box::new(move |info| {
+            // On an RT tick thread, everything below allocates, opens files, or
+            // blocks on a console — and the default hook this chains to
+            // symbolises a backtrace under RUST_BACKTRACE=1, reading
+            // /proc/self/maps and the binary itself. That is the single worst
+            // blocking event reachable from the RT path, and it fires for any
+            // node bug. Queue the facts instead and let the drain do all of it.
+            //
+            // Nothing here allocates: `Location::file()` is `&'static str`, the
+            // downcasts yield references, and the whole thing formats straight
+            // into a ring slot. `HEAD.fetch_add` and the atomic byte stores
+            // cannot panic, so the hook cannot panic inside a panic.
+            if crate::core::hlog_rt::in_rt_thread() {
+                let loc = info.location();
+                let payload: &str = info
+                    .payload()
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| info.payload().downcast_ref::<String>().map(|s| s.as_str()))
+                    .unwrap_or("unknown panic payload");
+                crate::core::hlog::log_fmt(
+                    crate::core::LogType::Error,
+                    format_args!(
+                        "PANIC on RT thread at {}:{}:{}: {}",
+                        loc.map(|l| l.file()).unwrap_or("<unknown>"),
+                        loc.map(|l| l.line()).unwrap_or(0),
+                        loc.map(|l| l.column()).unwrap_or(0),
+                        payload
+                    ),
+                );
+                return;
+            }
+
             // 1. Flush blackbox to disk
             if let Some(ref bb) = blackbox {
                 if let Ok(mut bb) = bb.try_lock() {
@@ -3618,7 +3900,7 @@ impl Scheduler {
             // class with headroom; a graph that stalls several RT threads at
             // once can still exceed it, and is force-exited as before.
             let grace = super::primitives::SHUTDOWN_TIMEOUT_PER_THREAD * 2;
-            std::thread::spawn(move || {
+            let _ = super::rt::spawn_best_effort("horus-force-exit", 0, move || {
                 std::thread::sleep(grace);
                 print_line("Force terminating - cleaning up session...");
                 // Clean up session before forced exit to prevent stale files
@@ -4049,12 +4331,8 @@ impl Scheduler {
                     controls.request_safe_state_all();
                 }
 
-                if let Some(ref bb) = self.monitor.blackbox {
-                    bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                        super::blackbox::BlackBoxEvent::EmergencyStop {
-                            reason: "Safety monitor triggered emergency stop".to_string(),
-                        },
-                    );
+                if let Some(ref ring) = self.monitor.blackbox_ring {
+                    ring.emit_emergency_stop("Safety monitor triggered emergency stop");
                 }
 
                 return true;
@@ -4167,13 +4445,8 @@ impl Scheduler {
             // Log stopped nodes
             let stopped_count = self.nodes.iter().filter(|n| n.is_stopped).count();
             if stopped_count > 0 {
-                if let Some(ref bb) = self.monitor.blackbox {
-                    bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                        super::blackbox::BlackBoxEvent::Custom {
-                            category: "safety".to_string(),
-                            message: format!("{} nodes stopped", stopped_count),
-                        },
-                    );
+                if let Some(ref ring) = self.monitor.blackbox_ring {
+                    ring.emit_custom("safety", &format!("{stopped_count} nodes stopped"));
                 }
             }
         }
@@ -4527,6 +4800,12 @@ impl Scheduler {
         // Record scheduler stop to blackbox and save
         if let Some(ref bb) = self.monitor.blackbox {
             let mut bb = bb.lock().unwrap_or_else(|p| p.into_inner());
+            // Everything the run queued goes in FIRST, in order, ahead of the
+            // stop marker — otherwise the events describing why the run ended
+            // land after the record that it ended.
+            if let Some(ref ring) = self.monitor.blackbox_ring {
+                ring.drain_into(&mut bb);
+            }
             bb.record(super::blackbox::BlackBoxEvent::SchedulerStop {
                 reason: "Normal shutdown".to_string(),
                 total_ticks,
@@ -5072,21 +5351,9 @@ impl Scheduler {
                 ..
             } = self.nodes[i];
             if let Some(recorder) = recorder.as_mut() {
-                if recorder.is_active_tick() {
-                    let subscribers =
-                        crate::communication::topic_node_registry().subscribers_for_node(name);
-                    if !subscribers.is_empty() {
-                        let topics_dir = crate::memory::platform::shm_topics_dir();
-                        for sub in &subscribers {
-                            let topic_path = topics_dir.join(&sub.topic_name);
-                            if let Some(slot_read) =
-                                crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                            {
-                                recorder.record_input(&sub.topic_name, slot_read.payload);
-                            }
-                        }
-                    }
-                }
+                // The registry walk and the topic mappings are cached across
+                // ticks; see `NodeRecorder::capture_inputs`.
+                recorder.capture_inputs(name);
             }
         }
 
@@ -5360,21 +5627,7 @@ impl Scheduler {
                 ..
             } = self.nodes[i];
             if let Some(recorder) = recorder.as_mut() {
-                if recorder.is_active_tick() {
-                    let publishers =
-                        crate::communication::topic_node_registry().publishers_for_node(name);
-                    if !publishers.is_empty() {
-                        let topics_dir = crate::memory::platform::shm_topics_dir();
-                        for pub_topic in &publishers {
-                            let topic_path = topics_dir.join(&pub_topic.topic_name);
-                            if let Some(slot_read) =
-                                crate::communication::read_latest_slot_bytes(&topic_path, 0)
-                            {
-                                recorder.record_output(&pub_topic.topic_name, slot_read.payload);
-                            }
-                        }
-                    }
-                }
+                recorder.capture_outputs(name);
             }
         }
 
@@ -5552,13 +5805,11 @@ impl Scheduler {
                     }
 
                     // Record in blackbox
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                            super::blackbox::BlackBoxEvent::BudgetViolation {
-                                name: node_name.to_string(),
-                                budget_us: violation.budget().as_micros() as u64,
-                                actual_us: violation.actual().as_micros() as u64,
-                            },
+                    if let Some(ref ring) = self.monitor.blackbox_ring {
+                        ring.emit_budget_violation(
+                            &node_name,
+                            violation.budget().as_micros() as u64,
+                            violation.actual().as_micros() as u64,
                         );
                     }
 
@@ -5635,13 +5886,11 @@ impl Scheduler {
                     }
 
                     // Record in blackbox
-                    if let Some(ref bb) = self.monitor.blackbox {
-                        bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                            super::blackbox::BlackBoxEvent::DeadlineMiss {
-                                name: node_name.to_string(),
-                                deadline_us: dm.deadline.as_micros() as u64,
-                                actual_us: dm.elapsed.as_micros() as u64,
-                            },
+                    if let Some(ref ring) = self.monitor.blackbox_ring {
+                        ring.emit_deadline_miss(
+                            &node_name,
+                            dm.deadline.as_micros() as u64,
+                            dm.elapsed.as_micros() as u64,
                         );
                     }
 
@@ -5878,14 +6127,8 @@ impl Scheduler {
         // The flight recorder previously had no NodeError call site outside
         // blackbox.rs's own tests, so a crash — the one thing it exists to
         // capture — left behind only budget and deadline events.
-        if let Some(ref bb) = self.monitor.blackbox {
-            bb.lock().unwrap_or_else(|p| p.into_inner()).record(
-                super::blackbox::BlackBoxEvent::NodeError {
-                    name: node_name.to_string(),
-                    error: error_msg.clone(),
-                    severity: crate::error::Severity::Fatal,
-                },
-            );
+        if let Some(ref ring) = self.monitor.blackbox_ring {
+            ring.emit_node_error(&node_name, &error_msg, crate::error::Severity::Fatal);
         }
 
         let registered = &mut self.nodes[i];
@@ -6036,221 +6279,113 @@ impl Scheduler {
     ///
     /// Uses crossbeam::scope for safe parallel execution with borrowed data.
     fn execute_ready_dispatch(&mut self, node_filter: Option<&[&str]>) {
-        let graph = match self.dependency_graph {
-            Some(ref g) => g,
-            None => return,
-        };
-
         let n = self.nodes.len();
-        if n == 0 {
+        if n == 0 || self.dependency_graph.is_none() {
             return;
         }
 
-        let successors: Vec<Vec<usize>> = graph.successors().to_vec();
-        let initial_dep_counts: Vec<usize> = graph.dep_counts().to_vec();
-
-        // Determine which nodes should tick this cycle.
-        // Nodes that are skipped (stopped, rate-limited, etc.) need their
-        // successors' pending counts adjusted as if they completed.
-        let mut should_tick = vec![false; n];
-        for i in 0..n {
-            should_tick[i] = self.should_tick_node(i, node_filter);
+        // Determine which nodes should tick this cycle. A skipped node
+        // (stopped, rate-limited) has its successors' counts adjusted as if it
+        // had completed.
+        let mut should_tick = std::mem::take(&mut self.dispatch_should_tick);
+        should_tick.clear();
+        should_tick.resize(n, false);
+        for (i, slot) in should_tick.iter_mut().enumerate() {
+            *slot = self.should_tick_node(i, node_filter);
         }
 
-        // Prepare all ticking nodes sequentially (needs &mut self for replay, recording)
+        // Prepare sequentially: needs &mut self for replay and recording.
         for i in 0..n {
             if should_tick[i] {
                 self.prepare_node_tick(i);
             }
         }
 
-        // Set up per-node context info needed during tick.
-        // We pre-compute this sequentially because it reads from self.clock.
-        struct NodeTickContext {
-            tick_number: u64,
-            node_name: std::sync::Arc<str>,
-            node_dt: Duration,
-            sim_time: Duration,
-            tick_start_ci: crate::core::clock::ClockInstant,
-            tick_budget: Option<Duration>,
+        // Per-node context, computed here because it reads self.clock.
+        //
+        // The lanes are created before the loop starts, so this is normally a
+        // no-op. It creates them rather than returning because the alternative
+        // failure mode — a caller reaching this function without a pool — would
+        // be nodes silently ceasing to tick, and a control loop must not have a
+        // way to stop running that produces no error.
+        if self.dispatch.is_none() {
+            self.dispatch = Some(dispatch::ReadyDispatch::new(n));
         }
-
-        let mut tick_contexts: Vec<Option<NodeTickContext>> = Vec::with_capacity(n);
-        for i in 0..n {
-            if should_tick[i] {
-                let registered = &mut self.nodes[i];
-                if let Some(ref mut context) = registered.context {
-                    context.start_tick();
-                    let tick_number = context.metrics().total_ticks();
-                    let node_dt = registered
-                        .rate_hz
-                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
-                        .unwrap_or(self.tick.period);
-                    tick_contexts.push(Some(NodeTickContext {
-                        tick_number,
-                        node_name: registered.name.clone(),
-                        node_dt,
-                        sim_time: self.clock.elapsed(),
-                        tick_start_ci: self.clock.now(),
-                        tick_budget: registered.tick_budget,
-                    }));
-                } else {
-                    tick_contexts.push(None);
-                    should_tick[i] = false;
-                }
-            } else {
-                tick_contexts.push(None);
-            }
-        }
-
-        // Adjusted pending counts: skip non-ticking nodes by treating them as
-        // already completed (their successors don't wait for them).
-        let mut pending: Vec<std::sync::atomic::AtomicUsize> = Vec::with_capacity(n);
-        for i in 0..n {
-            let count = initial_dep_counts[i];
-            pending.push(std::sync::atomic::AtomicUsize::new(count));
-        }
-
-        // Propagate skipped nodes: if a node won't tick, decrement its successors
+        self.dispatch
+            .as_mut()
+            .expect("created immediately above")
+            .reset_contexts(n);
         for i in 0..n {
             if !should_tick[i] {
-                for &succ in &successors[i] {
-                    pending[succ].fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
+            let period = self.tick.period;
+            let sim_time = self.clock.elapsed();
+            let tick_start_ci = self.clock.now();
+            let registered = &mut self.nodes[i];
+            let ctx = registered.context.as_mut().map(|context| {
+                context.start_tick();
+                dispatch::NodeTickContext {
+                    tick_number: context.metrics().total_ticks(),
+                    node_name: registered.name.clone(),
+                    node_dt: registered
+                        .rate_hz
+                        .map(|hz| Duration::from_secs_f64(1.0 / hz))
+                        .unwrap_or(period),
+                    sim_time,
+                    tick_start_ci,
+                    tick_budget: registered.tick_budget,
                 }
+            });
+            if ctx.is_none() {
+                should_tick[i] = false;
+            }
+            self.dispatch
+                .as_mut()
+                .expect("checked above")
+                .set_context(i, ctx);
+        }
+
+        // The graph's own vectors, borrowed rather than cloned. These used to
+        // be `graph.successors().to_vec()` and `graph.dep_counts().to_vec()` —
+        // a deep clone of a `Vec<Vec<usize>>`, so 1 + n heap allocations every
+        // tick, purely to release the borrow before the `&mut self` calls
+        // above. Doing the preparation first means the borrow can simply be
+        // taken last and held across the dispatch.
+        let graph = self
+            .dependency_graph
+            .as_ref()
+            .expect("checked at entry, and nothing above rebuilds it");
+        let successors = graph.successors();
+        let dep_counts = graph.dep_counts();
+
+        let nodes_ptr = self.nodes.as_mut_ptr();
+        let clock_ptr = &*self.clock as *const dyn crate::core::clock::Clock;
+
+        let mut results = std::mem::take(&mut self.dispatch_results);
+        results.clear();
+        {
+            let disp = self.dispatch.as_mut().expect("checked above");
+            // SAFETY: `nodes_ptr` addresses `self.nodes`, which has `n` entries
+            // and is borrowed for the whole call; `clock_ptr` addresses
+            // `self.clock`, which lives as long as the scheduler. `run` returns
+            // only once every dispatched job has reported — its `Barrier`
+            // enforces that even on an unwind — so no lane can outlive either
+            // borrow.
+            unsafe {
+                disp.run(
+                    successors,
+                    dep_counts,
+                    &should_tick,
+                    nodes_ptr,
+                    clock_ptr,
+                    &mut results,
+                );
             }
         }
 
-        // Channel for ready-dispatch coordination
-        let (ready_tx, ready_rx) = crossbeam::channel::unbounded::<usize>();
-
-        // Seed: all ticking nodes with adjusted pending == 0
-        for i in 0..n {
-            if should_tick[i] && pending[i].load(std::sync::atomic::Ordering::Relaxed) == 0 {
-                let _ = ready_tx.send(i);
-            }
-        }
-
-        // Count how many nodes need to complete
-        let total_to_tick: usize = should_tick.iter().filter(|&&b| b).count();
-        if total_to_tick == 0 {
-            return;
-        }
-
-        // Results collected from parallel ticks
-        struct TickOutput {
-            index: usize,
-            tick_start: Instant,
-            duration: Duration,
-            result: std::thread::Result<()>,
-        }
-
-        // SAFETY wrappers for raw pointers that need to cross thread boundaries.
-        // crossbeam::scope guarantees all threads join before the borrow ends,
-        // so the pointed-to data is alive for the entire scope.
-        struct SendNodePtr(*mut super::types::RegisteredNode);
-        unsafe impl Send for SendNodePtr {}
-        unsafe impl Sync for SendNodePtr {}
-
-        struct SendClockPtr(*const dyn crate::core::clock::Clock);
-        unsafe impl Send for SendClockPtr {}
-        unsafe impl Sync for SendClockPtr {}
-
-        let (results_tx, results_rx) = crossbeam::channel::unbounded::<TickOutput>();
-
-        // Determine worker count: min(total_to_tick, available_parallelism)
-        let num_workers = total_to_tick.min(
-            std::thread::available_parallelism()
-                .map(|p| p.get())
-                .unwrap_or(4),
-        );
-
-        let nodes_ptr = SendNodePtr(self.nodes.as_mut_ptr());
-        let clock_ptr = SendClockPtr(&*self.clock as *const dyn crate::core::clock::Clock);
-        let completed = std::sync::atomic::AtomicUsize::new(0);
-
-        crossbeam::scope(|s| {
-            for _ in 0..num_workers {
-                let ready_rx = &ready_rx;
-                let ready_tx = &ready_tx;
-                let pending = &pending;
-                let successors = &successors;
-                let should_tick = &should_tick;
-                let tick_contexts = &tick_contexts;
-                let completed = &completed;
-                let results_tx = &results_tx;
-                let nodes_ptr = &nodes_ptr;
-                let clock_ptr = &clock_ptr;
-
-                s.spawn(move |_| {
-                    loop {
-                        if completed.load(std::sync::atomic::Ordering::Acquire) >= total_to_tick {
-                            break;
-                        }
-
-                        let i = match ready_rx.recv_timeout(Duration::from_millis(1)) {
-                            Ok(i) => i,
-                            Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
-                            Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
-                        };
-
-                        // Set up thread-local node context for this tick
-                        if let Some(ref ctx) = tick_contexts[i] {
-                            set_node_context(&ctx.node_name, ctx.tick_number);
-                            // SAFETY: clock_ptr points to self.clock which lives for
-                            // the entire crossbeam scope.
-                            let clock_ref: &dyn crate::core::clock::Clock =
-                                unsafe { &*clock_ptr.0 };
-                            set_tick_context(
-                                &ctx.node_name,
-                                ctx.tick_number,
-                                clock_ref,
-                                ctx.node_dt,
-                                ctx.sim_time,
-                                ctx.tick_start_ci,
-                                ctx.tick_budget,
-                            );
-                        }
-
-                        // SAFETY: Each node index is dispatched exactly once.
-                        // No two threads access the same node simultaneously.
-                        let node_ref = unsafe { &mut *nodes_ptr.0.add(i) };
-                        let tr = super::primitives::NodeRunner::run_tick(&mut node_ref.node);
-
-                        clear_tick_context();
-                        clear_node_context();
-
-                        let _ = results_tx.send(TickOutput {
-                            index: i,
-                            tick_start: tr.tick_start,
-                            duration: tr.duration,
-                            result: tr.result,
-                        });
-
-                        // Notify successors: decrement their pending count.
-                        // When a successor's count hits zero, dispatch it.
-                        for &succ in &successors[i] {
-                            if !should_tick[succ] {
-                                continue;
-                            }
-                            let prev =
-                                pending[succ].fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-                            if prev == 1 {
-                                let _ = ready_tx.send(succ);
-                            }
-                        }
-
-                        completed.fetch_add(1, std::sync::atomic::Ordering::Release);
-                    }
-                });
-            }
-        })
-        .expect("ready-dispatch crossbeam scope panicked");
-
-        // Drop the send-side so results_rx doesn't block
-        drop(results_tx);
-
-        // Process all tick results sequentially (needs &mut self for profiling etc.)
-        for output in results_rx.try_iter() {
+        // Process results sequentially: needs &mut self for profiling.
+        for output in results.drain(..) {
             self.process_tick_result(
                 output.index,
                 output.tick_start,
@@ -6258,6 +6393,10 @@ impl Scheduler {
                 output.result,
             );
         }
+
+        // Put the scratch back so the next tick reuses its capacity.
+        self.dispatch_results = results;
+        self.dispatch_should_tick = should_tick;
     }
 }
 

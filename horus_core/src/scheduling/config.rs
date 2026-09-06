@@ -74,6 +74,14 @@ pub struct RecordingConfigYaml {
     pub compress: bool,
     /// Recording interval in ticks (1 = every tick)
     pub interval: u32,
+    /// Keep at most this many snapshots per node, dropping the oldest.
+    ///
+    /// `0` disables the ring. It was hardcoded to 0 in the conversion to
+    /// `RecordingConfig` with a comment saying it was "not yet exposed in
+    /// YAML", so the only bound a long run could have was `max_size_mb` —
+    /// which disables the recorder outright when it trips, rather than keeping
+    /// the most recent history, and was itself 0 on the default path.
+    pub max_snapshots: usize,
     /// Base directory for recordings (default: ~/.horus/recordings)
     pub output_dir: Option<String>,
     /// Maximum recording size in MB (0 = unlimited)
@@ -97,6 +105,7 @@ impl Default for RecordingConfigYaml {
             session_name: None,
             compress: true,
             interval: 1,
+            max_snapshots: 0,
             output_dir: None,
             max_size_mb: 0,
             include_nodes: vec![],
@@ -113,6 +122,25 @@ impl RecordingConfigYaml {
     pub fn full() -> Self {
         Self {
             enabled: true,
+            // Explicitly bounded, and NOT inherited from `Default`'s 0.
+            //
+            // `full()` is what both `.with_recording()` and
+            // `HORUS_RECORD_SESSION` use, so it is the configuration every
+            // `horus run --record` session actually gets — and 0 means
+            // unlimited, so the one path an operator reaches for was hardwired
+            // to record every tick, forever, into RAM. Overridable with
+            // HORUS_RECORD_MAX_MB.
+            max_size_mb: std::env::var("HORUS_RECORD_MAX_MB")
+                .ok()
+                .and_then(|s| s.trim().parse::<usize>().ok())
+                .unwrap_or(512),
+            // Same reasoning: `--record` could set neither the interval nor a
+            // cap, so a debugging session recorded at full rate by construction.
+            interval: std::env::var("HORUS_RECORD_INTERVAL")
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(1)
+                .max(1),
             ..Default::default()
         }
     }
@@ -241,6 +269,7 @@ mod tests {
                         session_name: None,
                         compress,
                         interval,
+                        max_snapshots: 0,
                         output_dir: None,
                         max_size_mb: max_size,
                         include_nodes: vec![],
@@ -839,6 +868,7 @@ mod tests {
                 session_name: Some(String::new()),
                 compress: true,
                 interval: u32::MAX,
+                max_snapshots: usize::MAX,
                 output_dir: Some(String::new()),
                 max_size_mb: usize::MAX,
                 include_nodes: vec![],
@@ -1123,15 +1153,25 @@ mod tests {
     }
 
     #[test]
-    fn recording_config_full_inherits_defaults_except_enabled() {
+    fn recording_config_full_is_bounded_and_otherwise_inherits_defaults() {
         let full = RecordingConfigYaml::full();
         let default = RecordingConfigYaml::default();
-        // full() should only differ from default() in `enabled`
         assert!(full.enabled);
         assert!(!default.enabled);
+
+        // This used to assert `full.max_size_mb == default.max_size_mb`, i.e.
+        // 0 — unlimited. `full()` is what both `.with_recording()` and
+        // `HORUS_RECORD_SESSION` use, so it is the configuration every
+        // `horus run --record` session gets, and it recorded every tick into
+        // RAM with no bound at all. That is the defect, so the test that
+        // pinned it had to change with it.
+        assert!(
+            full.max_size_mb > 0,
+            "the default recording session must be bounded"
+        );
+        assert!(full.interval >= 1);
+
         assert_eq!(full.compress, default.compress);
-        assert_eq!(full.interval, default.interval);
-        assert_eq!(full.max_size_mb, default.max_size_mb);
         assert_eq!(full.record_inputs, default.record_inputs);
         assert_eq!(full.record_outputs, default.record_outputs);
         assert_eq!(full.record_timing, default.record_timing);
@@ -1155,9 +1195,15 @@ mod tests {
         assert!(!minimal.record_timing);
         // Minimal has larger interval (less frequent)
         assert!(minimal.interval > full.interval);
-        // Minimal has a size cap
+        // BOTH have a size cap now. `full` used to be `0` — unlimited — which
+        // meant the one configuration an operator actually reaches for was the
+        // only one with no bound.
         assert!(minimal.max_size_mb > 0);
-        assert_eq!(full.max_size_mb, 0);
+        assert!(full.max_size_mb > 0);
+        assert!(
+            minimal.max_size_mb < full.max_size_mb,
+            "minimal must still be the smaller of the two"
+        );
     }
 
     #[test]

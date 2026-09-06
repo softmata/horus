@@ -54,10 +54,10 @@ impl AsyncExecutor {
     ) -> Self {
         nodes.sort_by_key(|n| n.priority);
 
-        let handle = std::thread::Builder::new()
-            .name("horus-async-io".to_string())
-            .spawn(move || Self::async_thread_main(nodes, running, tick_period, monitors))
-            .expect("Failed to spawn async I/O thread");
+        let handle = crate::scheduling::rt::spawn_best_effort("horus-async-io", 0, move || {
+            Self::async_thread_main(nodes, running, tick_period, monitors)
+        })
+        .expect("Failed to spawn async I/O thread");
 
         Self {
             handle: Some(handle),
@@ -106,6 +106,14 @@ impl AsyncExecutor {
     ) -> Vec<RegisteredNode> {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_time()
+            // `spawn_blocking` grows its pool lazily, at runtime, from whichever
+            // thread is executing the runtime — so without this hook the first
+            // slow async node materialises a pool thread at SCHED_FIFO on the
+            // reserved core, minutes into a run, with nothing in the logs.
+            // `on_thread_start` is copied by the blocking pool even for a
+            // current-thread runtime, and would cover worker threads too if
+            // `rt-multi-thread` were ever enabled for this crate.
+            .on_thread_start(|| crate::scheduling::rt::enter_best_effort("tokio-blocking", 5))
             .build()
         {
             Ok(rt) => rt,
@@ -174,7 +182,9 @@ impl AsyncExecutor {
                         ctx.start_tick();
                     }
                     if let Some(ref mut recorder) = nodes[i].recorder {
-                        recorder.begin_tick(0);
+                        // No global tick counter on this thread; a literal 0 made `interval`
+                        // inert and stamped every snapshot with tick 0.
+                        recorder.begin_next_tick();
                     }
                 }
 
@@ -358,14 +368,8 @@ impl AsyncExecutor {
 
                 // Record to the blackbox so the flight recorder can see a crash.
                 // try_lock mirrors the RT path: never block an executor on it.
-                if let Some(ref bb) = monitors.blackbox {
-                    if let Ok(mut bb) = bb.try_lock() {
-                        bb.record(super::blackbox::BlackBoxEvent::NodeError {
-                            name: node.name.to_string(),
-                            error: error_msg.clone(),
-                            severity: crate::error::Severity::Fatal,
-                        });
-                    }
+                if let Some(ref ring) = monitors.blackbox {
+                    ring.emit_node_error(&node.name, &error_msg, crate::error::Severity::Fatal);
                 }
 
                 // `record_tick_failure` above already logged this at error level, which

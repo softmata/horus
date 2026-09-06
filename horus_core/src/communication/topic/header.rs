@@ -1359,6 +1359,20 @@ impl std::ops::Deref for TopicRegion {
     }
 }
 
+/// Topic regions mapped since process start.
+///
+/// The test seam for the recorder's per-tick mapping storm: on Linux each map
+/// is an `openat` + `statx` + `mmap`, each unmap a `munmap` + `close`, and the
+/// PTEs go with it, so the header and payload pages fault back in next tick.
+/// Counting the maps is exact and needs no quiet machine, unlike timing them.
+static SHM_MAP_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Topic regions mapped since process start. Monotonic.
+#[doc(hidden)]
+pub fn shm_map_count() -> u64 {
+    SHM_MAP_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Map a topic's shared region read-only, or `None` when it is absent, too
 /// small to hold a header, or unmappable.
 ///
@@ -1378,10 +1392,20 @@ fn map_topic_region(path: &std::path::Path) -> Option<TopicRegion> {
         }
         // SAFETY: the file is opened read-only; the mapping is read-only.
         let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+        // Counted HERE, not at entry. The counter is the evidence for "the
+        // reader maps once and keeps it" and a caller polling a topic that does
+        // not exist yet fails `File::open` on every attempt — counting those
+        // would report a per-tick remap storm that never happened, which is the
+        // exact claim this number is used to refute.
+        SHM_MAP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Some(TopicRegion::Mapped(mmap));
     }
 
-    open_named_section(path)
+    let section = open_named_section(path);
+    if section.is_some() {
+        SHM_MAP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    section
 }
 
 /// Open the Windows named section a topic path refers to.
@@ -1459,7 +1483,140 @@ fn read_slot_inner(
     // ── 1. Map the topic's shared region ─────────────────────────────────────
     // File-backed on Linux/macOS, a named section on Windows; either way at
     // least TOPIC_HEADER_SIZE bytes, which is what everything below assumes.
-    let mmap = map_topic_region(path)?;
+    read_slot_from_region(&map_topic_region(path)?, last_write_idx, ordinal)
+}
+
+// ── A topic reader that keeps its mapping ───────────────────────────────
+//
+// `read_latest_slot_bytes` maps the topic, reads one slot, and unmaps. That is
+// the right shape for a one-shot CLI read and the wrong one for a recorder,
+// which asks the same question about the same topic every tick: on Linux it is
+// openat + statx + mmap + munmap + close per topic per node per tick, plus at
+// least two minor faults, because tearing down the mapping tears down its PTEs
+// and the header and payload pages fault back in on the next tick.
+
+/// A topic's shared region, mapped once and kept.
+///
+/// Reuses `read_slot_from_region` rather than forking it, so a cached read
+/// runs exactly the same validated parser as a one-shot read. These files are
+/// read across namespaces and are not trusted input; one validated path is the
+/// whole reason that function was extracted rather than duplicated.
+pub struct TopicReader {
+    path: std::path::PathBuf,
+    region: Option<TopicRegion>,
+    /// The `migration_epoch` observed when `region` was mapped. A producer that
+    /// migrates the topic to a different backend bumps it, and the mapping this
+    /// reader holds is then stale.
+    epoch: u64,
+    /// Whether a read has ever succeeded. Distinguishes "this topic has no data
+    /// yet" — where a remap would be pure cost, once per tick, forever — from
+    /// "this mapping went stale", which is worth one retry.
+    ever_read: bool,
+}
+
+impl TopicReader {
+    /// Bind to a topic path. Maps nothing: the topic may not exist yet, and a
+    /// recorder is built before the graph has published anything.
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            region: None,
+            epoch: 0,
+            ever_read: false,
+        }
+    }
+
+    /// Whether a mapping is currently held.
+    pub fn is_mapped(&self) -> bool {
+        self.region.is_some()
+    }
+
+    fn remap(&mut self) -> bool {
+        // Drop first: holding two mappings of the same region while the old one
+        // is replaced doubles the peak VMA count for no reason.
+        self.region = None;
+        match map_topic_region(&self.path) {
+            Some(region) => {
+                self.epoch = Self::epoch_of(&region);
+                self.region = Some(region);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Read `migration_epoch` out of a mapped header.
+    fn epoch_of(region: &TopicRegion) -> u64 {
+        let bytes: &[u8] = region;
+        if bytes.len() < TOPIC_HEADER_SIZE {
+            return 0;
+        }
+        // SAFETY: `map_topic_region` guarantees at least TOPIC_HEADER_SIZE
+        // bytes, and `migration_epoch`'s offset is inside the header.
+        unsafe {
+            std::ptr::read_unaligned(
+                bytes.as_ptr().add(offset_of!(TopicHeader, migration_epoch)) as *const u64
+            )
+        }
+    }
+
+    /// The newest slot, reusing the held mapping where it is still valid.
+    pub fn read_latest(&mut self, last_write_idx: u64) -> Option<TopicSlotRead> {
+        if self.region.is_none() && !self.remap() {
+            return None;
+        }
+
+        // A migration replaces the backing region, so a mapping taken before it
+        // addresses the old one. The epoch is the producer's announcement that
+        // this happened; it is one relaxed read out of a page already resident.
+        let stale = self
+            .region
+            .as_ref()
+            .is_some_and(|r| Self::epoch_of(r) != self.epoch);
+        if stale && !self.remap() {
+            return None;
+        }
+
+        let read = self
+            .region
+            .as_ref()
+            .and_then(|r| read_slot_from_region(r, last_write_idx, None));
+        if read.is_some() {
+            self.ever_read = true;
+            return read;
+        }
+
+        // A topic grown with `ftruncate` presents to a stale short mapping as a
+        // failed length check rather than as an out-of-bounds read — the
+        // validation rejects it, which is correct and is why this is a recovery
+        // and not a safety fix. Retry exactly once, and only for a topic that
+        // has produced data before: an idle topic must not pay a remap every
+        // tick forever.
+        if self.ever_read && self.remap() {
+            return self
+                .region
+                .as_ref()
+                .and_then(|r| read_slot_from_region(r, last_write_idx, None));
+        }
+        None
+    }
+}
+
+/// Parse one slot out of an ALREADY-MAPPED region.
+///
+/// Split out from [`read_slot_inner`] so a reader that keeps its mapping — see
+/// [`TopicReader`] — runs exactly the same validated parser as a one-shot read
+/// rather than a second copy of it. These files are read across namespaces and
+/// are not trusted input, so there is one validated path; forking it to add a
+/// caching reader would have made two.
+///
+/// `mmap` must be at least `TOPIC_HEADER_SIZE` bytes, which is what
+/// [`map_topic_region`] guarantees and what every offset below assumes.
+fn read_slot_from_region(
+    mmap: &[u8],
+    last_write_idx: u64,
+    ordinal: Option<u64>,
+) -> Option<TopicSlotRead> {
     let base: *const u8 = mmap.as_ptr();
 
     // ── 2. Validate magic ─────────────────────────────────────────────────────
@@ -1577,7 +1734,7 @@ fn read_slot_inner(
     // best cursor available for it.
     let write_idx = if head > 0
         && slot_stamp(
-            &mmap,
+            mmap,
             capacity,
             ((head - 1) as usize) & cap_mask,
             is_pod,

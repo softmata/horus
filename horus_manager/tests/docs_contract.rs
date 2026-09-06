@@ -760,6 +760,103 @@ fn env_names_matching(
     }
 }
 
+/// Names reached through a `const`, rather than written as a literal at the
+/// call site.
+///
+/// The literal scanners above see `env::var("HORUS_X")` and nothing else, so
+/// the idiomatic way to name a variable —
+///
+/// ```ignore
+/// pub const SEND_RETRY_BUDGET_ENV: &str = "HORUS_SEND_RETRY_BUDGET_US";
+/// std::env::var(SEND_RETRY_BUDGET_ENV)
+/// ```
+///
+/// — was invisible to them. That is not a hypothetical: `HORUS_WIN_REALTIME_CLASS`
+/// and `HORUS_SEND_RETRY_BUDGET_US` were both added behind a `const`, both are
+/// operator-facing knobs, and both passed this test while absent from the page.
+/// A guard blind to the tidier of two spellings mostly proves that people write
+/// the untidy one.
+///
+/// Declaration and use must be in the same file. A `const` exported and read
+/// from another crate would still be missed; every current site is local, and
+/// resolving across files needs a symbol table this test has no business
+/// growing.
+fn const_env_names(src: &str, skip: &[(usize, usize)], out: &mut Vec<(String, usize)>) {
+    // `const NAME: &str = "HORUS_..."` / `static NAME: &str = "HORUS_..."`.
+    let mut consts: Vec<(String, String)> = Vec::new();
+    for line in src.lines() {
+        let t = line.trim_start();
+        let t = t
+            .strip_prefix("pub(crate) ")
+            .or_else(|| t.strip_prefix("pub(super) "))
+            .unwrap_or(t);
+        let t = t.strip_prefix("pub ").unwrap_or(t);
+        let Some(rest) = t
+            .strip_prefix("const ")
+            .or_else(|| t.strip_prefix("static "))
+        else {
+            continue;
+        };
+        let Some((ident, tail)) = rest.split_once(':') else {
+            continue;
+        };
+        let ident = ident.trim();
+        if ident.is_empty()
+            || !ident
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            continue;
+        }
+        let Some((ty, value)) = tail.split_once('=') else {
+            continue;
+        };
+        if !ty.contains("str") {
+            continue;
+        }
+        let value = value.trim();
+        let Some(v) = value.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = v.find('"') else { continue };
+        let name = &v[..end];
+        if name.starts_with("HORUS_")
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        {
+            consts.push((ident.to_string(), name.to_string()));
+        }
+    }
+
+    for (ident, name) in consts {
+        for pat in [
+            "env::var(",
+            "env::var_os(",
+            "env::set_var(",
+            ".env(",
+            "env.insert(",
+        ] {
+            for (idx, _) in src.match_indices(pat) {
+                // Tolerate whitespace between the call and the identifier, the
+                // same way `env_names_matching` tolerates it before the quote:
+                // `env::var( SEND_RETRY_BUDGET_ENV )` is the same call.
+                let after = src[idx + pat.len()..].trim_start();
+                let arg_end = after
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(after.len());
+                if after[..arg_end] != ident {
+                    continue;
+                }
+                if skip.iter().any(|(a, b)| idx >= *a && idx <= *b) {
+                    continue;
+                }
+                out.push((name.clone(), idx));
+            }
+        }
+    }
+}
+
 /// Everything a user can observe: names HORUS reads, and names HORUS sets in a
 /// child process's environment.
 ///
@@ -825,6 +922,9 @@ fn environment_surface(repo: &Path) -> EnvSurface {
                     env_names_matching(&body, "env::set_var(", &skip, &mut hits);
                     env_names_matching(&body, ".env(", &skip, &mut hits);
                     env_names_matching(&body, "env.insert(", &skip, &mut hits);
+                    // Named through a `const`, which the literal scanners above
+                    // cannot see.
+                    const_env_names(&body, &skip, &mut hits);
                 }
                 "cpp" | "cc" | "hpp" | "h" if !in_tests => {
                     env_names_matching(&body, "getenv(", &[], &mut hits);
@@ -911,12 +1011,14 @@ fn every_environment_variable_is_in_the_reference_page() {
          is vacuous",
         surface.sites.len()
     );
-    // The four scanners must each find something. Losing one silently is how
-    // `install.sh` and the whole "set by HORUS" direction went unchecked.
+    // Each scanner must find something. Losing one silently is how
+    // `install.sh` and the whole "set by HORUS" direction went unchecked,
+    // and how every `const`-named variable went unchecked after that.
     for (what, probe) in [
         ("rust reads", "HORUS_NET_PORT"),
         ("rust sets", "HORUS_NODE_FILE"),
         ("shell", "HORUS_BUILD_FROM_SOURCE"),
+        ("rust const", "HORUS_SEND_RETRY_BUDGET_US"),
     ] {
         assert!(
             surface.sites.contains_key(probe),

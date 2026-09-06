@@ -153,12 +153,10 @@ pub fn start_replicator(config: NetConfig) -> Option<ReplicatorHandle> {
 
     let running = rep.running_flag();
 
-    let handle = std::thread::Builder::new()
-        .name("horus-net".into())
-        .spawn(move || {
-            rep.run();
-        })
-        .ok()?;
+    let handle = horus_core::scheduling::spawn_best_effort("horus-net", 0, move || {
+        rep.run();
+    })
+    .ok()?;
 
     Some(ReplicatorHandle {
         running,
