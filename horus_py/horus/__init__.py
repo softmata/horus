@@ -760,7 +760,11 @@ class Node:
                             f"but it was declared as a bare string in subs=, which "
                             f"means an untyped MessagePack topic. Those cannot share "
                             f"a name. Declare the type: "
-                            f"subs=[Sub({topic!r}, {ring_type})]"
+                            f"subs=[Sub({topic!r}, {ring_type})] "
+                            f"-- {ring_type} is a class, so import it first "
+                            f"(from horus import {ring_type}). If this build has "
+                            f"no {ring_type}, the ring was written by a peer with "
+                            f"a message type this install does not carry."
                         )
 
             if msg_type is not None:
