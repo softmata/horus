@@ -487,6 +487,56 @@ pub(super) fn can_set_rt_priority() -> bool {
     }
 }
 
+/// What a `sched_getscheduler` result means for a demotion.
+struct PolicyRead {
+    /// Reported as-is on `BestEffortReport::prior_policy`.
+    prior_policy: libc::c_int,
+    /// Whether issuing `sched_setscheduler` could accomplish anything.
+    actionable: bool,
+    /// An errno worth reporting, as distinct from one that is not our problem.
+    refusal: Option<i32>,
+}
+
+/// Classify a `sched_getscheduler` return value, separated from the syscall so
+/// the musl case can be tested on glibc — where the stub it exists for cannot
+/// be reproduced.
+///
+/// musl does not wire `sched_getscheduler`/`sched_setscheduler` to the kernel at
+/// all: both are stubs returning `ENOSYS`. That is a property of the libc, not
+/// of the kernel and not of privilege — such a libc exposes exactly one
+/// scheduling class, every thread is already in it, and there is nothing to
+/// demote.
+///
+/// Masking the stub's `-1` through `policy_of` instead produced
+/// `prior_policy: -1073741825`, which is not `SCHED_OTHER`, so the demotion was
+/// attempted, failed with `ENOSYS`, and was recorded as a `refusal`. An Alpine
+/// operator reading that goes hunting a `CAP_SYS_NICE` problem that does not
+/// exist.
+///
+/// Only `ENOSYS` is absolved. `sched_getscheduler(0)` reads the caller's own
+/// policy and has no permission check, so any other errno is genuinely
+/// surprising and is reported rather than swallowed.
+fn classify_policy_read(raw: libc::c_int, errno: Option<i32>) -> PolicyRead {
+    if raw >= 0 {
+        return PolicyRead {
+            prior_policy: policy_of(raw),
+            actionable: true,
+            refusal: None,
+        };
+    }
+    PolicyRead {
+        // There is one class on such a libc and this thread is in it, which is
+        // what `SCHED_OTHER` says. It is also what the field documents for
+        // platforms that have no policies at all.
+        prior_policy: libc::SCHED_OTHER,
+        actionable: false,
+        refusal: match errno {
+            Some(libc::ENOSYS) => None,
+            other => other,
+        },
+    }
+}
+
 /// Put the calling thread on the ordinary time-shared class and give it back
 /// the helper CPU set.
 ///
@@ -495,13 +545,24 @@ pub(super) fn can_set_rt_priority() -> bool {
 /// issues ZERO syscalls beyond the two reads. That is what makes the
 /// syscall-count test meaningful.
 pub(super) fn set_best_effort_class(nice_increment: i32, target: &[usize]) -> BestEffortReport {
+    // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+    let raw_policy = unsafe { libc::sched_getscheduler(0) };
+    let errno = (raw_policy < 0)
+        .then(|| std::io::Error::last_os_error().raw_os_error())
+        .flatten();
+    let PolicyRead {
+        prior_policy,
+        actionable: policy_is_actionable,
+        refusal: read_refusal,
+    } = classify_policy_read(raw_policy, errno);
+
     let mut report = BestEffortReport {
-        // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
-        prior_policy: policy_of(unsafe { libc::sched_getscheduler(0) }),
+        prior_policy,
+        refusal: read_refusal,
         ..BestEffortReport::default()
     };
 
-    if report.prior_policy != libc::SCHED_OTHER {
+    if policy_is_actionable && report.prior_policy != libc::SCHED_OTHER {
         // SAFETY: `sched_param` is a POD struct of integer fields for which
         // all-zero is a valid bit pattern. It is zeroed rather than
         // literal-constructed because musl carries four extra sporadic-server
@@ -516,7 +577,9 @@ pub(super) fn set_best_effort_class(nice_increment: i32, target: &[usize]) -> Be
         if rc == 0 {
             report.policy_changed = true;
         } else {
-            report.refusal = std::io::Error::last_os_error().raw_os_error();
+            report.refusal = report
+                .refusal
+                .or(std::io::Error::last_os_error().raw_os_error());
         }
     }
 
@@ -1798,6 +1861,74 @@ CONFIG_PREEMPT_DYNAMIC=y
         assert!(!cs.describe().is_empty());
     }
 
+    /// The Alpine failure, reproduced on glibc.
+    ///
+    /// musl's `sched_getscheduler` stub cannot be produced on this host, so the
+    /// decision it feeds is tested directly. Without this the ENOSYS branch is
+    /// only reachable in the one CI job that first found it.
+    #[test]
+    fn a_libc_without_policy_syscalls_has_not_refused_anything() {
+        // The exact shape Alpine produced: -1/ENOSYS, which used to become
+        // prior_policy -1073741825 and refusal Some(38).
+        let musl = classify_policy_read(-1, Some(libc::ENOSYS));
+        assert_eq!(musl.prior_policy, libc::SCHED_OTHER);
+        assert!(
+            !musl.actionable,
+            "there is no policy interface to issue a demotion through"
+        );
+        assert_eq!(
+            musl.refusal, None,
+            "a libc that never implemented the syscall has refused nothing, and \
+             reporting a refusal sends an operator after a privilege problem \
+             that does not exist"
+        );
+        assert_ne!(
+            policy_of(-1),
+            libc::SCHED_OTHER,
+            "the bug was masking -1 through policy_of, which yields neither \
+             SCHED_OTHER nor any real policy — if this ever stops being true the \
+             classifier above is no longer load-bearing"
+        );
+    }
+
+    /// The absolution is for exactly one errno.
+    #[test]
+    fn any_other_errno_from_the_policy_read_is_still_reported() {
+        for errno in [libc::EPERM, libc::EINVAL, libc::ESRCH] {
+            let read = classify_policy_read(-1, Some(errno));
+            assert_eq!(
+                read.refusal,
+                Some(errno),
+                "sched_getscheduler(0) reads the caller's own policy and has no \
+                 permission check, so {errno} is surprising and must surface"
+            );
+            assert!(!read.actionable);
+        }
+    }
+
+    /// A readable policy is unaffected, reset-on-fork bit included.
+    #[test]
+    fn a_readable_policy_still_drives_the_demotion() {
+        let fifo = classify_policy_read(libc::SCHED_FIFO, None);
+        assert_eq!(fifo.prior_policy, libc::SCHED_FIFO);
+        assert!(fifo.actionable, "an RT thread must still be demoted");
+        assert_eq!(fifo.refusal, None);
+
+        // The reset-on-fork bit must be masked off, or the demotion would fire
+        // on a thread already in the best-effort class.
+        let flagged = classify_policy_read(libc::SCHED_OTHER | SCHED_RESET_ON_FORK, None);
+        assert_eq!(flagged.prior_policy, libc::SCHED_OTHER);
+        assert!(flagged.actionable);
+
+        let plain = classify_policy_read(libc::SCHED_OTHER, None);
+        assert_eq!(plain.prior_policy, libc::SCHED_OTHER);
+        assert!(
+            plain.actionable,
+            "actionable means the interface exists, not that work is needed — \
+             the SCHED_OTHER check downstream is what skips the syscall"
+        );
+    }
+
     /// The reset-on-fork bit must not break policy readback.
     ///
     /// The kernel ORs `SCHED_RESET_ON_FORK` INTO the value `sched_getscheduler`
@@ -1812,6 +1943,20 @@ CONFIG_PREEMPT_DYNAMIC=y
     /// settable without CAP_SYS_NICE.
     #[test]
     fn reset_on_fork_bit_does_not_break_policy_readback() {
+        // The masking itself is arithmetic and holds everywhere, including on a
+        // libc with no policy syscalls at all. Assert it before anything can
+        // skip out, so the property this function is named for is never left
+        // untested.
+        assert_eq!(
+            policy_of(libc::SCHED_BATCH | SCHED_RESET_ON_FORK),
+            libc::SCHED_BATCH
+        );
+        assert_eq!(
+            policy_of(libc::SCHED_FIFO | SCHED_RESET_ON_FORK),
+            libc::SCHED_FIFO
+        );
+        assert_eq!(policy_of(libc::SCHED_OTHER), libc::SCHED_OTHER);
+
         std::thread::spawn(|| {
             // SAFETY: `sched_param` is a POD struct of integer fields for which
             // all-zero is a valid bit pattern; SCHED_BATCH requires priority 0.
@@ -1820,6 +1965,25 @@ CONFIG_PREEMPT_DYNAMIC=y
                 param.sched_priority = 0;
                 libc::sched_setscheduler(0, libc::SCHED_BATCH | SCHED_RESET_ON_FORK, &param)
             };
+
+            // musl stubs `sched_setscheduler` to ENOSYS instead of wiring it to
+            // the kernel, so on an Alpine build there is no policy to set and
+            // no readback to observe. Skip the live half — but ONLY for that
+            // one errno, and only after proving the stub is what answered.
+            // Skipping on any failure would let a real EPERM regression pass
+            // silently on glibc, which is the whole point of the assertion.
+            if rc != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ENOSYS) {
+                // SAFETY: pid 0 = current thread; `sched_getscheduler` only reads.
+                let raw = unsafe { libc::sched_getscheduler(0) };
+                assert!(
+                    raw < 0,
+                    "a libc that refuses sched_setscheduler with ENOSYS must not \
+                     then answer sched_getscheduler — that would mean the policy \
+                     interface half-exists and the skip below is unsound"
+                );
+                return;
+            }
+
             assert_eq!(
                 rc,
                 0,
