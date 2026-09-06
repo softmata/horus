@@ -1489,7 +1489,7 @@ fn read_slot_inner(
 
 /// A topic's shared region, mapped once and kept.
 ///
-/// Reuses [`read_slot_from_region`] rather than forking it, so a cached read
+/// Reuses `read_slot_from_region` rather than forking it, so a cached read
 /// runs exactly the same validated parser as a one-shot read. These files are
 /// read across namespaces and are not trusted input; one validated path is the
 /// whole reason that function was extracted rather than duplicated.
