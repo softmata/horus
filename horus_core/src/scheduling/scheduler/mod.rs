@@ -4891,9 +4891,16 @@ impl Scheduler {
 
         // Clearing `initialized` is the whole mechanism: `reinit_pending_nodes`
         // runs on the tick loop and re-runs `init()` for any node that is not
-        // stopped, not paused, and not initialised. Also lift an operator pause,
-        // since a wedged node is often paused before it is restarted and would
-        // otherwise be skipped by the very check that would have re-inited it.
+        // stopped, not transiently skipped, and not initialised.
+        //
+        // Two different pauses are cleared below and they are not the same
+        // thing, which this comment used to blur. `registered.is_paused` is the
+        // one-tick `Miss::Skip` flag and IS what `reinit_pending_nodes` reads;
+        // the operator pause lives in `node_controls` and is not read there at
+        // all. So lifting the operator pause is not what lets the re-init
+        // happen — it is what lets the node TICK once it has been re-inited,
+        // which matters because a wedged node is usually paused before it is
+        // restarted and would otherwise come back initialised and still frozen.
         for name in restart_requests {
             if let Some(ref controls) = self.node_controls {
                 controls.set_paused(&name, false);
