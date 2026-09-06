@@ -192,16 +192,35 @@ if [ -c /dev/cpu_dma_latency ]; then
         echo -e "  ${YELLOW}${WARN}${NC} /dev/cpu_dma_latency is not writable — HORUS cannot bound idle-exit latency"
         echo "  Fix: run this script without --check to install the udev rule"
     else
-        cat > /etc/udev/rules.d/99-horus-cpu-dma-latency.rules << 'DMAEOF'
+        # A dedicated group, created here if absent.
+        #
+        # This used to say GROUP="dialout". Two things were wrong with that:
+        # `dialout` does not exist on every distro (a udev rule naming a missing
+        # group is silently inert, so the fix appeared to install and changed
+        # nothing), and where it does exist it is the serial-port group — far
+        # broader than this, and granting idle-latency control to everyone who
+        # needs to talk to a UART is backwards on a robot, where that is most
+        # of the fleet.
+        rt_group=horus-rt
+        if ! getent group "$rt_group" >/dev/null 2>&1; then
+            groupadd --system "$rt_group" 2>/dev/null || true
+        fi
+        if ! getent group "$rt_group" >/dev/null 2>&1; then
+            echo -e "  ${YELLOW}${WARN}${NC} could not create group '$rt_group' — skipping the udev rule"
+            echo "  A rule naming a group that does not exist installs cleanly and does nothing."
+        else
+            cat > /etc/udev/rules.d/99-horus-cpu-dma-latency.rules << DMAEOF
 # HORUS: let an unprivileged real-time process bound CPU idle-state exit
 # latency by holding /dev/cpu_dma_latency open. The kernel releases the
 # constraint when the fd closes, so this grants no persistent power over the
 # machine.
-KERNEL=="cpu_dma_latency", MODE="0660", GROUP="dialout"
+KERNEL=="cpu_dma_latency", MODE="0660", GROUP="$rt_group"
 DMAEOF
-        udevadm control --reload-rules 2>/dev/null || true
-        udevadm trigger --name-match=cpu_dma_latency 2>/dev/null || true
-        echo -e "  ${GREEN}${OK}${NC} Installed udev rule (group 'dialout'); add the robot's user to that group"
+            udevadm control --reload-rules 2>/dev/null || true
+            udevadm trigger --name-match=cpu_dma_latency 2>/dev/null || true
+            echo -e "  ${GREEN}${OK}${NC} Installed udev rule (group '$rt_group')"
+            echo "  Add the robot's user to it:  sudo usermod -aG $rt_group \$USER"
+        fi
     fi
 else
     echo "  /dev/cpu_dma_latency not present — this kernel has no PM QoS device"

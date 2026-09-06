@@ -3075,7 +3075,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // loop instead would read a handful of nanoseconds on its first check
         // and could never fire — which is why moving the check alone, without
         // moving the anchor, would have changed nothing at all.
-        let deadline = std::time::Instant::now() + send_budget::send_retry_budget();
+        // `checked_add`, not `+`. The budget is operator input —
+        // `HORUS_SEND_RETRY_BUDGET_US` or `set_send_retry_budget` — and
+        // `Instant + Duration` panics on overflow. A publish path whose
+        // contract is "never block, never fail, drop" must not abort the
+        // process because someone typed a large number; an unrepresentable
+        // deadline is one that can never be reached, which is what `None` here
+        // means and what every check below then reads as "budget remains".
+        let now = std::time::Instant::now();
+        let deadline = now.checked_add(send_budget::send_retry_budget());
 
         // Check migration before retrying — if the ring is full because we're
         // on the role=Both fast path with no consumer draining it, a cross-process
@@ -3184,7 +3192,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // A budget already spent — including `Duration::ZERO`, which is what an
         // RT thread gets — stops here, having made exactly the attempts above
         // and no yields at all. That is a structural bound, not a timing one.
-        if std::time::Instant::now() >= deadline {
+        if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
             return self.drop_after_retry(true);
         }
         for i in 0..SPIN_ITERS {
@@ -3194,7 +3202,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 Ok(()) => return,
                 Err(returned) => msg = returned,
             }
-            if (i + 1) % SPINS_PER_CLOCK_CHECK == 0 && std::time::Instant::now() >= deadline {
+            if (i + 1) % SPINS_PER_CLOCK_CHECK == 0
+                && deadline.is_some_and(|d| std::time::Instant::now() >= d)
+            {
                 return self.drop_after_retry(true);
             }
         }
@@ -3204,7 +3214,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // microsecond of their duration, because `yield_now` returns when
             // the scheduler says so. `send_blocking` below has had the right
             // shape for a while; this is the same one.
-            if std::time::Instant::now() >= deadline {
+            if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
                 return self.drop_after_retry(true);
             }
             send_budget::yield_now_counted();

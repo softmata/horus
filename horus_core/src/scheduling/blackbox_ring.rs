@@ -221,10 +221,17 @@ impl BbRing {
         slot.b_us.store(b_us, Ordering::Relaxed);
         slot.tick
             .store(self.tick.load(Ordering::Relaxed), Ordering::Relaxed);
-        // `SystemTime::now` is a vDSO read on Linux, not a syscall, and the
-        // record has to carry the time it HAPPENED rather than the time the
+        // The record has to carry the time it HAPPENED rather than the time the
         // drain got to it — a flight recorder whose timestamps are the drain's
         // is useless for ordering a fault.
+        //
+        // Cost is a property of the host, not of this call. `SystemTime::now`
+        // is served from the vDSO only when the active clocksource has a vDSO
+        // mode: `tsc` and `kvm-clock` do, `hpet` lost its page in 4.20 and
+        // `acpi_pm` never had one, and on those it is a real syscall — measured
+        // 25.4 ns against 187.3 ns on this project's own clocksource probe.
+        // `RtCapabilities::clocksource` reports which one the box is on, and
+        // that is the number to look at before blaming this line.
         slot.timestamp_us.store(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

@@ -1386,18 +1386,26 @@ fn map_topic_region(path: &std::path::Path) -> Option<TopicRegion> {
     use memmap2::MmapOptions;
     use std::fs::File;
 
-    SHM_MAP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
     if let Ok(file) = File::open(path) {
         if file.metadata().ok()?.len() < TOPIC_HEADER_SIZE as u64 {
             return None;
         }
         // SAFETY: the file is opened read-only; the mapping is read-only.
         let mmap = unsafe { MmapOptions::new().map(&file).ok()? };
+        // Counted HERE, not at entry. The counter is the evidence for "the
+        // reader maps once and keeps it" and a caller polling a topic that does
+        // not exist yet fails `File::open` on every attempt — counting those
+        // would report a per-tick remap storm that never happened, which is the
+        // exact claim this number is used to refute.
+        SHM_MAP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return Some(TopicRegion::Mapped(mmap));
     }
 
-    open_named_section(path)
+    let section = open_named_section(path);
+    if section.is_some() {
+        SHM_MAP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    section
 }
 
 /// Open the Windows named section a topic path refers to.

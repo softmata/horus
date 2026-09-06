@@ -46,9 +46,15 @@ pub(super) fn detect_capabilities() -> RtCapabilities {
 /// `REALTIME_PRIORITY_CLASS`.
 pub(super) const REALTIME_CLASS_ENV: &str = "HORUS_WIN_REALTIME_CLASS";
 
-/// Whether the process-wide realtime class has already been raised, so that N
-/// RT tick threads raise it once rather than N times.
-static REALTIME_CLASS_RAISED: std::sync::Once = std::sync::Once::new();
+/// The outcome of the one process-wide `SetPriorityClass` attempt, so that N RT
+/// tick threads raise it once rather than N times — and so that all N learn
+/// whether it worked.
+///
+/// A bare `Once` was wrong: only the thread that ran the initializer saw the
+/// failure, and every later RT thread took the silent path and proceeded as
+/// though the process class had been raised. Storing the result means the
+/// second caller gets the same error the first one did.
+static REALTIME_CLASS: std::sync::OnceLock<Result<(), i32>> = std::sync::OnceLock::new();
 
 /// Give the calling thread real-time priority.
 ///
@@ -80,17 +86,21 @@ pub(super) fn set_realtime_priority(_priority: i32) -> anyhow::Result<()> {
     let thread = unsafe { GetCurrentThread() };
 
     if std::env::var(REALTIME_CLASS_ENV).as_deref() == Ok("1") {
-        let mut failure: Option<std::io::Error> = None;
-        REALTIME_CLASS_RAISED.call_once(|| {
+        let outcome = REALTIME_CLASS.get_or_init(|| {
             // SAFETY: pseudo-handle as above; REALTIME_PRIORITY_CLASS is a
             // valid priority class.
             let process = unsafe { GetCurrentProcess() };
             if unsafe { SetPriorityClass(process, REALTIME_PRIORITY_CLASS) } == 0 {
-                failure = Some(std::io::Error::last_os_error());
+                Err(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 })
+            } else {
+                Ok(())
             }
         });
-        if let Some(e) = failure {
-            anyhow::bail!("SetPriorityClass(REALTIME) failed: {}", e);
+        if let Err(code) = outcome {
+            anyhow::bail!(
+                "SetPriorityClass(REALTIME) failed: {}",
+                std::io::Error::from_raw_os_error(*code)
+            );
         }
     }
 
@@ -228,6 +238,18 @@ pub(super) fn set_best_effort_class(
                 report.refusal =
                     Some(unsafe { windows_sys::Win32::Foundation::GetLastError() as i32 });
             }
+        } else if report.refusal.is_none() {
+            // A non-empty target that produced an empty mask means every CPU in
+            // it sits at or beyond this processor group's bitwidth. Returning
+            // an all-false report there would say "nothing needed doing" about
+            // a helper thread still sitting on the reserved RT core — the
+            // opposite of the truth, and undetectable from the report.
+            //
+            // `ERROR_INVALID_PARAMETER` rather than a HORUS-invented number:
+            // every other refusal on this platform stores a raw `GetLastError`
+            // value, and a reader decoding the field with a Win32 lookup must
+            // not hit a code that means something else there.
+            report.refusal = Some(windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER as i32);
         }
     }
 

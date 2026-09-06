@@ -128,9 +128,24 @@ pub(super) struct ReadyDispatch {
 impl ReadyDispatch {
     /// Spawn the lanes.
     ///
-    /// Called on the tick loop's own thread, so the workers inherit the policy
-    /// and affinity `RtConfig::apply` already put it in — exactly what the
-    /// scoped spawn gave them per tick, minus the `clone(2)`.
+    /// Called on the tick loop's own thread, so the lanes start life with the
+    /// CPU mask `RtConfig::apply` already put it in — exactly what the scoped
+    /// spawn gave them per tick, minus the `clone(2)`.
+    ///
+    /// The mask is inherited; the POLICY is not, and the earlier wording here
+    /// claiming both was wrong. `set_realtime_priority` sets
+    /// `SCHED_FIFO|SCHED_RESET_ON_FORK`, and the whole point of that flag is
+    /// that a thread spawned from an RT thread comes up `SCHED_OTHER`. So these
+    /// lanes run node ticks on the reserved cores at ordinary priority.
+    ///
+    /// That is not a regression this change introduced — `crossbeam::scope`
+    /// spawned from the same thread and was reset the same way, so parallel
+    /// node execution has always been best-effort while the coordinator is RT.
+    /// It is left alone deliberately: giving N lanes `SCHED_FIFO` at one
+    /// priority is a decision about RT bandwidth control and starvation that
+    /// needs its own measurement, not a side effect of replacing the spawn
+    /// mechanism. `spawn_best_effort` is the opposite case and stays opposite —
+    /// helpers must be pushed OFF these cores, whereas lanes belong on them.
     pub(super) fn new(node_count: usize) -> Self {
         let wanted = node_count.min(hw_parallelism()).max(1);
         let (job_tx, job_rx) = bounded::<Job>(node_count.max(1));
