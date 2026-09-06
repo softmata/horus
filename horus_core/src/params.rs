@@ -51,10 +51,20 @@ impl ParamMetadata {
     }
 }
 
+/// Callback type for parameter change notification.
+/// Called with (key, old_value, new_value). Return Err to reject the change.
+pub type ParamChangeCallback =
+    Arc<dyn Fn(&str, Option<&Value>, &Value) -> Result<(), String> + Send + Sync>;
+
 /// Runtime parameter store for dynamic configuration.
 ///
 /// Provides a typed key-value store with validation, persistence, and
 /// concurrent access support.
+///
+/// The whole of this block — description and doctest — used to sit on
+/// `ParamChangeCallback` below, a type alias, because a new item was inserted
+/// between the comment and the struct it belonged to. `RuntimeParams` itself
+/// rendered undocumented while a callback alias carried its example.
 ///
 /// # Example
 ///
@@ -69,11 +79,6 @@ impl ParamMetadata {
 /// let speed: f64 = params.get("max_speed").unwrap();
 /// assert_eq!(speed, 1.5);
 /// ```
-/// Callback type for parameter change notification.
-/// Called with (key, old_value, new_value). Return Err to reject the change.
-pub type ParamChangeCallback =
-    Arc<dyn Fn(&str, Option<&Value>, &Value) -> Result<(), String> + Send + Sync>;
-
 pub struct RuntimeParams {
     /// Parameter storage - BTreeMap maintains sorted order
     params: Arc<RwLock<BTreeMap<String, Value>>>,
