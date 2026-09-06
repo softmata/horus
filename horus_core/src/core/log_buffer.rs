@@ -614,9 +614,11 @@ pub fn publish_log(entry: LogEntry) {
 ///
 /// Returns a join handle. Drop or join to stop the drain thread.
 pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
-    let enabled = std::env::var("HORUS_LOG_FILE")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
+    // `env_flag`, not a local truth table. This site accepted only "true" and
+    // "1", so `HORUS_LOG_FILE=yes` turned logging off while `HORUS_SIM_MODE=yes`
+    // turned simulation on — the same framework disagreeing with itself about
+    // one word. See `horus_sys::env` for the vocabulary.
+    let enabled = horus_sys::env::env_flag("HORUS_LOG_FILE").unwrap_or(false);
     if !enabled {
         return None;
     }

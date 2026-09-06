@@ -28,6 +28,7 @@
 
 pub mod device;
 pub mod discover;
+pub mod env;
 pub mod fs;
 pub mod platform;
 pub mod process;
