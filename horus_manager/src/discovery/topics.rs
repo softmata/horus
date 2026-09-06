@@ -15,7 +15,13 @@ pub(super) fn discover_shared_memory_uncached() -> HorusResult<Vec<SharedMemoryI
     for t in &sys_topics {
         if !t.is_alive && t.creator_pid > 0 {
             let topic_path = topics_dir.join(&t.name);
-            let meta_path = topics_dir.join(format!("{}.meta", t.name.replace('.', "_")));
+            // horus_sys owns this mapping. This line used to be
+            // `t.name.replace('.', "_")`, which agrees with
+            // `sanitize_namespace` only for names whose sole special character
+            // is a dot — a topic like `robot-arm/imu` produced
+            // `robot-arm/imu.meta`, a path that cannot exist, so its sidecar
+            // was never reaped and accumulated for the life of the machine.
+            let meta_path = horus_sys::shm::topic_meta_path(&t.name);
             let _ = std::fs::remove_file(&topic_path);
             let _ = std::fs::remove_file(&meta_path);
         }
