@@ -92,15 +92,22 @@ env:
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
   #
-  # Bumped from af057d9 to 38368c8 (horus-docs main, the merge of
-  # horus-docs#11). This branch adds HORUS_VERSION, HORUS_LOCAL_SOURCE,
-  # HORUS_PREFIX and HORUS_STRICT_VERSION, and horus-docs#11 is the commit that
-  # writes them into the environment-variable reference — so against the old
-  # pin `every_environment_variable_is_in_the_reference_page` failed for four
-  # variables this branch reads and that pin's page did not document. The old
-  # pin is an ancestor of the new one (compare af057d9...38368c8: ahead 2,
-  # behind 0), and the full suite passes against it: 14 passed, 0 failed.
-  DOCS_PINNED_REF: 38368c8421630f2965fcc9b29e131e92a3e54fb2
+  # Bumped from 38368c8 to 4a612b1 (horus-docs main, the merge of
+  # horus-docs#18), for the same reason 38368c8 replaced af057d9 before it.
+  # This branch adds six operator-facing variables — HORUS_RECORD_MAX_MB,
+  # HORUS_RECORD_INTERVAL, HORUS_RT_IDLE_LATENCY_US,
+  # HORUS_RT_IDLE_LATENCY_SCOPE, HORUS_SEND_RETRY_BUDGET_US and
+  # HORUS_WIN_REALTIME_CLASS — and horus-docs#18 is the commit that writes them
+  # into the environment-variable reference. Note that only three of the six
+  # made the old pin fail: the other three are named through a `const` rather
+  # than a literal at the `env::var` call site, and the scanner could not see
+  # that spelling until this branch taught it to, so the pin and the scanner
+  # fix have to land together. The old pin is an ancestor of the new one
+  # (38368c8...4a612b1: ahead 0, behind 7), and the full suite passes against
+  # it: 14 passed, 0 failed. The bump is 7 commits, not 1 — horus-docs#18 is
+  # only the newest of them, and that suite result is what says the other six,
+  # written by other people for other reasons, are compatible with this branch.
+  DOCS_PINNED_REF: 4a612b108d51308537cdd5c737bbc0181f8354ac
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────
