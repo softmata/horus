@@ -916,7 +916,16 @@ fn write_driver_deps(
     }
 
     if !added_crates.is_empty() {
-        writeln!(cargo, "\n# Driver dependencies (from [hardware])").unwrap();
+        // "[hardware] or [drivers]", not just the former: these entries come
+        // from `Manifest::hardware_entries()`, which merges `[hardware]` with
+        // the legacy `[drivers]` table. A user still on `[drivers]` would read
+        // the old header, look at a `[hardware]` table they do not have, and
+        // conclude the generator had invented the dependency.
+        writeln!(
+            cargo,
+            "\n# Driver dependencies (from [hardware], or legacy [drivers])"
+        )
+        .unwrap();
         for (crate_name, (version, features)) in &added_crates {
             let ver = version.as_deref().unwrap_or("*");
             if features.is_empty() {

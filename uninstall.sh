@@ -1047,18 +1047,22 @@ clean_shell_profiles() {
                     | grep -vF "$prefix_fish_line" > "${profile}.horus-new" 2>/dev/null; } || true
                 # ...but `|| true` swallows exit 2 as well, and exit 2 means
                 # grep could not READ the file. The redirect creates the target
-                # either way, so `[ -f ]` alone cannot tell "this rc held
-                # nothing but our line" from "this rc could not be read" — and
-                # in the second case the `mv` replaced a user's shell profile
-                # with an empty file. Requiring the profile to be readable, and
-                # refusing to turn a non-empty profile into an empty one unless
-                # it genuinely held nothing else, keeps the destructive case out
-                # while preserving the empty-result case the comment above is
-                # about.
-                if [ -f "${profile}.horus-new" ] && [ -r "$profile" ] &&
-                   { [ -s "${profile}.horus-new" ] || [ ! -s "$profile" ] ||
-                     [ "$(grep -cvF "$prefix_path_line" "$profile" 2>/dev/null || echo 1)" = "0" ] ||
-                     [ "$(grep -cvF "$prefix_fish_line" "$profile" 2>/dev/null || echo 1)" = "0" ]; }; then
+                # either way, so `[ -f ]` alone could not tell "this rc held
+                # nothing but our line" from "this rc could not be read", and in
+                # the second case the `mv` replaced a profile it had failed to
+                # read with an empty file.
+                #
+                # `-r` is the whole guard, and it is deliberately the ONLY extra
+                # condition. An earlier attempt here also required the result to
+                # be non-empty "unless the profile held nothing else", testing
+                # that with `[ "$(grep -cvF ... || echo 1)" = "0" ]` — which is
+                # wrong twice over: `grep -c` PRINTS "0" and EXITS 1 when the
+                # count is zero, so the `|| echo 1` fired on the legitimate case
+                # and the substitution became "0\n1", and the whole point of
+                # this block is the file whose only line is ours. That is the
+                # exact case the two failure modes in this function's test are
+                # about, and it made a third.
+                if [ -f "${profile}.horus-new" ] && [ -r "$profile" ]; then
                     mv "${profile}.horus-new" "$profile"
                 fi
                 rm -f "${profile}.horus-new" 2>/dev/null
