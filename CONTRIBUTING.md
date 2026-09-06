@@ -757,13 +757,16 @@ repository; `:850` notes that neither substitutes for the other.
    and line 794 sits inside the `cli-integration` job (`:309`) which is in the
    aggregator's needs list (`:1374`).
 
-   The exception is `readme_contract.rs`'s `the_readme_quick_start_compiles`,
-   which is `#[ignore]`d with the reason "run in the docs-contract job"
-   (`readme_contract.rs:146`). Nothing runs it: no workflow mentions
-   `readme_contract`, `docs-contract.yml`'s cargo invocations name only the
-   `docs_*` targets, and `integration-tests.yml:794` passes no
-   `--include-ignored`. If you change the README's Quick Start, compile it
-   yourself:
+   `readme_contract.rs`'s `the_readme_quick_start_compiles` is `#[ignore]`d
+   with the reason "run in the docs-contract job" (`readme_contract.rs:146`),
+   and that job does now run it — `docs-contract.yml` invokes
+   `cargo test -p horus_manager --test readme_contract -- --include-ignored`.
+
+   This paragraph previously said the opposite ("Nothing runs it: no workflow
+   mentions `readme_contract`") and told you to compile the Quick Start by hand.
+   That was true when it was written and stopped being true when the invocation
+   was added; the prose was not updated with it. You can still run it locally,
+   but CI will catch a broken Quick Start without you:
 
    ```bash
    cargo test -p horus_manager --test readme_contract -- --include-ignored
