@@ -284,15 +284,43 @@ pub fn escape_control_chars(s: &str) -> String {
     out
 }
 
+/// Longest node name this host will mint.
+pub const MAX_NODE_NAME_LEN: usize = 255;
+
+/// Longest node name that survives presence replication to another host.
+///
+/// Deliberately tighter than [`MAX_NODE_NAME_LEN`]: a receiver bounds the names
+/// it will accept off the wire so a hostile broadcast cannot fill a presence
+/// file with arbitrary text (see `is_plain_node_name` in horus_net). The two
+/// bounds are different on purpose — what was NOT on purpose is that neither
+/// side knew the other's number, so a name of 129..=255 characters was accepted
+/// here, written, put on the wire, and silently dropped by every remote host.
+/// `validate_node_name` now says so at mint time.
+pub const MAX_REPLICATED_NODE_NAME_LEN: usize = 128;
+
 pub fn validate_node_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("node name must not be empty".into());
     }
-    if name.len() > 255 {
+    if name.len() > MAX_NODE_NAME_LEN {
         return Err(format!(
-            "node name too long ({} chars, max 255)",
+            "node name too long ({} chars, max {MAX_NODE_NAME_LEN})",
             name.len()
         ));
+    }
+    if name.len() > MAX_REPLICATED_NODE_NAME_LEN {
+        // Not an error: the name is valid on this host and everything local
+        // works. It simply will not cross a network boundary, and silence was
+        // the whole defect — the node appeared on this host and existed for no
+        // other, with nothing anywhere to explain the difference.
+        crate::hlog!(
+            warn,
+            "node name is {} characters; names longer than {} are dropped by \
+             remote hosts during presence replication, so this node will be \
+             invisible off-box. Shorten it if you rely on multi-host discovery.",
+            name.len(),
+            MAX_REPLICATED_NODE_NAME_LEN
+        );
     }
     if name.contains("..") {
         return Err("node name must not contain '..'".into());

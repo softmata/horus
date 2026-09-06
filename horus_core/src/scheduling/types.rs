@@ -823,7 +823,7 @@ pub(crate) struct SharedMonitors {
 /// Executor threads check flags on every tick.
 #[derive(Default)]
 pub struct NodeControlMap {
-    inner: std::sync::RwLock<std::collections::HashMap<String, NodeControl>>,
+    inner: std::sync::RwLock<std::collections::HashMap<String, Arc<NodeControl>>>,
 }
 
 /// Per-node control flags.
@@ -853,12 +853,43 @@ pub struct NodeControl {
 impl NodeControlMap {
     pub fn register(&self, name: &str) {
         let mut map = self.inner.write().unwrap_or_else(|e| e.into_inner());
-        map.entry(name.to_string()).or_insert_with(|| NodeControl {
-            paused: std::sync::atomic::AtomicBool::new(false),
-            stopped: std::sync::atomic::AtomicBool::new(false),
-            health: AtomicHealthState::default(),
-            safe_state_requested: std::sync::atomic::AtomicBool::new(false),
+        map.entry(name.to_string()).or_insert_with(|| {
+            Arc::new(NodeControl {
+                paused: std::sync::atomic::AtomicBool::new(false),
+                stopped: std::sync::atomic::AtomicBool::new(false),
+                health: AtomicHealthState::default(),
+                safe_state_requested: std::sync::atomic::AtomicBool::new(false),
+            })
         });
+    }
+
+    /// Resolve a node's control block ONCE, so the tick loop never has to look
+    /// it up again.
+    ///
+    /// Every other accessor here takes `self.inner.read()` and hashes `name`.
+    /// That is fine for the main thread, which calls them when an operator
+    /// types `horus node pause`. It is not fine for an RT executor, which ran
+    /// three of them — `take_safe_state_request`, `is_stopped`, `is_paused` —
+    /// per node per tick. At 1 kHz with 8 nodes that is 24 lock acquisitions
+    /// and 24 SipHashes every millisecond, none of which can change more than
+    /// once in a blue moon.
+    ///
+    /// The lock is the sharper half of the cost. `std::sync::RwLock` has no
+    /// priority inheritance, so an RT thread that lands on a writer — a
+    /// concurrent `register()` from late node addition — blocks with no bound
+    /// derived from its own priority. That is a textbook priority inversion
+    /// sitting directly in the tick path.
+    ///
+    /// Holding the `Arc` removes both: the flags are then three relaxed atomic
+    /// loads on a cacheline this thread already owns. Registration is
+    /// idempotent (`or_insert_with`), so a handle resolved once stays the same
+    /// object for the process's life and cannot go stale.
+    pub fn handle(&self, name: &str) -> Option<Arc<NodeControl>> {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
     }
 
     /// Record a node's graduated-watchdog health. Unknown names are ignored.
@@ -944,6 +975,12 @@ impl NodeControlMap {
             .unwrap_or(false)
     }
 
+    /// Unused since the RT tick loop began reading `stopped` through a handle
+    /// resolved by [`NodeControlMap::handle`] — it was this method's only
+    /// caller. Kept, with the same `allow` its `set_stopped` counterpart
+    /// already carries, so the by-name control pair stays symmetric for the CLI
+    /// paths that reach `NodeControlMap` generically.
+    #[allow(dead_code)]
     pub fn is_stopped(&self, name: &str) -> bool {
         self.inner
             .read()
@@ -982,8 +1019,25 @@ impl SharedMonitors {
     /// No-op if registry is not configured (~0ns).
     #[inline]
     pub fn update_registry(&self, node: &RegisteredNode, tick_ns: u64) {
+        let slot = self.registry_slots.get(node.name.as_ref()).copied();
+        self.update_registry_slot_of(node, slot, tick_ns);
+    }
+
+    /// `update_registry` for a caller that resolved the slot once up front.
+    ///
+    /// The by-name form hashes `node.name` on every tick to recover a `usize`
+    /// that is fixed at registration. That is the last per-tick hash of the node
+    /// name left in the RT loop, so the loop resolves these alongside its
+    /// control handles and passes the answer in.
+    #[inline]
+    pub fn update_registry_slot_of(
+        &self,
+        node: &RegisteredNode,
+        slot: Option<usize>,
+        tick_ns: u64,
+    ) {
         if let Some(ref registry) = self.registry {
-            if let Some(&slot) = self.registry_slots.get(node.name.as_ref()) {
+            if let Some(slot) = slot {
                 let (tick_count, error_count) = if let Some(ref ctx) = node.context {
                     let m = ctx.metrics();
                     (m.total_ticks(), m.errors_count() as u32)
@@ -1135,5 +1189,136 @@ mod subscription_freshness_tests {
             t.saturating_sub(last(&sf)) > Duration::from_millis(20).as_nanos() as u64,
             "an absent topic must not be reported fresh"
         );
+    }
+}
+
+/// Measurement harness for the RT tick loop's per-node control checks.
+///
+/// `#[ignore]`d: it is a stopwatch, not an assertion. Wall-clock numbers on a
+/// shared CI runner would make it a flaky gate, and the thing it measures is
+/// already guaranteed structurally — the fast path holds an `Arc` and touches
+/// no lock. Run it by hand with:
+///
+/// ```text
+/// cargo test -p horus_core --release control_lookup_cost -- --ignored --nocapture
+/// ```
+#[cfg(test)]
+mod hot_path_perf {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    const NODES: usize = 8;
+    const TICKS: usize = 200_000;
+
+    fn names() -> Vec<String> {
+        // Representative of real node names, which is what gets hashed.
+        (0..NODES)
+            .map(|i| format!("perception_stage_{i}"))
+            .collect()
+    }
+
+    fn map_with(names: &[String]) -> NodeControlMap {
+        let map = NodeControlMap::default();
+        for n in names {
+            map.register(n);
+        }
+        map
+    }
+
+    /// Arm A: what the tick loop did — three by-name accessors per node.
+    fn by_name_ns(map: &NodeControlMap, names: &[String]) -> f64 {
+        let start = Instant::now();
+        let mut acc = 0u64;
+        for _ in 0..TICKS {
+            for n in names {
+                acc += map.take_safe_state_request(black_box(n)) as u64;
+                acc += map.is_stopped(black_box(n)) as u64;
+                acc += map.is_paused(black_box(n)) as u64;
+            }
+        }
+        black_box(acc);
+        start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+    }
+
+    /// Arm B: what it does now — resolve once, then three atomics.
+    fn by_handle_ns(map: &NodeControlMap, names: &[String]) -> f64 {
+        let handles: Vec<Arc<NodeControl>> = names.iter().map(|n| map.handle(n).unwrap()).collect();
+        let start = Instant::now();
+        let mut acc = 0u64;
+        for _ in 0..TICKS {
+            for h in &handles {
+                let c = black_box(h);
+                acc += c
+                    .safe_state_requested
+                    .swap(false, std::sync::atomic::Ordering::AcqRel) as u64;
+                acc += c.stopped.load(std::sync::atomic::Ordering::Relaxed) as u64;
+                acc += c.paused.load(std::sync::atomic::Ordering::Relaxed) as u64;
+            }
+        }
+        black_box(acc);
+        start.elapsed().as_nanos() as f64 / (TICKS * NODES) as f64
+    }
+
+    #[test]
+    #[ignore = "stopwatch, not an assertion — run manually with --ignored"]
+    fn control_lookup_cost() {
+        let names = names();
+        let map = map_with(&names);
+
+        // Alternate the arms and take the best of each, so a scheduler hiccup
+        // lands on whichever arm it lands on rather than on the first one run.
+        let mut a = f64::MAX;
+        let mut b = f64::MAX;
+        for _ in 0..5 {
+            a = a.min(by_name_ns(&map, &names));
+            b = b.min(by_handle_ns(&map, &names));
+        }
+
+        println!("\n  per node per tick, {NODES} nodes x {TICKS} ticks:");
+        println!("    by name   (RwLock + SipHash x3): {a:8.1} ns");
+        println!("    by handle (3 atomics)          : {b:8.1} ns");
+        println!(
+            "    saved                          : {:8.1} ns  ({:.1}x)",
+            a - b,
+            a / b
+        );
+        println!(
+            "    per tick for {NODES} nodes         : {:8.1} ns saved\n",
+            (a - b) * NODES as f64
+        );
+    }
+
+    /// The same question for a lock that is actually contended, which is the
+    /// case the RT thread cannot bound: `register()` takes the write guard.
+    #[test]
+    #[ignore = "stopwatch, not an assertion — run manually with --ignored"]
+    fn control_lookup_cost_under_writer() {
+        let names = names();
+        let map = Arc::new(map_with(&names));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        // A writer doing what late node registration does.
+        let writer = {
+            let map = Arc::clone(&map);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let mut i = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    map.register(&format!("late_{i}"));
+                    i += 1;
+                }
+            })
+        };
+
+        let a = by_name_ns(&map, &names);
+        let b = by_handle_ns(&map, &names);
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+
+        println!("\n  with a concurrent registrar holding the write lock:");
+        println!("    by name  : {a:8.1} ns/node/tick");
+        println!("    by handle: {b:8.1} ns/node/tick  ({:.1}x)\n", a / b);
     }
 }

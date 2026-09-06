@@ -31,6 +31,11 @@ GaitGenerator (200Hz)  -->  JointController (200Hz, RT)  -->  joint_commands
 
 **Terminal 1 — start the simulator:**
 
+> **sim3d is not public yet.** The simulator lives in a private repository,
+> so this command will not work for you — see [../README.md](../README.md#prerequisites).
+> The example below runs without it; the simulator only adds visualisation
+> and simulated sensor input.
+
 ```bash
 sim3d --mode visual --robot robots/quadruped.urdf --world worlds/terrain.yaml --robot-name quadruped
 ```

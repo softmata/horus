@@ -411,6 +411,7 @@ impl EventExecutor {
                     &node,
                     &*monitors.clock,
                     monitors.tick_period,
+                    None,
                 );
                 let tr = NodeRunner::run_tick(&mut node.node);
                 super::primitives::clear_node_tick_context();

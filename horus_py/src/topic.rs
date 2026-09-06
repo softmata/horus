@@ -285,7 +285,7 @@ macro_rules! pod_topic_types {
                                 Some(val.log_summary())
                             } else { None };
                             let topic_ref = topic.clone();
-                            py.detach(|| { topic_ref.lock().expect("lock").send(val); });
+                            py.detach(|| topic_lock(&topic_ref).map(|g| g.send(val)))?;
                             if let Some(s) = summary {
                                 log_ipc_event(py, node, &self.name, s,
                                     start.elapsed().as_nanos() as u64, "log_pub");
@@ -306,9 +306,7 @@ macro_rules! pod_topic_types {
                     $(
                         TopicType::$rust_ty(topic) => {
                             let topic_ref = topic.clone();
-                            let msg_opt = py.detach(|| {
-                                topic_ref.lock().expect("lock").recv()
-                            });
+                            let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv()))?;
                             if let Some(val) = msg_opt {
                                 if node.is_some() {
                                     use horus::core::LogSummary;
@@ -344,8 +342,8 @@ macro_rules! pod_topic_types {
                             } else { None };
                             let topic_ref = topic.clone();
                             let sent = py.detach(|| {
-                                topic_ref.lock().expect("lock").try_send(val).is_ok()
-                            });
+                                topic_lock(&topic_ref).map(|g| g.try_send(val).is_ok())
+                            })?;
                             if sent {
                                 if let Some(s) = summary {
                                     log_ipc_event(py, node, &self.name, s,
@@ -382,8 +380,8 @@ macro_rules! pod_topic_types {
                             // a 10 ms wait here would stop every other Python thread
                             // in the process for 10 ms.
                             let sent = py.detach(|| {
-                                topic_ref.lock().expect("lock").send_blocking(val, timeout).is_ok()
-                            });
+                                topic_lock(&topic_ref).map(|g| g.send_blocking(val, timeout).is_ok())
+                            })?;
                             if sent {
                                 if let Some(s) = summary {
                                     log_ipc_event(py, node, &self.name, s,
@@ -704,9 +702,11 @@ impl PyTopic {
                 let img = py_img.inner().clone();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.lock().expect("topic lock poisoned").send(&img);
-                    true
-                });
+                    topic_lock(&topic_ref).map(|g| {
+                        g.send(&img);
+                        true
+                    })
+                })?;
                 if node.is_some() {
                     log_ipc_event(
                         py,
@@ -724,9 +724,11 @@ impl PyTopic {
                 let pc = py_pc.inner().clone();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.lock().expect("topic lock poisoned").send(&pc);
-                    true
-                });
+                    topic_lock(&topic_ref).map(|g| {
+                        g.send(&pc);
+                        true
+                    })
+                })?;
                 if node.is_some() {
                     log_ipc_event(
                         py,
@@ -744,9 +746,11 @@ impl PyTopic {
                 let depth = py_depth.inner().clone();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.lock().expect("topic lock poisoned").send(&depth);
-                    true
-                });
+                    topic_lock(&topic_ref).map(|g| {
+                        g.send(&depth);
+                        true
+                    })
+                })?;
                 if node.is_some() {
                     log_ipc_event(
                         py,
@@ -785,7 +789,7 @@ impl PyTopic {
                     .data_slice()
                     .map_err(|e| PyRuntimeError::new_err(format!("tensor read failed: {e}")))?;
                 let success = py.detach(|| -> PyResult<bool> {
-                    let t = topic_ref.lock().expect("topic lock poisoned");
+                    let t = topic_lock(&topic_ref)?;
                     let dst = t
                         .alloc_tensor(&shape, dtype, device)
                         .map_err(|e| PyRuntimeError::new_err(format!("pool alloc failed: {e}")))?;
@@ -842,7 +846,7 @@ impl PyTopic {
                     .data_slice()
                     .map_err(|e| PyRuntimeError::new_err(format!("chunk read failed: {e}")))?;
                 let success = py.detach(|| -> PyResult<bool> {
-                    let t = topic_ref.lock().expect("topic lock poisoned");
+                    let t = topic_lock(&topic_ref)?;
                     let mut dst = t
                         .alloc_chunk(horizon, action_dim, dtype, device, t0_ns, dt_ns)
                         .map_err(|e| PyRuntimeError::new_err(format!("pool alloc failed: {e}")))?;
@@ -896,9 +900,11 @@ impl PyTopic {
                 let log_summary = msg.log_summary();
                 let topic_ref = topic.clone();
                 let success = py.detach(|| {
-                    topic_ref.lock().expect("topic lock poisoned").send(msg);
-                    true
-                });
+                    topic_lock(&topic_ref).map(|g| {
+                        g.send(msg);
+                        true
+                    })
+                })?;
                 if node.is_some() {
                     log_ipc_event(
                         py,
@@ -1165,7 +1171,7 @@ impl PyTopic {
         match &self.topic_type {
             TopicType::Image(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv()))?;
                 if let Some(img) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -1185,7 +1191,7 @@ impl PyTopic {
             }
             TopicType::PointCloud(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv()))?;
                 if let Some(pc) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -1205,7 +1211,7 @@ impl PyTopic {
             }
             TopicType::DepthImage(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv()))?;
                 if let Some(depth) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -1230,8 +1236,7 @@ impl PyTopic {
                 // the descriptor's pool_id matches this topic's pool — guarding
                 // against a cross-pool descriptor instead of silently handing back
                 // a null data pointer.
-                let msg_opt =
-                    py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv_handle());
+                let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv_handle()))?;
                 if let Some(handle) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -1268,8 +1273,7 @@ impl PyTopic {
                 // recycled — and a recycled slot is valid memory holding some
                 // other chunk's numbers, so the servo would track the wrong
                 // trajectory rather than fail.
-                let msg_opt =
-                    py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv_chunk());
+                let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv_chunk()))?;
                 if let Some(handle) = msg_opt {
                     if node.is_some() {
                         log_ipc_event(
@@ -1295,7 +1299,7 @@ impl PyTopic {
             }
             TopicType::Generic(topic) => {
                 let topic_ref = topic.clone();
-                let msg_opt = py.detach(|| topic_ref.lock().expect("topic lock poisoned").recv());
+                let msg_opt = py.detach(|| topic_lock(&topic_ref).map(|g| g.recv()))?;
                 if let Some(msg) = msg_opt {
                     if node.is_some() {
                         use horus::core::LogSummary;
@@ -1766,12 +1770,12 @@ impl PyTopic {
     ///
     /// Returns:
     ///     Number of pending messages (u64)
-    fn pending_count(&self) -> u64 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.pending_count()).unwrap_or(0)
-        )
+    fn pending_count(&self) -> PyResult<u64> {
+        // Raises rather than reporting 0, for the reason #125 gave for the loss
+        // counters: 0 is a legitimate answer here, so `unwrap_or(0)` on a
+        // poisoned lock hands back "nothing pending" when it means "could not
+        // look" -- indistinguishable to the caller, and the wrong one to act on.
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.pending_count()))
     }
 
     /// Messages this subscriber never saw because the publisher lapped it.
@@ -1832,24 +1836,16 @@ impl PyTopic {
     ///
     /// Returns:
     ///     Publisher count (u32)
-    fn pub_count(&self) -> u32 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.pub_count()).unwrap_or(0)
-        )
+    fn pub_count(&self) -> PyResult<u32> {
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.pub_count()))
     }
 
     /// Number of active subscribers on this topic.
     ///
     /// Returns:
     ///     Subscriber count (u32)
-    fn sub_count(&self) -> u32 {
-        topic_dispatch!(
-            &self.topic_type,
-            t,
-            topic_lock(t).map(|g| g.sub_count()).unwrap_or(0)
-        )
+    fn sub_count(&self) -> PyResult<u32> {
+        topic_dispatch!(&self.topic_type, t, Ok(topic_lock(t)?.sub_count()))
     }
 
     /// Read the most recent message without consuming it.
@@ -1868,7 +1864,7 @@ impl PyTopic {
         macro_rules! rl {
             ($t:expr, $py:expr, $PyT:ident) => {{
                 let tr = $t.clone();
-                let msg_opt = $py.detach(|| tr.lock().expect("topic lock poisoned").read_latest());
+                let msg_opt = $py.detach(|| topic_lock(&tr).map(|g| g.read_latest()))?;
                 match msg_opt {
                     Some(msg) => Ok(Some(Py::new($py, $PyT { inner: msg })?.into_any())),
                     None => Ok(None),
@@ -2217,6 +2213,42 @@ mod tests {
             *topic_lock(&lock).unwrap(),
             4000,
             "the topic guard must serialise all access, not just writers"
+        );
+    }
+
+    /// Every acquisition of the topic guard must go through `topic_lock`.
+    ///
+    /// #125 made the loss counters raise on a poisoned lock instead of
+    /// answering 0, because 0 was indistinguishable from "could not read". It
+    /// did not sweep the other acquisitions, so this file then held three
+    /// answers to the same event: raise, panic (20 sites across send/try_send/
+    /// send_blocking/recv/read_latest), and a silent 0 (pending_count,
+    /// pub_count, sub_count) -- the identical defect #125 had just removed.
+    ///
+    /// A behavioural test is not available here: poisoning needs a Rust panic
+    /// under the guard, which no shipped Python API can induce, and CI builds
+    /// this crate with --no-default-features precisely so the test binary does
+    /// not link libpython (see the `[lib]` note in Cargo.toml), so no #[test]
+    /// can construct a PyTopic. A source invariant is the honest substitute,
+    /// and it is the shape that actually regressed.
+    #[test]
+    fn every_topic_guard_acquisition_raises_rather_than_panics() {
+        let src = include_str!("topic.rs");
+        // Split so the needle is not contiguous in the file being searched --
+        // otherwise this guard matches its own assertion and fails whatever the
+        // code does.
+        let panicking = concat!("lock().", "expect(");
+        assert!(
+            !src.contains(panicking),
+            "a topic guard is being acquired with a panicking unwrap. SIGABRT is \
+             not catchable from Python: it takes the interpreter down with no \
+             traceback and no chance to fail over. Use topic_lock(), which raises."
+        );
+        let silent_zero = concat!("map(|g| g.", "pending_count()).unwrap_or(0)");
+        assert!(
+            !src.contains(silent_zero),
+            "a count is falling back to 0 on a poisoned lock -- the exact defect \
+             #125 removed from the loss counters"
         );
     }
 }

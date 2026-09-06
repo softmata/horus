@@ -122,8 +122,17 @@ pub fn detect_context(start_dir: &Path) -> ProjectContext {
 
     let has_horus_toml = root.join(HORUS_TOML).exists();
 
-    // Detect languages from project root
-    let languages = detect_project_languages(&root);
+    // Detect languages from project root.
+    //
+    // `manifest::detect_languages`, not a local copy. There used to be one
+    // here, byte-identical in its Rust and C++ arms - comment paragraphs
+    // included - and different in exactly one clause: it did not know about
+    // `.horus/pyproject.toml`, the layout `horus new` GENERATES. So a
+    // scaffolded Python project was Python to the manifest and language-less
+    // to dispatch, which is the shape of divergence a verbatim copy produces:
+    // the two agreed everywhere a reader would check and disagreed on the one
+    // case that was added to only one of them.
+    let languages = crate::manifest::detect_languages(&root);
 
     ProjectContext {
         root,
@@ -132,65 +141,6 @@ pub fn detect_context(start_dir: &Path) -> ProjectContext {
         manifest,
         manifest_error,
     }
-}
-
-/// Detect languages present in a project directory.
-///
-/// Checks for:
-/// - Rust: any `.rs` files in root or `src/`, or `Cargo.toml`, or horus.toml deps with source = "crates.io"
-/// - Python: any `.py` files in root or `src/`, or `pyproject.toml`, or horus.toml deps with source = "pypi"
-/// - C++: any `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx` file in root or `src/`,
-///   or `CMakeLists.txt`, or the generated `.horus/CMakeLists.txt`
-/// - ROS2: `package.xml`
-fn detect_project_languages(project_dir: &Path) -> Vec<Language> {
-    let mut languages = Vec::new();
-
-    // Rust detection: .rs files, Cargo.toml (legacy), or .horus/Cargo.toml (generated)
-    let has_rust = project_dir.join("Cargo.toml").exists()
-        || project_dir.join(".horus/Cargo.toml").exists()
-        || has_files_with_extension(project_dir, "rs");
-    if has_rust {
-        languages.push(Language::Rust);
-    }
-
-    // Python detection: .py files, pyproject.toml (legacy), setup.py, requirements.txt
-    let has_python = project_dir.join("pyproject.toml").exists()
-        || project_dir.join("setup.py").exists()
-        || project_dir.join("requirements.txt").exists()
-        || has_files_with_extension(project_dir, "py");
-    if has_python {
-        languages.push(Language::Python);
-    }
-
-    // C++ detection.
-    //
-    // Rust and Python each get three ways to be found — legacy root manifest,
-    // generated `.horus/` manifest, or a source file. C++ got one: a root
-    // `CMakeLists.txt`, which no HORUS C++ project has. `horus new --cpp`
-    // scaffolds `horus.toml` + `src/main.cpp`, and `cmake_gen` writes its
-    // CMakeLists into `.horus/`. So this returned "no languages" for every C++
-    // project ever generated, and everything downstream drew the obvious
-    // conclusion: `horus fmt` and `horus lint` said "No source files detected",
-    // and `horus deploy` fell through to the Rust builder and demanded a
-    // Cargo.toml.
-    //
-    // `horus build` worked the whole time because it uses a third detector
-    // (`run::deps::detect_language`) that does check extensions.
-    let has_cpp = project_dir.join("CMakeLists.txt").exists()
-        || project_dir.join(".horus/CMakeLists.txt").exists()
-        || CPP_SOURCE_EXTENSIONS
-            .iter()
-            .any(|ext| has_files_with_extension(project_dir, ext));
-    if has_cpp {
-        languages.push(Language::Cpp);
-    }
-
-    // ROS2 detection
-    if project_dir.join("package.xml").exists() {
-        languages.push(Language::Ros2);
-    }
-
-    languages
 }
 
 /// Every C++ source and header in the project, as arguments for a tool.
@@ -246,24 +196,6 @@ pub fn cpp_source_files(root: &Path) -> Vec<PathBuf> {
     walk(root, 0, &mut out);
     out.sort();
     out
-}
-
-/// Check if a directory contains files with the given extension (non-recursive, root + src/).
-fn has_files_with_extension(dir: &Path, ext: &str) -> bool {
-    let check_dir = |d: &Path| -> bool {
-        if let Ok(entries) = std::fs::read_dir(d) {
-            for entry in entries.flatten() {
-                if let Some(e) = entry.path().extension() {
-                    if e == ext {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    };
-
-    check_dir(dir) || check_dir(&dir.join("src"))
 }
 
 // ─── ToolChain ───────────────────────────────────────────────────────────────

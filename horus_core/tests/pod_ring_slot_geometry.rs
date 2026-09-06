@@ -507,3 +507,59 @@ fn pod_reader_and_writer_agree_on_the_stride() {
         assert_eq!(v.echo, !tag_of(i as u64), "message {i} echo");
     }
 }
+
+// ---------------------------------------------------------------------------
+// The writer refuses a header whose capacity and mask disagree
+// ---------------------------------------------------------------------------
+
+/// `write_topic_slot_bytes` must reject a non-power-of-two capacity.
+///
+/// It is `horus_net::ShmRingWriter` inlined — same fields, same
+/// `OFF_LAYOUT_KIND` branch, same seqlock, same head publish — and it arrived
+/// without two of that writer's guards. `ShmRingWriter::open_path` has always
+/// rejected `!capacity.is_power_of_two() || cap_mask != capacity - 1`, because
+/// `seq & cap_mask` then lands outside `[0, capacity)`. The per-branch length
+/// checks below it are computed FROM `capacity`, so they pass while the index
+/// they exist to protect does not.
+///
+/// This matters here specifically: `write_topic_slot_bytes` is the path
+/// unauthenticated network data reaches, driven by `horus_net`'s replicator.
+/// The header it reads was written by another local process, which a
+/// compromised or simply buggy node can make say anything.
+#[test]
+fn a_capacity_that_is_not_a_power_of_two_is_refused() {
+    use horus_core::communication::topic::shm_layout;
+
+    let dir = std::env::temp_dir().join(format!("horus_wguard_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("tmp dir");
+    let path = dir.join("hostile_region");
+
+    // A region that is valid in every respect except the capacity/mask pair.
+    let capacity: u32 = 12; // not a power of two
+    let type_size: u32 = 8;
+    let total = shm_layout::required_region_len(capacity as usize, type_size as usize) + 4096;
+    let mut buf = vec![0u8; total];
+    buf[shm_layout::OFF_MAGIC..shm_layout::OFF_MAGIC + 8]
+        .copy_from_slice(&shm_layout::MAGIC.to_ne_bytes());
+    buf[shm_layout::OFF_TYPE_SIZE..shm_layout::OFF_TYPE_SIZE + 4]
+        .copy_from_slice(&type_size.to_ne_bytes());
+    buf[shm_layout::OFF_IS_POD] = shm_layout::IS_POD_YES;
+    buf[shm_layout::OFF_CAPACITY..shm_layout::OFF_CAPACITY + 4]
+        .copy_from_slice(&capacity.to_ne_bytes());
+    // The mask a hostile header supplies: wider than the ring.
+    buf[shm_layout::OFF_CAPACITY_MASK..shm_layout::OFF_CAPACITY_MASK + 4]
+        .copy_from_slice(&0xFFFF_u32.to_ne_bytes());
+    buf[shm_layout::OFF_SLOT_SIZE..shm_layout::OFF_SLOT_SIZE + 4]
+        .copy_from_slice(&type_size.to_ne_bytes());
+    std::fs::write(&path, &buf).expect("write region");
+
+    let accepted = horus_core::communication::write_topic_slot_bytes(&path, &[0xAA; 8]);
+    let _ = std::fs::remove_file(&path);
+
+    assert!(
+        !accepted,
+        "a capacity of {capacity} with mask 0xFFFF must be refused: `seq & mask` \
+         indexes far outside the ring, and every length check below is derived \
+         from `capacity`, so none of them notices"
+    );
+}

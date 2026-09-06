@@ -63,7 +63,14 @@ pub fn run_clean(
                 if cache_dir.exists() {
                     items.push(serde_json::json!({
                         "type": "horus_cache",
-                        "path": "~/.horus/cache/",
+                        // The real directory, not a literal. `cache_dir()` is
+                        // the platform cache (XDG `~/.cache/horus/` on Linux),
+                        // while this string said `~/.horus/cache/` - the
+                        // installer's state root, a different place entirely.
+                        // The size and file count beside it were always
+                        // measured from the real one, so the JSON showed
+                        // correct numbers against a path they did not describe.
+                        "path": cache_dir.display().to_string(),
                         "size": get_dir_size(&cache_dir),
                         "files": count_files(&cache_dir),
                         "exists": true,

@@ -938,11 +938,7 @@ fn check_plugin_version(name: &str) -> Option<String> {
         .ok()?;
 
     let encoded = name.replace('@', "%40").replace('/', "%2F");
-    let url = format!(
-        "{}/api/packages/{}/latest",
-        base_url.trim_end_matches('/'),
-        encoded
-    );
+    let url = format!("{}/api/packages/{}/latest", base_url, encoded);
 
     let resp = client.get(&url).send().ok()?;
     if !resp.status().is_success() {

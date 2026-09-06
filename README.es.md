@@ -60,7 +60,7 @@ HORUS sustituye DDS por búferes circulares en memoria compartida y sincronizaci
 | Planificación | Determinista, con cinco clases de ejecución |
 | Tiempo real | Presupuestos, deadlines, afinidad de CPU y watchdog integrados |
 | Seguridad | Watchdog gradual, estado seguro y grabador BlackBox |
-| Tensores GPU | Intercambio sin copias con PyTorch/JAX mediante DLPack |
+| Tensores | Respaldados por pool, sin copias hacia NumPy (memoria del host) |
 | Lenguajes | Rust, Python y C++ sobre el mismo transporte compartido |
 | Configuración | Un único archivo `horus.toml` |
 
