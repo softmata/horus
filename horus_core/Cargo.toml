@@ -75,6 +75,9 @@ horus-tf = { git = "https://github.com/softmata/horus-tf.git", rev = "d525dfcf58
 workspace = true
 
 [features]
+# Render the crate-internal modules in rustdoc. Docs-only: it gates nothing
+# but `#[doc(hidden)]`, so it changes no code and no dependency.
+internal-docs = []
 default = ["macros", "telemetry", "blackbox"]
 macros = ["horus_macros"]
 

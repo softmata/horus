@@ -15,25 +15,45 @@
 //! **Note:** This is an internal crate. Users should depend on `horus` and
 //! import from `horus::prelude::*`.
 
-// Public modules — accessible cross-crate but hidden from user docs.
-// Users should go through `horus::prelude`, not import from `horus_core` directly.
-#[doc(hidden)]
+// Public modules — accessible cross-crate, hidden from user docs by default.
+// Users should go through `horus::prelude`, not import from `horus_core`
+// directly, and the crate note above says so.
+//
+// The hiding is `cfg_attr`'d rather than unconditional so a MAINTAINER can lift
+// it on stable:
+//
+//     cargo doc -p horus_core --no-deps --document-private-items \
+//       --features internal-docs --open
+//
+// Before this was a feature, the only way to read the internals was the nightly
+// incantation in horus_core/README.md — `-Z unstable-options
+// --document-hidden-items` — because `--document-private-items` disables
+// rustdoc's private-stripping pass and not its hidden-stripping pass. That put
+// the API browser for a 112k-line crate behind an unstable flag, so on stable
+// `cargo doc --open` showed one module (`terminal`), zero structs and an empty
+// search index.
+//
+// CI documents WITH the feature (ci.yml, Documentation job) precisely so
+// `-D warnings` sees these modules: while they were unconditionally hidden,
+// rustdoc never resolved their links and four broken ones had accumulated,
+// including a `HorusError::OutOfRange` the error refactor had deleted.
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod actions;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod communication;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod core;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod drivers;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod error;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod memory;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod params;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod scheduling;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod services;
 /// Non-panicking console output.
 ///
@@ -42,7 +62,7 @@ pub mod services;
 /// operator pipes `horus run` into `head`. Anything printing from a node, a
 /// background thread, or a safety path should use these instead.
 pub mod terminal;
-#[doc(hidden)]
+#[cfg_attr(not(feature = "internal-docs"), doc(hidden))]
 pub mod types;
 pub(crate) mod utils;
 
