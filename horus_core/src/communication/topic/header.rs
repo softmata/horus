@@ -1998,28 +1998,37 @@ fn read_slot_from_region(
             mmap.get(slot_start..end)?.to_vec()
         } else {
             // Split layout: [HEADER (640)] [SEQ_ARRAY (cap * 8)] [DATA (cap * type_size)]
-            let seq_array_size = capacity * std::mem::size_of::<u64>();
-            let data_region_start = TOPIC_HEADER_SIZE + seq_array_size;
-            let required = data_region_start + capacity * type_size;
+            //
+            // Through `shm_layout`, like the colo arm three lines above. This
+            // used to restate the arithmetic — `TOPIC_HEADER_SIZE + capacity * 8
+            // + capacity * type_size` — with `*` rather than the checked helper,
+            // on two u32s read straight out of a header another process wrote.
+            // A release profile has no overflow-checks, so on a 32-bit target
+            // the product wraps and a truncated file satisfies a check for a
+            // ring that does not fit. The slot was then taken with `mmap[a..b]`,
+            // which panics, where the colo arm uses `.get(..)?`.
+            let required = super::shm_layout::required_region_len_checked(capacity, type_size)?;
             if mmap.len() < required {
                 return None;
             }
-            let slot_start = data_region_start + last_written * type_size;
-            mmap[slot_start..slot_start + type_size].to_vec()
+            let slot_start = super::shm_layout::data_slot_offset(capacity, last_written, type_size);
+            let end = slot_start.checked_add(type_size)?;
+            mmap.get(slot_start..end)?.to_vec()
         }
     } else {
         if slot_size < 16 || capacity == 0 {
             return None;
         }
         // Serde layout: [header (640B)] [seq_array (cap * 8B)] [data slots (cap * slot_size)]
-        let seq_array_size = capacity * std::mem::size_of::<u64>();
-        let data_region_start = TOPIC_HEADER_SIZE + seq_array_size;
-        let required = data_region_start + capacity * slot_size;
+        //
+        // Same helpers as the POD arms, for the same reason: the multiplication
+        // is over header-supplied values and must not wrap silently.
+        let required = super::shm_layout::required_region_len_checked(capacity, slot_size)?;
         if mmap.len() < required {
             return None;
         }
         // Slot layout: [8 bytes padding][8 bytes data-len (u64 LE)][data…]
-        let slot_start = data_region_start + last_written * slot_size;
+        let slot_start = super::shm_layout::data_slot_offset(capacity, last_written, slot_size);
         let len_offset = slot_start + 8;
         let data_offset = slot_start + 16;
         // SAFETY: len_offset is within mmap bounds (validated by required size check above);
