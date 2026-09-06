@@ -323,7 +323,6 @@ pub(crate) struct RecordingState {
 /// lifetime and dropped during shutdown — use `Drop` to clean up resources.
 pub type LifecycleStartFn = Box<dyn FnOnce() -> Option<Box<dyn Any + Send>> + Send>;
 
-/// Central orchestrator: holds nodes, drives the tick loop.
 /// What the presence refresh needs about a node the main thread does not own.
 #[derive(Debug, Clone)]
 pub(super) struct PresenceEntry {
@@ -336,6 +335,17 @@ pub(super) struct PresenceEntry {
     pub main_thread: bool,
 }
 
+/// Central orchestrator: holds nodes, drives the tick loop.
+///
+/// This is the type a HORUS program is built around: nodes are registered on
+/// it, it partitions them by scheduling class across the RT, compute, event and
+/// async-I/O executors, and it owns the loop that ticks them and enforces their
+/// deadlines.
+///
+/// The doc line above used to sit one item higher, stranded on top of
+/// `PresenceEntry`'s own comment — so the framework's primary public type
+/// rendered with no description at all, and a private struct was documented as
+/// the orchestrator.
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
     pub(super) running: Arc<AtomicBool>,
@@ -1996,7 +2006,7 @@ impl Scheduler {
 
     /// Set OS-level scheduling priority using SCHED_FIFO (Linux RT-PREEMPT required).
     ///
-    /// Delegates to [`super::rt::set_realtime_priority`].
+    /// Delegates to `super::rt::set_realtime_priority` (crate-private).
     ///
     /// # Arguments
     /// * `priority` - Priority level (1-99, higher = more important)

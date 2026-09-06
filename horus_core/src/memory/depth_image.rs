@@ -134,10 +134,15 @@ impl DepthImage {
     ///
     /// # Errors
     ///
-    /// - [`HorusError::OutOfRange`] — for U16 images, if the converted
+    /// - [`HorusError::InvalidInput`] — for U16 images, if the converted
     ///   millimeter value does not fit in `u16` (e.g., value > 65.535m at
     ///   default scale 1.0). Callers must handle this instead of silently
     ///   storing the saturated `u16::MAX`.
+    ///
+    /// The link used to name `HorusError::OutOfRange`, which the error refactor
+    /// folded into `InvalidInput(ValidationError::…)` (see error.rs:399). The
+    /// broken link survived because this module was `#[doc(hidden)]`, so
+    /// rustdoc never resolved it.
     pub fn set_depth(&mut self, x: u32, y: u32, value: f32) -> HorusResult<&mut Self> {
         if x >= self.width() || y >= self.height() {
             return Ok(self);
