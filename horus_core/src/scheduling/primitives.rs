@@ -3,14 +3,20 @@
 //! These are the building blocks that the scheduler composes for different
 //! execution strategies (sequential, parallel, future RT-thread, etc.).
 //!
-//! # Everything above `run_tick` runs on an RT thread
+//! # Everything above `run_tick` can run on an RT thread
 //!
-//! `honor_safe_state_request` and `apply_degradation_action` are reached only
-//! from `rt_executor` -- the scheduler keeps its own main-thread copy of the
-//! degradation dispatch -- so they execute on a SCHED_FIFO thread, inside the
-//! tick. They therefore report through `rt_diag`, which formats into a
-//! statically allocated ring and never allocates, blocks or enters the kernel,
-//! rather than through `print_line`.
+//! `apply_degradation_action` is reached only from `rt_executor` -- the
+//! scheduler keeps its own main-thread copy of the degradation dispatch -- so
+//! it executes on a SCHED_FIFO thread, inside the tick.
+//!
+//! `honor_safe_state_request` is reached from ALL FOUR executors: its own
+//! doc-comment says "every executor must call this at the top of its per-node
+//! pass", and rt, compute, async and event all do. Only the RT one is
+//! SCHED_FIFO, but the function is shared, so it reports the way the strictest
+//! caller requires.
+//!
+//! That means `rt_diag`, which formats into a statically allocated ring and
+//! never allocates, blocks or enters the kernel, rather than `print_line`.
 //!
 //! `print_line` does `isatty` + `tcgetattr`, takes the process-global stdout
 //! lock, then `write` and `flush`. Pointed at a slow consumer -- a serial
@@ -20,8 +26,11 @@
 //! or shut down the node in the same breath: the worst possible place to wait
 //! on a terminal.
 //!
-//! The drain half is started by `RtExecutor::start` on the caller's thread
-//! before any RT thread exists, so a line queued from here always has a drainer.
+//! The drain half is started by every executor's `start`, on the caller's
+//! thread before any executor thread exists, so a line queued from here always
+//! has a drainer. It used to be started by `RtExecutor::start` alone, which
+//! made that last sentence false for any program without RT nodes: safing
+//! diagnostics went into the ring and nothing ever read them out.
 
 use std::time::{Duration, Instant};
 
@@ -60,6 +69,141 @@ pub(crate) struct TickResult {
 #[inline]
 pub(crate) fn guard_fault_callback(f: impl FnOnce()) -> bool {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err()
+}
+
+/// A node's safing callback panicked on an executor, so the node did NOT reach
+/// a safe state. Stop ticking it, and — because a node that cannot safe itself
+/// is a safety failure — escalate to a system emergency stop for critical
+/// nodes.
+///
+/// The executor twin of `Scheduler::note_safing_failure`, which states the
+/// intent as a property of the system rather than of one dispatch path. The
+/// isolation half of that was ported to the executors (see
+/// [`guard_fault_callback`]); the ESCALATION half was not, so the identical
+/// event halted the robot on a BestEffort node and merely stopped an RT one —
+/// and every RT node under a scheduler `.watchdog()` is a critical node, so the
+/// class most likely to be critical was the one the escalation omitted.
+pub(crate) fn note_safing_failure(
+    node: &mut RegisteredNode,
+    monitors: &super::types::SharedMonitors,
+    action: &str,
+) {
+    node.is_stopped = true;
+    let critical = monitors
+        .safety
+        .as_ref()
+        .is_some_and(|m| m.is_critical_node(&node.name));
+    if critical {
+        super::rt_executor::rt_diag(format_args!(
+            "[RT-thread] '{}' PANICKED in {} and could NOT reach a safe state — EMERGENCY STOP",
+            node.name, action
+        ));
+        if let Some(ref estop) = monitors.estop {
+            // `trigger_fmt`/`format_args!`, not `trigger`/`format!`. This is
+            // the RT panic path — the `[RT-thread]` line directly above says
+            // so — and `format!` allocates on it. The `String` wrapper this
+            // used to call no longer exists for that reason.
+            estop.trigger_fmt(format_args!(
+                "critical node '{}' panicked in {} and could not reach a safe state",
+                node.name, action
+            ));
+        }
+    } else {
+        super::rt_executor::rt_diag(format_args!(
+            "[RT-thread] '{}' panicked in {} and could NOT reach a safe state — node stopped",
+            node.name, action
+        ));
+    }
+}
+
+/// Honour a pending restart request raised by `horus node restart`, if this
+/// node has one.
+///
+/// Same shape and same reason as [`honor_safe_state_request`]: `init()` needs
+/// `&mut dyn Node`, which the executor owns, so the main thread raises a flag
+/// and the owning executor consumes it here, once per raise.
+///
+/// Every executor must call this at the top of its per-node pass. Skipping it
+/// in one executor means `horus node restart` silently does nothing for that
+/// whole class of node — which is what the control-command handler alone did
+/// for all four executor classes, because after the class partition the
+/// scheduler's `nodes` vector holds only the main-thread group.
+///
+/// A restart also lifts an operator pause: a wedged node is usually paused
+/// before it is restarted, and leaving it paused would make the restart a
+/// no-op at the very next tick gate.
+pub(crate) fn honor_restart_request(
+    node: &mut RegisteredNode,
+    monitors: &super::types::SharedMonitors,
+) {
+    let requested = monitors
+        .node_controls
+        .take_restart_request(node.name.as_ref());
+    if requested {
+        monitors.node_controls.set_paused(node.name.as_ref(), false);
+    }
+    honor_restart_request_with(node, requested, monitors);
+}
+
+/// The same, for a caller that already holds the node's control block.
+///
+/// The by-name form above takes an `RwLock` read guard and hashes the node name
+/// on EVERY call. That is fine for the executors that poll it once per loop
+/// iteration, but the RT executor calls it per node per tick, from the top of
+/// `tick_node` -- so at 1 kHz with 8 nodes the by-name form would put 8000
+/// lock acquisitions a second back into the hot path that
+/// `NodeControlMap::handle` exists to keep out. `safe_state_requested`,
+/// `stopped` and `paused` are already read through the cached handle there;
+/// this is the fourth flag and had no reason to be the exception.
+pub(crate) fn honor_restart_request_via(
+    node: &mut RegisteredNode,
+    control: Option<&super::types::NodeControl>,
+    monitors: &super::types::SharedMonitors,
+) {
+    let requested = control.is_some_and(|c| {
+        c.restart_requested
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    });
+    if requested {
+        if let Some(c) = control {
+            // A restart lifts an operator pause; see the note above.
+            c.paused.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+    honor_restart_request_with(node, requested, monitors);
+}
+
+fn honor_restart_request_with(
+    node: &mut RegisteredNode,
+    requested: bool,
+    monitors: &super::types::SharedMonitors,
+) {
+    let _ = monitors;
+    if !requested {
+        return;
+    }
+
+    node.is_paused = false;
+
+    let target = &mut node.node;
+    let panicked = guard_fault_callback(|| {
+        let _ = target.init();
+    });
+
+    if panicked {
+        // A node that cannot initialise must not be ticked.
+        node.is_stopped = true;
+        super::rt_executor::rt_diag(format_args!(
+            " Restart: '{}' PANICKED in init() — node stopped",
+            node.name
+        ));
+    } else {
+        node.initialized = true;
+        super::rt_executor::rt_diag(format_args!(
+            " Restart: '{}' re-initialised on its executor",
+            node.name
+        ));
+    }
 }
 
 /// Honour a pending safe-state request raised by the main thread's watchdog
@@ -200,13 +344,7 @@ pub(crate) fn apply_degradation_action(
         DegradationAction::Isolate(ref name) => {
             set_health(node, NodeHealthState::Isolated);
             let target = &mut node.node;
-            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                target.enter_safe_state()
-            }))
-            .is_err();
-            if panicked {
-                node.is_stopped = true;
-            }
+            let panicked = guard_fault_callback(|| target.enter_safe_state());
             super::rt_executor::rt_diag(format_args!(
                 " Degradation: '{name}' — isolated, entered safe state{}",
                 if panicked {
@@ -215,6 +353,9 @@ pub(crate) fn apply_degradation_action(
                     ""
                 }
             ));
+            if panicked {
+                note_safing_failure(node, monitors, "enter_safe_state");
+            }
             if let Some(ref monitor) = monitors.safety {
                 monitor.record_degrade_activation();
             }
@@ -222,15 +363,17 @@ pub(crate) fn apply_degradation_action(
         DegradationAction::Kill(ref name) => {
             set_health(node, NodeHealthState::Isolated);
             let target = &mut node.node;
-            let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let panicked = guard_fault_callback(|| {
                 let _ = target.shutdown();
-            }))
-            .is_err();
+            });
             node.is_stopped = true;
             super::rt_executor::rt_diag(format_args!(
                 " KILL: '{name}' — permanently removed from execution after shutdown(){}",
                 if panicked { " (shutdown panicked)" } else { "" }
             ));
+            if panicked {
+                note_safing_failure(node, monitors, "shutdown");
+            }
             if let Some(ref monitor) = monitors.safety {
                 monitor.record_degrade_activation();
             }

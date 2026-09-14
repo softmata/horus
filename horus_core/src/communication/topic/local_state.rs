@@ -106,6 +106,11 @@ pub(crate) struct LocalState {
     /// Our slot index in the participant array (-1 if not registered)
     pub slot_index: i32,
 
+    /// Generation of the participant entry at `slot_index` when this handle
+    /// claimed it. Together they name a registration unambiguously, so `Drop`
+    /// can give back its own and never a later one that reused the slot.
+    pub participant_generation: u16,
+
     /// Slot size for serialized messages (non-POD)
     pub slot_size: usize,
 
@@ -254,6 +259,7 @@ impl Default for LocalState {
             cached_seq_ptr: std::ptr::null_mut(),
             cached_colo_stride: 0,
             slot_index: -1,
+            participant_generation: 0,
             slot_size: DEFAULT_SLOT_SIZE,
             cached_epoch: 0,
             fanout_shm_pub_id: None,

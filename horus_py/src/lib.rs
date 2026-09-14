@@ -114,8 +114,13 @@ fn _horus(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "HorusTimeoutError",
         m.py().get_type::<errors::HorusTimeoutError>(),
     )?;
+    m.add(
+        "HorusBackpressureError",
+        m.py().get_type::<errors::HorusBackpressureError>(),
+    )?;
 
     m.add_function(wrap_pyfunction!(get_version, m)?)?;
+    m.add_function(wrap_pyfunction!(topic::peek_topic_type, m)?)?;
 
     // Time API — horus.now(), horus.dt(), etc.
     m.add_function(wrap_pyfunction!(time_now, m)?)?;

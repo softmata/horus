@@ -595,7 +595,18 @@ lazy_static::lazy_static! {
 /// Error and Warning entries are dual-written to both the main buffer and the
 /// dedicated error buffer for persistent retention. Info/Debug/Publish/Subscribe
 /// entries go to the main buffer only (zero overhead on the hot sensor path).
-pub fn publish_log(entry: LogEntry) {
+///
+/// An empty `timestamp` is stamped here. Both C++ entry points -- `horus_log`
+/// and `horus_blackbox_record` -- pass `String::new()` with the comment "filled
+/// by log_buffer if empty", and nothing filled it: every line a C++ node logged
+/// landed in `horus log` with a blank time column while the identical Rust call
+/// carried one. Callers that already have a timestamp keep it, so `hlog!` still
+/// reports the instant the log statement ran rather than the instant it reached
+/// the buffer.
+pub fn publish_log(mut entry: LogEntry) {
+    if entry.timestamp.is_empty() {
+        entry.timestamp = chrono::Local::now().format("%H:%M:%S%.3f").to_string();
+    }
     if matches!(entry.log_type, LogType::Error | LogType::Warning) {
         GLOBAL_ERROR_BUFFER.push(entry.clone());
     }
@@ -635,6 +646,40 @@ pub fn start_log_file_drain() -> Option<std::thread::JoinHandle<()>> {
         log_drain_loop(&log_dir, max_size, max_files);
     })
     .ok()
+}
+
+/// The process-wide log-file drain, started at most once — but only once it
+/// has actually started.
+///
+/// A `OnceLock<Option<_>>` was wrong: `get_or_init` memoizes whatever the first
+/// call produced, `None` included. A process that built one `Scheduler` before
+/// `HORUS_LOG_FILE` was set — which every test that sets the variable and then
+/// constructs a scheduler does, and any program that reads config after an
+/// early scheduler — cached "no drain" for its whole life and silently never
+/// wrote a log file again. A `Mutex` keeps the at-most-one guarantee (the lock
+/// serialises the check and the spawn) without freezing the negative answer.
+static LOG_FILE_DRAIN: std::sync::Mutex<Option<std::thread::JoinHandle<()>>> =
+    std::sync::Mutex::new(None);
+
+/// Start the log-file drain once per process, if `HORUS_LOG_FILE` asks for it.
+///
+/// `Scheduler::new` calls this unconditionally: `start_log_file_drain` reads
+/// the variable itself and returns `None` when it is unset, so a process that
+/// has not opted in pays one env lookup and spawns nothing.
+///
+/// Once, because a process may build several `Scheduler`s (tests do, and so
+/// does any program that runs one scheduler after another). Each drain thread
+/// tracks its own `last_idx` into the same global ring, so N of them would
+/// write every entry N times into the same file.
+///
+/// Returns whether a drain thread is running.
+pub fn start_log_file_drain_once() -> bool {
+    let mut slot = LOG_FILE_DRAIN.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_some() {
+        return true;
+    }
+    *slot = start_log_file_drain();
+    slot.is_some()
 }
 
 fn log_drain_loop(log_dir: &str, max_size: u64, max_files: usize) {

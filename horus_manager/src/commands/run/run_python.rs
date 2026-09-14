@@ -53,7 +53,7 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
 
         // Propagate the child's exit code as an error
         if !status.success() {
-            let code = status.code().unwrap_or(1);
+            let code = crate::error_wrapper::shell_exit_code(&status);
             crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                 "python", code,
             ));
@@ -77,7 +77,7 @@ pub(super) fn execute_python_node(file: PathBuf, args: Vec<String>, _release: bo
 
         // Propagate the child's exit code as an error
         if !status.success() {
-            let code = status.code().unwrap_or(1);
+            let code = crate::error_wrapper::shell_exit_code(&status);
             crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                 "python", code,
             ));

@@ -840,6 +840,26 @@ pub fn python_error_hint(stderr: &str) -> Vec<Diagnostic> {
 
 // ── Exit code hints ─────────────────────────────────────────────────────────
 
+/// The shell-convention exit code for a finished process.
+///
+/// `ExitStatus::code()` returns `None` on Unix when a signal killed the child,
+/// so `code().unwrap_or(1)` collapses every signal death into the one code
+/// `exit_code_hint` deliberately says nothing about. That silently disabled the
+/// 137/139/128+N arms below in every real run — including the OOM hint, which is
+/// the most useful one this module has. Shells report a signal death as 128+N;
+/// so do we, and the hints become reachable.
+pub fn shell_exit_code(status: &std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    // Windows has no signals: code() is always Some for a finished process.
+    status.code().unwrap_or(1)
+}
+
 /// Interpret a process exit code and return diagnostics for non-obvious codes.
 ///
 /// Common Unix exit codes and signal-based exits (128+N) are translated into
@@ -1995,6 +2015,48 @@ mod tests {
     #[test]
     fn exit_code_0_returns_empty() {
         assert!(exit_code_hint("python", 0).is_empty());
+    }
+
+    /// The 137/139/128+N arms are worth nothing if no caller can ever produce
+    /// those numbers. Every one of them used to read `status.code().unwrap_or(1)`,
+    /// which on Unix is `None` -> 1 for a signal death, so a genuinely
+    /// OOM-killed child got the "too generic, no hint" branch. Kill a real
+    /// process and walk the actual production path: status -> code -> hint.
+    #[test]
+    #[cfg(unix)]
+    fn a_signal_killed_child_reaches_the_oom_hint() {
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("kill -9 $$")
+            .status()
+            .expect("sh should be available on any unix host");
+        assert!(!status.success());
+        assert_eq!(
+            status.code(),
+            None,
+            "a SIGKILLed child reports no exit code - that is the whole problem"
+        );
+
+        let code = shell_exit_code(&status);
+        assert_eq!(code, 137, "SIGKILL is signal 9, so the shell code is 128+9");
+
+        let diags = exit_code_hint("python", code);
+        assert!(
+            diags.iter().any(|d| d.code == "H053"),
+            "an OOM-killed child must get the OOM hint, got {:?}",
+            diags.iter().map(|d| &d.code).collect::<Vec<_>>()
+        );
+    }
+
+    /// A plain non-zero exit must keep going through unchanged.
+    #[test]
+    fn shell_exit_code_passes_an_ordinary_failure_through() {
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 3")
+            .status()
+            .expect("sh should be available");
+        assert_eq!(shell_exit_code(&status), 3);
     }
 
     // ── CMake error hints ───────────────────────────────────────────────

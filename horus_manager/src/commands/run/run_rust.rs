@@ -509,7 +509,7 @@ pub(super) fn execute_from_cargo_toml(
         cmd.envs(child_env.iter().cloned());
         let status = cmd.status()?;
         if !status.success() {
-            let code = status.code().unwrap_or(1);
+            let code = crate::error_wrapper::shell_exit_code(&status);
             crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                 "rust", code,
             ));
@@ -862,7 +862,7 @@ pub(super) fn execute_with_scheduler(
 
                 let status = cmd.status()?;
                 if !status.success() {
-                    let code = status.code().unwrap_or(1);
+                    let code = crate::error_wrapper::shell_exit_code(&status);
                     crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                         "cargo", code,
                     ));
@@ -888,7 +888,7 @@ pub(super) fn execute_with_scheduler(
                 let status = cmd.status()?;
 
                 if !status.success() {
-                    let code = status.code().unwrap_or(1);
+                    let code = crate::error_wrapper::shell_exit_code(&status);
                     crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                         "rust", code,
                     ));
@@ -964,7 +964,7 @@ pub(super) fn execute_with_scheduler(
 
                 let status = cmd.status()?;
                 if !status.success() {
-                    let code = status.code().unwrap_or(1);
+                    let code = crate::error_wrapper::shell_exit_code(&status);
                     crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                         "cargo", code,
                     ));
@@ -989,7 +989,7 @@ pub(super) fn execute_with_scheduler(
                 let status = cmd.status()?;
 
                 if !status.success() {
-                    let code = status.code().unwrap_or(1);
+                    let code = crate::error_wrapper::shell_exit_code(&status);
                     crate::error_wrapper::emit_diagnostics(&crate::error_wrapper::exit_code_hint(
                         "rust", code,
                     ));

@@ -848,6 +848,17 @@ pub struct NodeControl {
     /// would honour the request, so it will not be safed by its own executor.
     /// That case is what the e-stop escalation exists for.
     pub safe_state_requested: std::sync::atomic::AtomicBool,
+    /// Set by the main thread when `horus node restart` names a node the
+    /// scheduler does not own; cleared by the executor that does, which then
+    /// re-runs `init()` on it.
+    ///
+    /// Same reason as `safe_state_requested`: `init()` needs `&mut dyn Node`,
+    /// and after the class partition the scheduler's own `nodes` holds only the
+    /// main-thread group. Restart handled solely against that vector reached
+    /// BestEffort nodes and silently reported every RT, Compute, Event and
+    /// AsyncIo node as unknown — which is every node with a `.rate()`, i.e.
+    /// exactly the ones an operator restarts.
+    pub restart_requested: std::sync::atomic::AtomicBool,
 }
 
 impl NodeControlMap {
@@ -859,6 +870,7 @@ impl NodeControlMap {
                 stopped: std::sync::atomic::AtomicBool::new(false),
                 health: AtomicHealthState::default(),
                 safe_state_requested: std::sync::atomic::AtomicBool::new(false),
+                restart_requested: std::sync::atomic::AtomicBool::new(false),
             })
         });
     }
@@ -949,6 +961,40 @@ impl NodeControlMap {
             c.safe_state_requested
                 .store(true, std::sync::atomic::Ordering::Release);
         }
+    }
+
+    /// Ask the executor that owns `name` to re-run its `init()`.
+    ///
+    /// Returns whether the node is known to the control map at all, so the
+    /// caller can tell "asked" from "no such node" — the control map is
+    /// registered for all five execution groups, so an unknown name here really
+    /// is unknown.
+    pub fn request_restart(&self, name: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|c| {
+                c.restart_requested
+                    .store(true, std::sync::atomic::Ordering::Release);
+                true
+            })
+            .unwrap_or(false)
+    }
+
+    /// Consume a pending restart request, returning whether one was set.
+    ///
+    /// Clears the flag, so a request is honoured exactly once per raise.
+    pub fn take_restart_request(&self, name: &str) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .map(|c| {
+                c.restart_requested
+                    .swap(false, std::sync::atomic::Ordering::AcqRel)
+            })
+            .unwrap_or(false)
     }
 
     /// Consume a pending safing request, returning whether one was set.
