@@ -212,7 +212,7 @@ jobs:
 
       - name: Set up QEMU (foreign-architecture smoke test)
         if: runner.os == 'Linux' && matrix.docker_platform != 'linux/amd64'
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
         with:
           platforms: ${{ matrix.docker_platform }}
 
@@ -350,7 +350,7 @@ jobs:
       # one-liner. Runs before the Release is created so a failed attestation
       # cannot leave published-but-unattested assets behind.
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             artifacts/*.tar.gz
@@ -375,7 +375,7 @@ jobs:
           fi
 
       - name: Create / update Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
