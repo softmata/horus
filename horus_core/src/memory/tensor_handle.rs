@@ -101,7 +101,7 @@ impl TensorHandle {
     /// and dtype.
     ///
     /// This is the ergonomic constructor for creating a tensor to fill in and
-    /// publish: the data lives in the [`global_pool`](crate::communication::topic::pool_registry::global_pool)
+    /// publish: the data lives in the process-wide tensor pool (`global_pool`)
     /// and the device is inferred from that pool's backend (CPU by default). For
     /// an explicit pool or device, use [`alloc`](Self::alloc).
     ///

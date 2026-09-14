@@ -18,6 +18,7 @@
 //! | [`device`] | Serial port and video device enumeration |
 //! | [`platform`] | OS/distro detection, directories, shell, package manager |
 //! | [`sync`] | Environment synchronization (toolchains, system deps) |
+//! | [`mod@env`] | One vocabulary for boolean `HORUS_*` environment variables |
 //!
 //! ## Platform Support
 //!
@@ -28,6 +29,7 @@
 
 pub mod device;
 pub mod discover;
+pub mod env;
 pub mod fs;
 pub mod platform;
 pub mod process;

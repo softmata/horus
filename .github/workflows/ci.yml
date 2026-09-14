@@ -226,6 +226,25 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # Doctests. `--lib` above does NOT run them, and no other job did either:
+      # before this step, `grep -rn -- '--doc' .github/workflows/` returned
+      # nothing, so every `///` example in the workspace was unverified. The
+      # `Documentation` job runs `cargo doc`, which builds the pages and does
+      # not compile the examples in them.
+      #
+      # This matters because the examples are the first code a new contributor
+      # copies. Measured on the tree that added this step: 21 passed, 0 failed.
+      #
+      # It is a thin gate today and the number says why: 193 of the workspace's
+      # examples are fenced ```rust,ignore``` and are skipped, so this compiles
+      # 21 of 214. Converting the ignores that only need to type-check to
+      # ```no_run``` is the follow-up that gives this step its teeth; the step
+      # has to exist first or there is nothing to convert them into.
+      - name: Doctests
+        run: cargo test --workspace --exclude horus_py --doc
+        env:
+          RUST_BACKTRACE: 1
+
       # The resolver's crates.io/PyPI tests carry #[ignore] so a contributor
       # without network access gets a green suite and a failure means the
       # resolver is wrong rather than the network. CI does have access, so it
@@ -360,6 +379,19 @@ jobs:
           # also the right call — docs should describe the crate as it ships,
           # i.e. with its default features on.
           cargo doc --workspace --no-deps --exclude horus_manager
+          # Again with horus_core's internals visible.
+          #
+          # Ten of its eleven modules are `#[doc(hidden)]` by default, and
+          # rustdoc does not resolve links inside a hidden module — so the run
+          # above holds `-D warnings` over roughly a quarter of the crate and
+          # silently skips the rest. Four broken links had accumulated behind
+          # that gap, including a `[`HorusError::OutOfRange`]` naming a variant
+          # the error refactor deleted, and two pointing at private items.
+          #
+          # `internal-docs` is docs-only: it gates nothing but the
+          # `#[doc(hidden)]` attributes, so this compiles no extra code. The
+          # published documentation is still what the first command renders.
+          cargo doc -p horus_core --no-deps --features internal-docs
         env:
           RUSTDOCFLAGS: ${{ (github.ref == 'refs/heads/main' || github.base_ref == 'main') && '-D warnings' || '' }}
 
