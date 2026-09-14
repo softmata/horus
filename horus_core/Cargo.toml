@@ -52,7 +52,7 @@ horus_sys = { path = "../horus_sys" }
 horus_macros = { path = "../horus_macros", optional = true }
 
 # Compression for recordings (optional)
-zstd = { version = "0.13", optional = true }
+zstd = { version = "0.14", optional = true }
 
 
 # Platform-specific: Windows shared memory
