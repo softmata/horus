@@ -37,7 +37,7 @@ tracing = "0.1"
 parking_lot = "0.12"
 chrono = { workspace = true }
 uuid = { version = "1.0", features = ["v4", "serde"] }
-dirs = "6.0"
+dirs = "7.0"
 lazy_static = "1.4"
 rand = { workspace = true, features = ["small_rng"] }
 

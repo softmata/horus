@@ -50,7 +50,7 @@ indicatif = "0.18"
 console = "0.16"
 chrono = { workspace = true }
 ctrlc = "3.4"
-dirs = "6.0"
+dirs = "7.0"
 anyhow = "1.0"
 thiserror = "2.0"
 toml = "1.1"
