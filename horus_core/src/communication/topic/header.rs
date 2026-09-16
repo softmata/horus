@@ -1323,27 +1323,25 @@ pub struct TopicSlotRead {
 ///
 /// The path-based readers below address a topic by its `topic_shm_path`, which
 /// was correct back when every backend was a file: `/dev/shm/horus_<ns>/topics/
-/// <name>` on Linux, `/tmp/…` on macOS and on the generic fallback. The Windows
-/// backend is not a file at all — `ShmRegion::new` calls
+/// <name>` on Linux and on the generic fallback. The macOS backend uses a
+/// POSIX named shared-memory object, and the Windows backend uses
 /// `CreateFileMappingW(INVALID_HANDLE_VALUE, …)`, a pagefile-backed section
-/// named `Local\horus_<name>`, and `ShmRegion::backing_path()` correspondingly
-/// reports `None` there. Nothing is ever created at the topic path, so
-/// `File::open` failed with `NotFound` and every reader here returned `None`
-/// for every live topic on Windows: `horus topic echo` and `horus topic hz`
-/// printed nothing and horus_net's SHM reader exported nothing, on a platform
-/// where the ring itself works — the cross-process half is fine there, it is
-/// only the region's *address* that differs.
+/// named `Local\horus_<name>`. Neither named object is created at the public
+/// topic path, so `File::open` failed with `NotFound` and every reader here
+/// returned `None` for every live topic on macOS and Windows: `horus topic echo`
+/// and `horus topic hz` printed nothing and horus_net's SHM reader exported
+/// nothing, on platforms where the ring itself works — the cross-process half
+/// is fine there, it is only the region's *address* that differs.
 ///
 /// The path stays the public address because it is the address wherever there
 /// is one, and it still *names* the topic where there is not: `topic_shm_path`
 /// is `<topics dir>/<name>`, so the name is recoverable from the path and the
 /// section can be opened by it.
 enum TopicRegion {
-    /// A file-backed region (Linux, macOS, the generic fallback), mapped
-    /// read-only.
+    /// A file-backed region (Linux and the generic fallback), mapped read-only.
     Mapped(memmap2::Mmap),
-    /// A Windows named section. The handle is held for the life of the view.
-    #[cfg(target_os = "windows")]
+    /// A platform-named region. The handle is held for the life of the view.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     Section(horus_sys::shm::ShmRegion),
 }
 
@@ -1353,7 +1351,7 @@ impl std::ops::Deref for TopicRegion {
     fn deref(&self) -> &[u8] {
         match self {
             Self::Mapped(mmap) => &mmap[..],
-            #[cfg(target_os = "windows")]
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
             Self::Section(region) => region.as_slice(),
         }
     }
@@ -1380,7 +1378,7 @@ pub fn shm_map_count() -> u64 {
 /// on is made once: the returned view is at least `TOPIC_HEADER_SIZE` bytes.
 ///
 /// The file is tried first on every platform, because where one exists it *is*
-/// the region. Only when there is none does the Windows section lookup run, so
+/// the region. Only when there is none does the platform-named lookup run, so
 /// nothing about the file-backed platforms changes.
 fn map_topic_region(path: &std::path::Path) -> Option<TopicRegion> {
     use memmap2::MmapOptions;
@@ -1408,14 +1406,14 @@ fn map_topic_region(path: &std::path::Path) -> Option<TopicRegion> {
     section
 }
 
-/// Open the Windows named section a topic path refers to.
+/// Open the platform-named region a topic path refers to.
 ///
 /// `topic_shm_path` is `shm_topics_dir().join(name)` and a topic name may
 /// itself contain separators, so the name is the whole remainder of the path
 /// rather than just its last component — `file_name()` on `robot/cmd_vel`
 /// would ask the kernel for a section called `cmd_vel`, which is either absent
 /// or, worse, a different topic.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn open_named_section(path: &std::path::Path) -> Option<TopicRegion> {
     let name = path
         .strip_prefix(horus_sys::shm::shm_topics_dir())
@@ -1432,10 +1430,10 @@ fn open_named_section(path: &std::path::Path) -> Option<TopicRegion> {
     Some(TopicRegion::Section(region))
 }
 
-/// Non-Windows counterpart of the section lookup: every other backend is
+/// Non-named-region counterpart of the section lookup: every other backend is
 /// file-backed, so a missing file is a missing topic and there is nowhere else
 /// to look.
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn open_named_section(_path: &std::path::Path) -> Option<TopicRegion> {
     None
 }
@@ -1443,9 +1441,9 @@ fn open_named_section(_path: &std::path::Path) -> Option<TopicRegion> {
 /// Read the latest message payload from a topic's shared-memory region.
 ///
 /// `path` is the topic's `topic_shm_path`. It is the backing file itself on
-/// Linux, macOS and the fallback backend; on Windows, where the region is a
-/// pagefile-backed named section with nothing on disk, it names the section
-/// instead.
+/// Linux and the fallback backend. On macOS, where the region is a POSIX named
+/// object with nothing at that path, and on Windows, where it is a
+/// pagefile-backed named section, the path names the region instead.
 ///
 /// Returns `None` when:
 /// - no region exists at `path`, or it cannot be mapped,
@@ -1481,8 +1479,9 @@ fn read_slot_inner(
     ordinal: Option<u64>,
 ) -> Option<TopicSlotRead> {
     // ── 1. Map the topic's shared region ─────────────────────────────────────
-    // File-backed on Linux/macOS, a named section on Windows; either way at
-    // least TOPIC_HEADER_SIZE bytes, which is what everything below assumes.
+    // File-backed on Linux/fallback, a named region on macOS/Windows; either
+    // way at least TOPIC_HEADER_SIZE bytes, which is what everything below
+    // assumes.
     read_slot_from_region(&map_topic_region(path)?, last_write_idx, ordinal)
 }
 
@@ -4141,6 +4140,37 @@ mod untrusted_header_tests {
 mod echo_freshness_tests {
     use crate::communication::Topic;
     use crate::core::DurationExt;
+
+    /// macOS topics use POSIX named shared memory rather than a file at the
+    /// public topic path. The CLI reader must resolve that name and attach to
+    /// the live region, otherwise `horus topic echo` sees an active topic but
+    /// receives no messages.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_reader_opens_a_live_posix_topic() {
+        let name = format!("echo_macos_named_region_{}", std::process::id());
+        let topic: Topic<f32> = match Topic::new(&name) {
+            Ok(topic) => topic,
+            Err(error) => {
+                eprintln!("skipping: shared memory unavailable ({error})");
+                return;
+            }
+        };
+        let Some(path) = horus_sys::shm::topic_shm_path_checked(&name) else {
+            eprintln!("skipping: cannot resolve topic path");
+            return;
+        };
+
+        topic.send(0.8);
+        let slot = super::read_latest_slot_bytes(&path, 0)
+            .expect("the macOS POSIX SHM region must be readable through the CLI path");
+        let value = f32::from_ne_bytes(
+            slot.payload[..std::mem::size_of::<f32>()]
+                .try_into()
+                .expect("f32 payload"),
+        );
+        assert_eq!(value, 0.8);
+    }
 
     /// Reading fresh data must keep working after the ring wraps.
     ///
