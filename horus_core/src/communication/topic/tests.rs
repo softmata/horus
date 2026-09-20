@@ -9847,24 +9847,26 @@ fn send_blocking_cross_thread_producer_consumer() {
 #[test]
 fn migration_metrics_default_all_zero() {
     let m = metrics::MigrationMetrics::default();
-    assert_eq!(m.messages_sent.load(Ordering::Relaxed), 0);
-    assert_eq!(m.messages_received.load(Ordering::Relaxed), 0);
     assert_eq!(m.send_failures.load(Ordering::Relaxed), 0);
+    assert_eq!(m.send_retry_overruns.load(Ordering::Relaxed), 0);
     assert_eq!(m.migrations.load(Ordering::Relaxed), 0);
 }
 
 /// MigrationMetrics atomic increment of each counter.
+///
+/// `messages_sent` / `messages_received` are deliberately absent: they are
+/// per-handle counters in `LocalState`, not atomics in this Arc-shared struct.
+/// See `LocalState::messages_sent` for why — an atomic RMW per message on the
+/// publish path was a blocking benchmark regression.
 #[test]
 fn migration_metrics_atomic_increments() {
     let m = metrics::MigrationMetrics::default();
-    m.messages_sent.fetch_add(5, Ordering::Relaxed);
-    m.messages_received.fetch_add(3, Ordering::Relaxed);
     m.send_failures.fetch_add(2, Ordering::Relaxed);
+    m.send_retry_overruns.fetch_add(1, Ordering::Relaxed);
     m.migrations.fetch_add(4, Ordering::Relaxed);
 
-    assert_eq!(m.messages_sent.load(Ordering::Relaxed), 5);
-    assert_eq!(m.messages_received.load(Ordering::Relaxed), 3);
     assert_eq!(m.send_failures.load(Ordering::Relaxed), 2);
+    assert_eq!(m.send_retry_overruns.load(Ordering::Relaxed), 1);
     assert_eq!(m.migrations.load(Ordering::Relaxed), 4);
 }
 
@@ -9904,19 +9906,30 @@ fn topic_metrics_snapshot_starts_at_zero() {
 }
 
 /// MigrationMetrics can be manually incremented and read back via snapshot.
+///
+/// It covers the counters that DO live in the Arc-shared struct. The two
+/// traffic counters are per-handle `LocalState` fields now and are covered by
+/// `topic_metrics_count_traffic_without_the_monitor_attached`; incrementing
+/// them here would not be reachable through the snapshot.
 #[test]
 fn migration_metrics_manual_increment_visible_in_snapshot() {
     let t: Topic<u64> = Topic::new(unique("metrics_manual")).expect("create");
     let mig = t.migration_metrics();
 
-    mig.messages_sent.fetch_add(10, Ordering::Relaxed);
-    mig.messages_received.fetch_add(7, Ordering::Relaxed);
     mig.send_failures.fetch_add(2, Ordering::Relaxed);
 
     let snap = t.metrics();
-    assert_eq!(snap.messages_sent(), 10);
-    assert_eq!(snap.messages_received(), 7);
     assert_eq!(snap.send_failures(), 2);
+    assert_eq!(
+        snap.messages_sent(),
+        0,
+        "the traffic counters are per-handle and nothing was sent"
+    );
+    assert_eq!(
+        snap.messages_received(),
+        0,
+        "the traffic counters are per-handle and nothing was delivered"
+    );
     assert_eq!(
         snap.recv_failures(),
         0,

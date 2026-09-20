@@ -3,15 +3,17 @@
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
 /// Migration and operational metrics for a Topic
+///
+/// `messages_sent` and `messages_received` are deliberately NOT here: they are
+/// per-handle counters living in `LocalState`, because a `Relaxed` atomic RMW
+/// on every send and recv — which an `Arc`-shared struct needs, since a
+/// `Clone` can run on another thread — costs a `lock xadd` in the middle of
+/// the publish path and moved the cross-process ping-pong median by ~10% (the
+/// benchmark gate caught it as a blocking regression). `LocalState` is
+/// per-handle by the crate's thread contract, so its counters are plain
+/// increments. See `LocalState::messages_sent`.
 #[derive(Debug, Default)]
 pub(crate) struct MigrationMetrics {
-    /// Messages sent through this topic, counted on every `send()`.
-    pub messages_sent: AtomicU64,
-    /// Messages delivered by `recv()` on this topic.
-    ///
-    /// `try_recv()` is the low-level path and does not count; `recv()` is what
-    /// `Topic::recv` uses.
-    pub messages_received: AtomicU64,
     /// Number of send failures
     pub send_failures: AtomicU64,
     /// Sends dropped because the retry budget was gone, rather than because
@@ -23,12 +25,17 @@ pub(crate) struct MigrationMetrics {
 
 /// Non-atomic snapshot of topic metrics (for external consumers)
 ///
-/// `messages_sent` and `messages_received` used to move only on the `#[cold]`
-/// verbose-logging path, which runs while the `horus monitor` TUI has set a
-/// topic's verbose flag — so in an ordinary run both read 0 no matter how much
-/// traffic the topic carried, while `MockTopic` maintained them faithfully. A
-/// test double that reports what the real transport does not is the one defect
-/// a double cannot have. Both are counted on the ordinary paths now.
+/// `messages_sent` and `messages_received` are this HANDLE's counts — they live
+/// in its `LocalState` and are ordinary increments, not atomics. A `Clone` of a
+/// `Topic` starts an independent count, exactly like `MockTopic`, the double
+/// users write their tests against.
+///
+/// They used to move only on the `#[cold]` verbose-logging path, which runs
+/// while the `horus monitor` TUI has set a topic's verbose flag — so in an
+/// ordinary run both read 0 no matter how much traffic the topic carried, while
+/// `MockTopic` maintained them faithfully. A test double that reports what the
+/// real transport does not is the one defect a double cannot have. Both are
+/// counted on the ordinary paths now.
 #[derive(Debug, Clone, Default)]
 pub struct TopicMetrics {
     messages_sent: u64,

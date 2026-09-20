@@ -2788,10 +2788,16 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     }
 
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
+    ///
+    /// `messages_sent` / `messages_received` come from this handle's
+    /// `LocalState` — plain counters, no atomics on the publish path. See
+    /// `LocalState::messages_sent` for why they are not in the shared
+    /// `MigrationMetrics`.
     pub fn metrics(&self) -> TopicMetrics {
+        let local = self.local();
         TopicMetrics::new(
-            self.metrics.messages_sent.load(Ordering::Relaxed),
-            self.metrics.messages_received.load(Ordering::Relaxed),
+            local.messages_sent,
+            local.messages_received,
             self.metrics.send_failures.load(Ordering::Relaxed),
             // The real transport has no recv-failure notion: a `recv()` that
             // returns `None` is an empty ring. Only `MockTopic` reports one,
@@ -2799,6 +2805,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             0,
             self.metrics.send_retry_overruns.load(Ordering::Relaxed),
         )
+    }
+
+    /// Count one message this handle sent. See `LocalState::messages_sent`.
+    #[inline(always)]
+    fn note_message_sent(&self) {
+        let local = self.local();
+        local.messages_sent = local.messages_sent.wrapping_add(1);
+    }
+
+    /// Count one message this handle delivered through `recv()`.
+    /// See `LocalState::messages_received`.
+    #[inline(always)]
+    fn note_message_received(&self) {
+        let local = self.local();
+        local.messages_received = local.messages_received.wrapping_add(1);
     }
 
     #[cfg(test)]
@@ -2880,10 +2901,11 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // reports what the real thing does not is the one defect a double
         // cannot have.
         //
-        // This is a process-local, uncontended relaxed increment on a counter
-        // only this handle writes — not the contended shared-memory RMW the
-        // comment above prices at ~28 ns.
-        self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
+        // One plain `add`, not an atomic RMW: this counter lives in the
+        // handle's own `LocalState`, and a `Relaxed` `fetch_add` here was the
+        // blocking benchmark regression this branch had to fix. See
+        // `LocalState::messages_sent`.
+        self.note_message_sent();
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
             // Notify event nodes watching this topic. Gated inside
@@ -3437,10 +3459,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if received.is_some() {
             // Counts DELIVERED messages, the mirror of `messages_sent`. As
             // there, this used to move only on the `#[cold]` verbose path, so
-            // the public accessor read 0 in every normal run.
-            self.metrics
-                .messages_received
-                .fetch_add(1, Ordering::Relaxed);
+            // the public accessor read 0 in every normal run — and it is a
+            // plain `add` on this handle's `LocalState`, not an atomic RMW.
+            // See `LocalState::messages_sent`.
+            self.note_message_received();
         }
         received
     }
@@ -3515,9 +3537,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let ipc_ns = start.elapsed().as_nanos() as u64;
 
         if let Some(ref _msg) = result {
-            self.metrics
-                .messages_received
-                .fetch_add(1, Ordering::Relaxed);
+            self.note_message_received();
             use crate::core::hlog::{current_node_name, current_tick_number};
             use crate::core::log_buffer::{publish_log, LogEntry, LogType};
             let now = chrono::Local::now();
