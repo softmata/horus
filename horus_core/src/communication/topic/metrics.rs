@@ -27,9 +27,11 @@ pub(crate) struct MigrationMetrics {
 ///
 /// `messages_sent` and `messages_received` are this HANDLE's counts — they are
 /// `Cell<u64>`s on the handle's `RingTopic`, so the counters are ordinary
-/// increments rather than atomics. A `Clone` of a `Topic` starts an
-/// independent count, exactly like `MockTopic`, the double users write their
-/// tests against.
+/// increments rather than atomics. Sent counts every attempt made through
+/// `send()`, `try_send()` or `send_blocking()`; received counts every delivery
+/// through `recv()` or `try_recv()`. A `Clone` of a `Topic` starts an
+/// independent count — the same numbers `MockTopic`, the double users write
+/// their tests against, reports for the same calls.
 ///
 /// They used to move only on the `#[cold]` verbose-logging path, which runs
 /// while the `horus monitor` TUI has set a topic's verbose flag — so in an

@@ -828,7 +828,10 @@ pub(crate) struct RingTopic<T> {
     /// Connection state (for network backend compatibility)
     state: AtomicU8,
 
-    /// Messages this handle has SENT, counted on every ordinary `send()`.
+    /// Messages this handle has SENT, counted as attempts on every public
+    /// send API that engages the ring: `send()`, `try_send()` and
+    /// `send_blocking()` (a `NoBackpressure` refusal never reaches the ring
+    /// and does not count).
     ///
     /// A per-handle `Cell`, not an `AtomicU64` in the `Arc`-shared
     /// `MigrationMetrics`: an atomic RMW on every send and recv is a `lock
@@ -836,14 +839,13 @@ pub(crate) struct RingTopic<T> {
     /// moved the cross-process ping-pong median by ~10% — the benchmark gate
     /// caught it as a blocking regression on this very branch. A `Cell` is
     /// sound here because `RingTopic` is deliberately `!Sync` (see the SAFETY
-    /// note above); each clone gets its own, so a handle reports the traffic it
-    /// carried, exactly like `MockTopic`.
+    /// note above); each clone gets its own, and a handle reports the same
+    /// traffic `MockTopic` would for the same calls.
     messages_sent: std::cell::Cell<u64>,
 
-    /// Messages this handle has RECEIVED and delivered through `recv()`.
-    ///
-    /// Delivered, not polled: an empty ring does not count, and `try_recv()`
-    /// does not count either. See [`Self::messages_sent`].
+    /// Messages this handle has RECEIVED and delivered, through `recv()` or
+    /// `try_recv()`. Delivered, not polled: an empty ring does not count.
+    /// See [`Self::messages_sent`].
     messages_received: std::cell::Cell<u64>,
 
     /// Lazy-initialized TensorPool for spilling large serde messages.
@@ -2363,7 +2365,18 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // SAFETY: recv_fn UnsafeCell is only mutated by this thread (single-owner contract);
         // the fn pointer is always valid — set to recv_uninitialized at construction, then
         // updated to a backend-specific function after registration.
-        unsafe { (*self.recv_fn.get())(self) }
+        let received = unsafe { (*self.recv_fn.get())(self) };
+        if received.is_some() {
+            // Counted HERE and not only in `recv()`: this is the funnel for
+            // every receive path that is not the role=Both POD fast path —
+            // `recv()`'s fallback, the pool-backed `recv()`s and the public
+            // `try_recv()` — so a delivery counts exactly once whichever API
+            // delivered it. `MockTopic` counts its `try_recv()` deliveries
+            // too; a double that reports what the real transport does not is
+            // the defect this counter exists to avoid.
+            self.note_message_received();
+        }
+        received
     }
 
     /// Auto-grow the SHM slot size when a serialized message exceeds the current limit.
@@ -3474,21 +3487,15 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if unlikely(self.is_verbose()) {
             return self.recv_with_content_logging();
         }
-        let received = self.recv_uncounted();
-        if received.is_some() {
-            // Counts DELIVERED messages, the mirror of `messages_sent`. As
-            // there, this used to move only on the `#[cold]` verbose path, so
-            // the public accessor read 0 in every normal run — and it is a
-            // plain `add` on this handle's `LocalState`, not an atomic RMW.
-            // See `RingTopic::messages_sent`.
-            self.note_message_received();
-        }
-        received
+        self.recv_counted()
     }
 
-    /// `recv()` without the metrics bookkeeping.
+    /// `recv()`'s core. Every returning path counts a delivered message
+    /// exactly once: the role=Both POD fast path here, everything else via
+    /// `try_recv`. The counter is a plain `add` on this handle's `RingTopic`,
+    /// not an atomic RMW; see [`RingTopic::messages_sent`].
     #[inline(always)]
-    fn recv_uncounted(&self) -> Option<T> {
+    fn recv_counted(&self) -> Option<T> {
         // Fast path: role=Both (same-instance, same-thread pub+sub) and POD.
         //
         // Gated on `is_pod` in lockstep with `send`: this reads back through
@@ -3518,6 +3525,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                 if unlikely(local.msg_counter & (EPOCH_CHECK_INTERVAL - 1) == 0) {
                     self.check_migration_inline();
                 }
+                // The fast path returns without going through `try_recv`, so
+                // it owns its own delivery count.
+                self.note_message_received();
                 return Some(msg);
             }
             // Empty — amortized epoch check
@@ -3556,7 +3566,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         let ipc_ns = start.elapsed().as_nanos() as u64;
 
         if let Some(ref _msg) = result {
-            self.note_message_received();
+            // No count here: `try_recv()` above already counted the delivery.
             use crate::core::hlog::{current_node_name, current_tick_number};
             use crate::core::log_buffer::{publish_log, LogEntry, LogType};
             let now = chrono::Local::now();
@@ -4720,6 +4730,11 @@ where
         // Until then, a stalled consumer is visible in `dropped_count()` /
         // `send_retry_overruns()`, not in staleness.
         self.ring.bump_messages_total();
+        // `TopicMetrics::messages_sent` counts the same attempts — this API
+        // included. It used to count only `send()`, so a topic driven through
+        // `try_send` read 0 while `MockTopic` counted the same traffic; see
+        // `RingTopic::messages_sent`.
+        self.ring.note_message_sent();
         self.ring.try_send(msg)
     }
 
@@ -4791,6 +4806,10 @@ where
         // an attempt like `send()`'s dropped message does.
         if !matches!(result, Err(SendBlockingError::NoBackpressure)) {
             self.ring.bump_messages_total();
+            // Same rule for the metric: an attempt that reached the ring
+            // counts, a refusal that never did does not. See
+            // `RingTopic::messages_sent`.
+            self.ring.note_message_sent();
         }
         result
     }
@@ -4879,6 +4898,7 @@ impl Topic<Image> {
         // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
         // subscriber whose frames were arriving normally.
         self.ring.bump_messages_total();
+        self.ring.note_message_sent();
         let wire = img.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -4945,6 +4965,7 @@ impl Topic<PointCloud> {
         // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
         // subscriber whose frames were arriving normally.
         self.ring.bump_messages_total();
+        self.ring.note_message_sent();
         let wire = pc.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -5011,6 +5032,7 @@ impl Topic<DepthImage> {
         // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
         // subscriber whose frames were arriving normally.
         self.ring.bump_messages_total();
+        self.ring.note_message_sent();
         let wire = depth.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {

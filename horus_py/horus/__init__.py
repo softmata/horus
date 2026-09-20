@@ -761,10 +761,14 @@ class Node:
                             f"means an untyped MessagePack topic. Those cannot share "
                             f"a name. Declare the type: "
                             f"subs=[Sub({topic!r}, {ring_type})] "
-                            f"-- {ring_type} is a class, so import it first "
-                            f"(from horus import {ring_type}). If this build has "
-                            f"no {ring_type}, the ring was written by a peer with "
-                            f"a message type this install does not carry."
+                            f"-- {ring_type} is a class, so import it first: "
+                            f"built-in types live on `horus` "
+                            f"(from horus import {ring_type}); generated message "
+                            f"types live on `horus._horus` "
+                            f"(from horus._horus import {ring_type}). If this "
+                            f"build has no {ring_type}, the ring was written by "
+                            f"a peer with a message type this install does not "
+                            f"carry."
                         )
 
             if msg_type is not None:

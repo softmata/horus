@@ -9977,6 +9977,62 @@ fn topic_metrics_count_traffic_without_the_monitor_attached() {
     );
 }
 
+/// Every public send and receive API moves the counters, and to the same
+/// numbers `MockTopic` reports for the same calls.
+///
+/// `messages_sent` counted only `send()` and `messages_received` only
+/// `recv()`, so a topic driven through `try_send` / `send_blocking` /
+/// `try_recv` — the APIs the docs point users to on critical topics — read 0
+/// while the mock counted the same traffic. `MockTopic::send` delegates to its
+/// `try_send`, so it cannot make that distinction; the real transport must
+/// not either. A test double that reports what the real thing does not is the
+/// one defect a double cannot have.
+#[test]
+fn counters_move_on_every_public_send_and_recv_api() {
+    use crate::testing::MockTopic;
+
+    let t: Topic<u64> = Topic::new(unique("metrics_parity")).expect("create");
+    let mock = MockTopic::simple("metrics_parity_mock");
+
+    // The same sequence through both: ordinary send (an attempt), try_send
+    // (an attempt), send_blocking (an attempt that reaches the ring).
+    t.send(1);
+    mock.send(1);
+    t.try_send(2).expect("try_send must reach the ring");
+    mock.try_send(2).expect("try_send must reach the ring");
+    t.send_blocking(3, 500_u64.ms())
+        .expect("send_blocking must reach the ring");
+    mock.send_blocking(3, 500_u64.ms())
+        .expect("send_blocking must reach the ring");
+
+    assert_eq!(t.recv(), Some(1));
+    assert_eq!(t.try_recv(), Some(2));
+    assert_eq!(t.recv(), Some(3));
+    assert_eq!(t.recv(), None);
+    assert_eq!(mock.recv(), Some(1));
+    assert_eq!(mock.try_recv(), Some(2));
+    assert_eq!(mock.recv(), Some(3));
+    assert_eq!(mock.recv(), None);
+
+    let real = t.metrics();
+    let fake = mock.metrics();
+    assert_eq!(
+        real.messages_sent(),
+        3,
+        "send, try_send and send_blocking are three attempts"
+    );
+    assert_eq!(
+        real.messages_received(),
+        3,
+        "every delivered message counts, whichever API delivered it"
+    );
+    assert_eq!(
+        (real.messages_sent(), real.messages_received()),
+        (fake.messages_sent(), fake.messages_received()),
+        "the real transport and its testing double must report the same traffic"
+    );
+}
+
 // ============================================================================
 // LOCAL_STATE MODULE TESTS
 // ============================================================================
