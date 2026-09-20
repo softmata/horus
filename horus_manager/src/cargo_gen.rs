@@ -865,7 +865,7 @@ fn writable_by_horus(config_path: &Path) -> bool {
 /// Write driver dependencies from `[drivers]` config tables.
 ///
 /// For each `[drivers.NAME]` entry:
-/// - `terra = "dynamixel"` → adds `terra-serial = { version = "0.2", features = ["dynamixel"] }`
+/// - `use = "dynamixel"` → no dependency (the driver is resolved at runtime)
 /// - `package = "horus-driver-x"` → adds `horus-driver-x = "*"`
 /// - `node = "MyDriver"` → no dependency (local code)
 /// - `camera = "opencv"` / `gps = true` → no dependency (legacy, handled by feature flags)
@@ -875,7 +875,7 @@ fn write_driver_deps(
 ) {
     use crate::manifest::DriverValue;
 
-    // Track crates already added to avoid duplicates (e.g., two drivers using terra-serial).
+    // Track crates already added to avoid duplicates (e.g., two drivers naming the same crate).
     // Value = (explicit version if the driver pinned one, features). A BTreeMap keeps the
     // generated dependency lines in deterministic order (the old HashMap produced
     // run-to-run line reshuffling → spurious diffs / non-reproducible Cargo.toml).
@@ -884,8 +884,8 @@ fn write_driver_deps(
     for value in drivers.values() {
         match *value {
             DriverValue::Config(cfg) => {
-                // Terra drivers: no longer auto-resolved — user adds terra-horus
-                // as a normal dependency in [dependencies]. Skip terra entries.
+                // Shortname drivers are no longer auto-resolved to crates — the
+                // driver is resolved at runtime from the node registry. Skip them.
                 if let Some(package) = &cfg.package {
                     // Registry package — version resolved at install time, emit as "*".
                     added_crates

@@ -850,7 +850,7 @@ impl DependencyValue {
 /// Driver configuration value.
 ///
 /// Three forms:
-/// - Config table: `[drivers.arm]` with `terra`/`package`/`node` key + params
+/// - Config table: `[drivers.arm]` with a source key (`use`/`package`/`node`) + params
 /// - Simple string: `camera = "opencv"` (backend name → feature flags)
 /// - Enable bool: `camera = true` (enable with default backend)
 ///
@@ -861,7 +861,7 @@ impl DependencyValue {
 #[serde(untagged)]
 #[allow(clippy::large_enum_variant)]
 pub enum DriverValue {
-    /// Config table: `[drivers.arm]` with terra/package/node key + params.
+    /// Config table: `[drivers.arm]` with a source key + params.
     Config(DriverTableConfig),
     /// Backend name string, e.g., `"opencv"`.
     Backend(String),
@@ -871,16 +871,16 @@ pub enum DriverValue {
 
 /// Structured driver configuration from a `[drivers.NAME]` TOML table.
 ///
-/// Exactly one of `terra`, `package`, or `node` should be present to identify
-/// the driver source. All other keys are captured in `params` and passed to
-/// the driver factory at runtime.
+/// Use exactly one source key — `use` (the unified key), `package`, or `node`.
+/// The legacy shortname key is read as a fallback for `use`. All other keys are
+/// captured in `params` and passed to the driver factory at runtime.
 ///
 /// # Examples
 ///
 /// ```toml
-/// # Terra driver (pre-built hardware support)
+/// # Built-in driver (pre-installed hardware support)
 /// [drivers.arm]
-/// terra = "dynamixel"
+/// use = "dynamixel"
 /// port = "/dev/ttyUSB0"
 /// baudrate = 1000000
 /// servo_ids = [1, 2, 3, 4, 5, 6]
@@ -900,13 +900,13 @@ pub enum DriverValue {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DriverTableConfig {
     /// Node type name — the new unified source key (e.g., `"dynamixel"`, `"rplidar"`).
-    /// Replaces the 6 legacy keys (terra, package, node, crate, pip, exec).
+    /// Replaces the legacy source keys.
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "use")]
     pub use_name: Option<String>,
     /// Simulation flag — when true, replaced by sim stub when `horus run --sim`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sim: Option<bool>,
-    /// Terra driver shortname (legacy — use `use` instead).
+    /// Legacy driver shortname — use `use` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terra: Option<String>,
     /// Registry package name (e.g., `"horus-driver-ati-netft"`).

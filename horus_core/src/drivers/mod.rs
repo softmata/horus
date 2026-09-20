@@ -283,7 +283,7 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
                     // Check if it's a known name that hasn't been registered
                     let registered = registry::list_registered();
                     let suggestion = if registered.is_empty() {
-                        "No node types are registered. Call register!() or terra_horus::register_all() first.".to_string()
+                        "No node types are registered. Call register_driver!() first, or depend on a crate that registers its driver types.".to_string()
                     } else {
                         format!("Registered types: {}", registered.join(", "))
                     };

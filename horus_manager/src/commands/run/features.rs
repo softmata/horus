@@ -125,7 +125,7 @@ impl DriverConfig {
         for (name, value) in &manifest.drivers {
             match value {
                 DriverValue::Config(cfg) => {
-                    // Config table — extract driver name from terra/package/node key
+                    // Config table — extract the driver name from the source keys
                     config.drivers.push(name.clone());
                     if let Some(terra) = &cfg.terra {
                         config.backends.insert(name.clone(), terra.clone());
