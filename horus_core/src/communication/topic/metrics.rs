@@ -5,13 +5,13 @@ use std::sync::atomic::{AtomicU32, AtomicU64};
 /// Migration and operational metrics for a Topic
 ///
 /// `messages_sent` and `messages_received` are deliberately NOT here: they are
-/// per-handle counters living in `LocalState`, because a `Relaxed` atomic RMW
-/// on every send and recv — which an `Arc`-shared struct needs, since a
-/// `Clone` can run on another thread — costs a `lock xadd` in the middle of
-/// the publish path and moved the cross-process ping-pong median by ~10% (the
-/// benchmark gate caught it as a blocking regression). `LocalState` is
-/// per-handle by the crate's thread contract, so its counters are plain
-/// increments. See `LocalState::messages_sent`.
+/// per-handle `Cell<u64>`s on `RingTopic`, because a `Relaxed` atomic RMW on
+/// every send and recv — which an `Arc`-shared struct needs, since a `Clone`
+/// can run on another thread — costs a `lock xadd` in the middle of the
+/// publish path and moved the cross-process ping-pong median by ~10% (the
+/// benchmark gate caught it as a blocking regression). `RingTopic` is
+/// deliberately `!Sync`, so its per-handle counters need no atomics. See
+/// `RingTopic::messages_sent`.
 #[derive(Debug, Default)]
 pub(crate) struct MigrationMetrics {
     /// Number of send failures
@@ -25,10 +25,11 @@ pub(crate) struct MigrationMetrics {
 
 /// Non-atomic snapshot of topic metrics (for external consumers)
 ///
-/// `messages_sent` and `messages_received` are this HANDLE's counts — they live
-/// in its `LocalState` and are ordinary increments, not atomics. A `Clone` of a
-/// `Topic` starts an independent count, exactly like `MockTopic`, the double
-/// users write their tests against.
+/// `messages_sent` and `messages_received` are this HANDLE's counts — they are
+/// `Cell<u64>`s on the handle's `RingTopic`, so the counters are ordinary
+/// increments rather than atomics. A `Clone` of a `Topic` starts an
+/// independent count, exactly like `MockTopic`, the double users write their
+/// tests against.
 ///
 /// They used to move only on the `#[cold]` verbose-logging path, which runs
 /// while the `horus monitor` TUI has set a topic's verbose flag — so in an

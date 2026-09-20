@@ -142,29 +142,6 @@ pub(crate) struct LocalState {
     /// This is the consumer's own count, so it needs no atomics.
     pub missed: u64,
 
-    /// Messages this handle has SENT through `send()`.
-    ///
-    /// A plain `u64`, like [`Self::missed`], because it is this handle's own
-    /// count and has nothing to synchronise with. That is a correctness
-    /// property here, not only an optimisation: the first version kept these
-    /// two counters in the shared `MigrationMetrics` as `AtomicU64`, and the
-    /// two `Relaxed` `fetch_add`s per round trip moved the cross-process
-    /// ping-pong median by ~10% — a `lock xadd` serialises a pipeline that is
-    /// otherwise measuring a ring-buffer write, and the benchmark gate caught
-    /// it as a blocking regression. `LocalState` is per-handle by the crate's
-    /// thread contract, so `+= 1` is the whole cost.
-    ///
-    /// Read by `Topic::metrics()`. A `Clone` starts its own `LocalState`, so
-    /// each handle reports the traffic it carried.
-    pub messages_sent: u64,
-
-    /// Messages this handle has RECEIVED and delivered through `recv()`.
-    ///
-    /// Delivered, not polled: an empty ring does not count. `try_recv()` is the
-    /// low-level path and does not count either. See [`Self::messages_sent`]
-    /// for why this is not an atomic.
-    pub messages_received: u64,
-
     /// Ring position (`tail`) the consumer is currently stuck on because the
     /// slot is claimed-but-unpublished, and the wall clock when the stall was
     /// first timed. `claim_stall_since_ms == 0` means "no stall timed yet".
@@ -288,8 +265,6 @@ impl Default for LocalState {
             fanout_shm_pub_id: None,
             fanout_shm_sub_id: None,
             missed: 0,
-            messages_sent: 0,
-            messages_received: 0,
             claim_stall_tail: 0,
             claim_stall_since_ms: 0,
             claim_stall_polls: 0,

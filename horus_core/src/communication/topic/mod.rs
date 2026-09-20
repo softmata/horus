@@ -828,6 +828,24 @@ pub(crate) struct RingTopic<T> {
     /// Connection state (for network backend compatibility)
     state: AtomicU8,
 
+    /// Messages this handle has SENT, counted on every ordinary `send()`.
+    ///
+    /// A per-handle `Cell`, not an `AtomicU64` in the `Arc`-shared
+    /// `MigrationMetrics`: an atomic RMW on every send and recv is a `lock
+    /// xadd` in the middle of the publish path, and two of them per round trip
+    /// moved the cross-process ping-pong median by ~10% — the benchmark gate
+    /// caught it as a blocking regression on this very branch. A `Cell` is
+    /// sound here because `RingTopic` is deliberately `!Sync` (see the SAFETY
+    /// note above); each clone gets its own, so a handle reports the traffic it
+    /// carried, exactly like `MockTopic`.
+    messages_sent: std::cell::Cell<u64>,
+
+    /// Messages this handle has RECEIVED and delivered through `recv()`.
+    ///
+    /// Delivered, not polled: an empty ring does not count, and `try_recv()`
+    /// does not count either. See [`Self::messages_sent`].
+    messages_received: std::cell::Cell<u64>,
+
     /// Lazy-initialized TensorPool for spilling large serde messages.
     ///
     /// `None` until the first message exceeds `SPILL_THRESHOLD`, at which point
@@ -1142,6 +1160,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             header_ptr: std::cell::Cell::new(header_ptr),
             metrics: Arc::new(MigrationMetrics::default()),
             state: AtomicU8::new(ConnectionState::Connected.into_u8()),
+            // Counters are per-handle; see the field docs.
+            messages_sent: std::cell::Cell::new(0),
+            messages_received: std::cell::Cell::new(0),
             spill_pool: std::cell::UnsafeCell::new(None),
             _marker: PhantomData,
         })
@@ -2789,15 +2810,13 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
 
     /// Get a snapshot of the topic's metrics (compatible with Topic API)
     ///
-    /// `messages_sent` / `messages_received` come from this handle's
-    /// `LocalState` — plain counters, no atomics on the publish path. See
-    /// `LocalState::messages_sent` for why they are not in the shared
-    /// `MigrationMetrics`.
+    /// `messages_sent` / `messages_received` are this handle's own counters —
+    /// `Cell<u64>`s, not atomics, so the publish path pays one `add` rather
+    /// than a `lock xadd`. See [`Self::messages_sent`].
     pub fn metrics(&self) -> TopicMetrics {
-        let local = self.local();
         TopicMetrics::new(
-            local.messages_sent,
-            local.messages_received,
+            self.messages_sent.get(),
+            self.messages_received.get(),
             self.metrics.send_failures.load(Ordering::Relaxed),
             // The real transport has no recv-failure notion: a `recv()` that
             // returns `None` is an empty ring. Only `MockTopic` reports one,
@@ -2807,19 +2826,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         )
     }
 
-    /// Count one message this handle sent. See `LocalState::messages_sent`.
+    /// Count one message this handle sent. See [`Self::messages_sent`].
     #[inline(always)]
     fn note_message_sent(&self) {
-        let local = self.local();
-        local.messages_sent = local.messages_sent.wrapping_add(1);
+        self.messages_sent
+            .set(self.messages_sent.get().wrapping_add(1));
     }
 
     /// Count one message this handle delivered through `recv()`.
-    /// See `LocalState::messages_received`.
+    /// See [`Self::messages_received`].
     #[inline(always)]
     fn note_message_received(&self) {
-        let local = self.local();
-        local.messages_received = local.messages_received.wrapping_add(1);
+        self.messages_received
+            .set(self.messages_received.get().wrapping_add(1));
     }
 
     #[cfg(test)]
@@ -2901,10 +2920,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // reports what the real thing does not is the one defect a double
         // cannot have.
         //
-        // One plain `add`, not an atomic RMW: this counter lives in the
-        // handle's own `LocalState`, and a `Relaxed` `fetch_add` here was the
-        // blocking benchmark regression this branch had to fix. See
-        // `LocalState::messages_sent`.
+        // One plain `add`, not an atomic RMW: this counter is a `Cell` on the
+        // handle itself (see `RingTopic::messages_sent`), and a `Relaxed`
+        // `fetch_add` here was the blocking benchmark regression this branch
+        // had to fix.
         self.note_message_sent();
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
@@ -3461,7 +3480,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             // there, this used to move only on the `#[cold]` verbose path, so
             // the public accessor read 0 in every normal run — and it is a
             // plain `add` on this handle's `LocalState`, not an atomic RMW.
-            // See `LocalState::messages_sent`.
+            // See `RingTopic::messages_sent`.
             self.note_message_received();
         }
         received
@@ -3827,6 +3846,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> Clone for 
             header_ptr: self.header_ptr.clone(),
             metrics: Arc::clone(&self.metrics),
             state: AtomicU8::new(self.state.load(Ordering::Relaxed)),
+            // A clone counts its OWN traffic; it does not inherit the parent's
+            // totals. Same semantics as `LocalState` and `MockTopic`.
+            messages_sent: std::cell::Cell::new(0),
+            messages_received: std::cell::Cell::new(0),
             // Clone shares the spill pool if one was already created
             spill_pool: std::cell::UnsafeCell::new(
                 // SAFETY: `RingTopic` has no `Sync` impl, so `&self` here can

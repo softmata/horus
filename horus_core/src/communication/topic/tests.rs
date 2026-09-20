@@ -9856,7 +9856,7 @@ fn migration_metrics_default_all_zero() {
 ///
 /// `messages_sent` / `messages_received` are deliberately absent: they are
 /// per-handle counters in `LocalState`, not atomics in this Arc-shared struct.
-/// See `LocalState::messages_sent` for why — an atomic RMW per message on the
+/// See `RingTopic::messages_sent` for why — an atomic RMW per message on the
 /// publish path was a blocking benchmark regression.
 #[test]
 fn migration_metrics_atomic_increments() {
