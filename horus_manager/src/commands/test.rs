@@ -45,7 +45,13 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
             (fs::metadata(&horus_toml), fs::metadata(&cargo_toml))
         {
             if let (Ok(toml_time), Ok(cargo_time)) = (toml_meta.modified(), cargo_meta.modified()) {
-                return toml_time > cargo_time;
+                // `return toml_time > cargo_time` used to sit here, which
+                // returned for EVERY horus project — horus.toml always exists
+                // — so the source checks below it were dead code and a new
+                // test file never triggered regeneration.
+                if toml_time > cargo_time {
+                    return true;
+                }
             }
         }
     }
@@ -67,7 +73,43 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
         }
     }
 
+    // Any source under the target directories, not just the entry point. A new
+    // `tests/foo.rs` (or `examples/`, `benches/`, `src/bin/`) changes the
+    // manifest's target list, and with the main.rs-only check above the
+    // manifest was never regenerated for it: `horus test` then ran the tests it
+    // already knew about and reported success without the new ones — the same
+    // silent-nothing the target generation exists to fix.
+    if let Ok(cargo_meta) = fs::metadata(&cargo_toml) {
+        if let Ok(cargo_time) = cargo_meta.modified() {
+            for dir in ["src", "tests", "examples", "benches"] {
+                if newest_rs_mtime(Path::new(dir)).is_some_and(|t| t > cargo_time) {
+                    return true;
+                }
+            }
+        }
+    }
+
     false
+}
+
+/// The newest mtime of any `.rs` file under `dir`, recursively.
+fn newest_rs_mtime(dir: &Path) -> Option<std::time::SystemTime> {
+    let mut newest: Option<std::time::SystemTime> = None;
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let candidate = if path.is_dir() {
+            newest_rs_mtime(&path)
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            fs::metadata(&path).ok().and_then(|m| m.modified().ok())
+        } else {
+            None
+        };
+        if let Some(t) = candidate {
+            newest = Some(newest.map_or(t, |n| n.max(t)));
+        }
+    }
+    newest
 }
 
 /// Configuration for the `horus test` command.
@@ -1021,6 +1063,78 @@ mod tests {
         });
 
         assert!(result, "Should need rebuild when main.rs is newer");
+    }
+
+    /// A new `tests/foo.rs` changes the manifest's target list, so the
+    /// manifest must be regenerated — the main.rs-only check missed this and
+    /// `horus test` ran the tests it already knew about, silently.
+    ///
+    /// `horus.toml` is written here on purpose: the horus.toml check used to
+    /// `return` unconditionally (it always exists in a real project), which
+    /// made every source check below it dead code.
+    #[test]
+    fn needs_rebuild_when_a_test_file_appears() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        fs::write(
+            horus_dir.join(CARGO_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = in_tmp(&tmp, || {
+            fs::create_dir_all(tmp.path().join("tests")).unwrap();
+            fs::write(tmp.path().join("tests/smoke.rs"), "#[test] fn t() {}").unwrap();
+            needs_rebuild(&horus_dir)
+        });
+
+        assert!(
+            result,
+            "Should need rebuild when a tests/ file is newer than the manifest"
+        );
+    }
+
+    /// ...and a `tests/` file older than the manifest must not force one.
+    #[test]
+    fn no_rebuild_when_test_files_are_older() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+
+        in_tmp(&tmp, || {
+            fs::write(
+                tmp.path().join(HORUS_TOML),
+                "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+            )
+            .unwrap();
+            fs::create_dir_all(tmp.path().join("tests")).unwrap();
+            fs::write(tmp.path().join("tests/smoke.rs"), "#[test] fn t() {}").unwrap();
+        });
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        fs::write(
+            horus_dir.join(CARGO_TOML),
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let result = in_tmp(&tmp, || needs_rebuild(&horus_dir));
+        assert!(
+            !result,
+            "an older tests/ file should not force regeneration"
+        );
     }
 
     #[test]
