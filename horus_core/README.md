@@ -111,9 +111,17 @@ caught it (`rt_allocator.rs:21-26`, `rt_alloc_guard_installed.rs:35-38`).
 ## How to read the internals
 
 `--document-private-items` is **not** enough on its own. It disables rustdoc's
-private-stripping pass, not its hidden-stripping pass, so the eleven hidden
-modules stay stripped. You need nightly and `--document-hidden-items`, which is
-unstable and refuses to run without `-Z unstable-options`:
+private-stripping pass, not its hidden-stripping pass, so the hidden modules
+stay stripped. Use the `internal-docs` feature, which lifts the
+`#[doc(hidden)]` attributes and works on stable:
+
+```sh
+cargo doc -p horus_core --no-deps --document-private-items \
+  --features internal-docs --open
+```
+
+The nightly form below still works and needs no feature, but it requires a
+nightly toolchain and an unstable flag, which is why the feature exists:
 
 ```sh
 RUSTDOCFLAGS="-Z unstable-options --document-hidden-items" \

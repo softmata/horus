@@ -96,9 +96,13 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
     // to force real hardware got inert `SimStubNode`s instead — actuators never
     // commanded, sensors never read, and nothing said so. Parse the value, the
     // way HORUS_NET_ENABLED already does.
-    let sim_mode = std::env::var("HORUS_SIM_MODE")
-        .map(|v| !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false")))
-        .unwrap_or(false);
+    // Through `env_flag` now. The shape below was already the fix for
+    // `=false` turning simulation ON, but it still treated every value it did
+    // not recognise as an opt-in — so `HORUS_SIM_MODE=no` swapped every driver
+    // for an inert `SimStubNode`, and `=maybe` would have too. An unrecognised
+    // value now leaves the default (off) in force, which is the safe direction
+    // for a flag that disconnects the robot from its hardware.
+    let sim_mode = horus_sys::env::env_flag("HORUS_SIM_MODE").unwrap_or(false);
 
     let selective_targets: Option<Vec<String>> = if sim_mode {
         std::env::var("HORUS_SIM_TARGETS")
