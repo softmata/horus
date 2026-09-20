@@ -443,11 +443,17 @@ fn resolve_package_dir(name: &str, version: &str, global: bool) -> Option<PathBu
 /// Install a plugin package from registry
 ///
 /// Plugins default to global install since they extend the CLI tool itself.
-/// Use --local to install into a specific project workspace instead.
-pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusResult<()> {
-    // Plugins default to global installation (CLI-wide)
-    let global = !local;
-
+/// Pass `-t <workspace-name>` to install into a registered workspace instead.
+///
+/// `target` used to be collapsed to a `bool` at the call site — `let local =
+/// target.is_some()` — and the NAME was thrown away. What was left then called
+/// `detect_or_select_workspace`, which resolves the CURRENT DIRECTORY's
+/// workspace or, outside any workspace, prints a menu and blocks on stdin. Both
+/// of those are things `horus install` documents that it never does, and with
+/// no tty the stdin read returns empty and the command fails with "Invalid
+/// selection" rather than installing where it was told. The package half of the
+/// same flag already resolved the name properly; this now does the same thing.
+pub fn run_install(plugin: String, ver: Option<String>, target: Option<String>) -> HorusResult<()> {
     println!(
         "{} Installing plugin: {}{}",
         cli_output::ICON_INFO.magenta().bold(),
@@ -456,21 +462,26 @@ pub fn run_install(plugin: String, ver: Option<String>, local: bool) -> HorusRes
     );
 
     // Determine install target - plugins default to global
-    let install_target = if global {
-        println!("  Scope: {}", "global (user cache)".dimmed());
-        workspace::InstallTarget::Global
-    } else {
-        let target = workspace::detect_or_select_workspace(true)
-            .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
-        match &target {
-            workspace::InstallTarget::Local(p) => {
-                println!("  Scope: {}", format!("local ({})", p.display()).dimmed());
-            }
-            workspace::InstallTarget::Global => {
-                println!("  Scope: {}", "global (user cache)".dimmed());
-            }
+    let install_target = match target {
+        None => {
+            println!("  Scope: {}", "global (user cache)".dimmed());
+            workspace::InstallTarget::Global
         }
-        target
+        Some(target_name) => {
+            let registry = workspace::WorkspaceRegistry::load()
+                .map_err(|e| HorusError::Config(ConfigError::Other(e.to_string())))?;
+            let ws = registry.find_by_name(&target_name).ok_or_else(|| {
+                HorusError::Config(ConfigError::Other(format!(
+                    "Workspace '{}' not found",
+                    target_name
+                )))
+            })?;
+            println!(
+                "  Scope: {}",
+                format!("local ({})", ws.path.display()).dimmed()
+            );
+            workspace::InstallTarget::Local(ws.path.clone())
+        }
     };
 
     // Install via the existing package install flow. Without a registry there
@@ -1422,5 +1433,39 @@ version = "2.0.0"
                 input
             );
         }
+    }
+
+    /// `-t <name>` on a plugin install must name a REGISTERED WORKSPACE.
+    ///
+    /// It used to be collapsed to `let local = target.is_some()` at the call
+    /// site, throwing the name away, and what was left called
+    /// `detect_or_select_workspace`. That resolves the workspace of the
+    /// directory you happen to be standing in or, outside any workspace, prints
+    /// a menu and blocks on stdin — the two things `horus install` documents it
+    /// never does. With no tty the read comes back empty and the command dies
+    /// with "Invalid selection" instead of installing where it was asked.
+    ///
+    /// An unknown name must therefore fail by NAME, before any registry or
+    /// network work, exactly as the package half of the same flag does.
+    #[test]
+    fn a_plugin_target_names_a_workspace_not_the_current_directory() {
+        let err = super::run_install(
+            "some-plugin".to_string(),
+            None,
+            Some("no_such_workspace_xyzzy".to_string()),
+        )
+        .expect_err("an unknown workspace name must be an error, not a prompt");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no_such_workspace_xyzzy"),
+            "the error must name the workspace that was asked for, so the user \
+             can see it was taken as a name rather than ignored: {msg}"
+        );
+        assert!(
+            msg.contains("not found"),
+            "an unregistered workspace name is 'not found', not a selection \
+             prompt or a silent fall back to the current directory: {msg}"
+        );
     }
 }

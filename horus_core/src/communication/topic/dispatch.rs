@@ -1199,7 +1199,7 @@ pub(super) fn send_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
                 // COMM-H1: never let "all 16 slots live" become a SILENT no-comms
                 // endpoint (worse than the pre-fix loud panic). Warn LOUDLY, but
                 // rate-limited per topic so a hot send-loop can't flood the log.
-                if should_report_endpoint_exhaustion(topic.name()) {
+                if should_report_endpoint_exhaustion(topic.name(), Exhausted::FanoutEndpoints) {
                     tracing::warn!(
                         "FanoutShm topic '{}': all {} publisher endpoint slots are \
                          live — this publisher has NO comms until a slot frees \
@@ -1321,7 +1321,7 @@ pub(super) fn recv_fanout_shm<T: Clone + Send + Sync + Serialize + DeserializeOw
             }
             None => {
                 // COMM-H1: same as the send path — loud, rate-limited, never silent.
-                if should_report_endpoint_exhaustion(topic.name()) {
+                if should_report_endpoint_exhaustion(topic.name(), Exhausted::FanoutEndpoints) {
                     tracing::warn!(
                         "FanoutShm topic '{}': all {} subscriber endpoint slots are \
                          live — this subscriber has NO comms until a slot frees \
@@ -1887,7 +1887,16 @@ pub(super) fn send_uninitialized<
     topic: &RingTopic<T>,
     msg: T,
 ) -> Result<(), T> {
-    if topic.ensure_producer().is_err() {
+    if let Err(e) = topic.ensure_producer() {
+        // As `recv_uninitialized`: the caller gets its message back with no
+        // indication that the cause is permanent for this handle.
+        if should_report_endpoint_exhaustion(topic.name(), Exhausted::ParticipantTable) {
+            tracing::warn!(
+                "topic '{}': this publisher is NOT registered and will deliver nothing — {}",
+                topic.name(),
+                e
+            );
+        }
         return Err(msg);
     }
     // SAFETY: ensure_producer() → initialize_backend() → set_dispatch_fn_ptrs()
@@ -2612,7 +2621,24 @@ pub(super) fn recv_uninitialized<
 >(
     topic: &RingTopic<T>,
 ) -> Option<T> {
-    if topic.ensure_consumer().is_err() {
+    if let Err(e) = topic.ensure_consumer() {
+        // Registration failed — almost always the 16-slot participant table
+        // being full. The role stays `Unregistered`, so every later `recv()`
+        // re-enters this cold path and fails identically: `None` forever, from
+        // a subscriber that looks merely idle. Discarding the error here made
+        // the message `register_role` builds — which names the limit and says
+        // what to do about it — reach nothing at all.
+        //
+        // The same 16-slot wall one layer down is reported, deliberately, by
+        // this same rate limiter: "never let 'all 16 slots live' become a
+        // SILENT no-comms endpoint".
+        if should_report_endpoint_exhaustion(topic.name(), Exhausted::ParticipantTable) {
+            tracing::warn!(
+                "topic '{}': this subscriber is NOT registered and will receive nothing — {}",
+                topic.name(),
+                e
+            );
+        }
         return None;
     }
     // SAFETY: ensure_consumer() → initialize_backend() → set_dispatch_fn_ptrs()
@@ -2632,13 +2658,20 @@ pub(super) fn recv_uninitialized<
 /// Keyed by topic and rate-limited per topic instead, so a hot loop still emits
 /// once a minute rather than once ever, and a second topic hitting the same
 /// wall is never masked by the first.
-fn should_report_endpoint_exhaustion(topic: &str) -> bool {
+///
+/// Keyed by `reason` as well as topic, for the same argument one level down: a
+/// topic can hit two different walls — its FanoutShm endpoint bitmap and the
+/// 16-slot participant table — and they have different causes and different
+/// fixes. Sharing one bucket would let whichever fired first silence the other
+/// for a minute, which is the masking this function exists to prevent.
+pub(super) fn should_report_endpoint_exhaustion(topic: &str, reason: Exhausted) -> bool {
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     const QUIET: Duration = Duration::from_secs(60);
-    static LAST: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    #[allow(clippy::type_complexity)]
+    static LAST: Mutex<Option<HashMap<(String, Exhausted), Instant>>> = Mutex::new(None);
 
     let mut guard = match LAST.lock() {
         Ok(g) => g,
@@ -2646,13 +2679,25 @@ fn should_report_endpoint_exhaustion(topic: &str) -> bool {
     };
     let seen = guard.get_or_insert_with(HashMap::new);
     let now = Instant::now();
-    match seen.get(topic) {
+    let key = (topic.to_string(), reason);
+    match seen.get(&key) {
         Some(t) if now.duration_since(*t) < QUIET => false,
         _ => {
-            seen.insert(topic.to_string(), now);
+            seen.insert(key, now);
             true
         }
     }
+}
+
+/// Which wall a topic ran into. Rate-limited separately; see
+/// `should_report_endpoint_exhaustion`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum Exhausted {
+    /// The FanoutShm publisher or subscriber endpoint bitmap is full.
+    FanoutEndpoints,
+    /// The topic's 16-slot participant table is full, so this handle holds no
+    /// registration and will never send or receive anything.
+    ParticipantTable,
 }
 
 #[cfg(test)]

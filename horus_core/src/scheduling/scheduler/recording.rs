@@ -193,6 +193,16 @@ impl Scheduler {
             })
             .unwrap_or_default();
 
+        // How many nodes we could not place. The lookup below is keyed by NODE
+        // NAME, and it used to be handed `node_id` — a generated hex string
+        // (`format!("{:x}{:x}", unix_nanos, node_count)`) that can never equal
+        // a name. Every lookup missed, `unwrap_or(0)` gave every node priority
+        // 0, and `add_replay`'s stable sort then left the replay in
+        // `node_recordings` HashMap order: neither the recorded order nor the
+        // same order twice. That is the exact opposite of the "tick-perfect
+        // determinism" this module is for, and nothing said a word.
+        let mut unplaced: Vec<&str> = Vec::new();
+
         for (node_id, relative_path) in &scheduler_recording.node_recordings {
             // `relative_path` comes verbatim out of the recording file. Joined
             // unchecked, `../../../..` escapes the session directory entirely
@@ -203,7 +213,23 @@ impl Scheduler {
                 crate::scheduling::record_replay::sanitize_path_component(relative_path),
             );
             if node_path.exists() {
-                let priority = priority_map.get(node_id.as_str()).copied().unwrap_or(0);
+                // The name is the part of `<name>@<id>.horus` before the LAST
+                // `@`, which is how `Scheduler::add` writes it — `rsplit_once`
+                // so a node whose own name contains `@` still resolves.
+                let node_name = relative_path
+                    .strip_suffix(".horus")
+                    .unwrap_or(relative_path)
+                    .rsplit_once('@')
+                    .map(|(name, _id)| name)
+                    .unwrap_or(relative_path);
+
+                let priority = match priority_map.get(node_name) {
+                    Some(p) => *p,
+                    None => {
+                        unplaced.push(node_name);
+                        0
+                    }
+                };
                 if let Err(e) = scheduler.add_replay(node_path, priority) {
                     print_line(&format!(
                         "Warning: Failed to load node '{}': {}",
@@ -211,6 +237,18 @@ impl Scheduler {
                     ));
                 }
             }
+        }
+
+        // Silence is what let the by-id lookup survive: every node missing is
+        // indistinguishable from every node placed, because both end at
+        // priority 0. Say so, once, with the names.
+        if !unplaced.is_empty() && !priority_map.is_empty() {
+            print_line(&format!(
+                "[REPLAY] Warning: {} node(s) are not in the recorded execution \
+                 order and will replay in an arbitrary position: {}",
+                unplaced.len(),
+                unplaced.join(", ")
+            ));
         }
 
         Ok(scheduler)

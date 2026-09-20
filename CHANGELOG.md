@@ -53,6 +53,11 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
+### Fixed
+
+- `horus topic echo`, `hz`, and `bw` now read live macOS POSIX shared-memory
+  topics through the public topic path.
+
 ## [0.4.1] — 2026-09-03
 
 201 commits since 0.4.0 (2026-08-22), against a cadence rule that says cut at

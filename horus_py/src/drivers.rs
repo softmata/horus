@@ -16,11 +16,53 @@ use crate::driver_params::PyDriverParams;
 static PY_DRIVERS: LazyLock<Mutex<HashMap<String, Py<PyAny>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+// ── Simulation stub ────────────────────────────────────────────────────
+
+/// Stand-in for a driver that `horus run --sim` says must not touch hardware.
+///
+/// The Python twin of `horus_core`'s `SimStubNode`. Under `--sim`, the Rust
+/// loader substitutes a no-op node for every entry marked `sim = true`; the
+/// Python loader used to instantiate the registered driver class anyway,
+/// because `load_config_entries` reported no simulation state. Constructing a
+/// driver is where the serial port gets opened and the motor gets enabled, so
+/// `--sim` did nothing at all on the Python path.
+///
+/// Keeps the entry's params so simulation code can still read the config.
+#[pyclass(name = "SimStub")]
+pub struct PySimStub {
+    /// The `[hardware.<name>]` key this stands in for, suffixed `_sim_stub`.
+    #[pyo3(get)]
+    name: String,
+    /// The config the real driver would have received.
+    #[pyo3(get)]
+    params: Py<PyDriverParams>,
+}
+
+#[pymethods]
+impl PySimStub {
+    /// No-op: a stub has no hardware to bring up.
+    fn init(&self) {}
+
+    /// No-op: a stub has no hardware to drive.
+    fn tick(&self) {}
+
+    /// Always true — lets user code branch on "am I simulated?".
+    #[getter]
+    fn simulated(&self) -> bool {
+        true
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SimStub(name={:?})", self.name)
+    }
+}
+
 // ── Module functions ───────────────────────────────────────────────────
 
 /// Load hardware config from ``horus.toml`` ``[hardware]`` section.
 ///
 /// Returns a list of ``(name, obj)`` tuples where ``obj`` is either:
+/// - A ``SimStub`` (if ``horus run --sim`` says this entry is simulated)
 /// - A Python object (if a matching class was registered via ``register()``)
 /// - A ``NodeParams`` dict-like (if no Python class was registered)
 ///
@@ -67,7 +109,23 @@ pub fn load_from(py: Python<'_>, path: &str) -> PyResult<Vec<(String, Py<PyAny>)
 
     let mut result = Vec::new();
 
-    for (name, use_name, params) in entries {
+    for (name, use_name, params, simulated) in entries {
+        // `--sim` says this entry must not touch hardware. Constructing the
+        // registered class is exactly where it would, so stop before that —
+        // the same substitution horus_core makes for a Rust node.
+        if simulated {
+            let py_params = Py::new(py, PyDriverParams { inner: params })?;
+            let stub = Py::new(
+                py,
+                PySimStub {
+                    name: format!("{name}_sim_stub"),
+                    params: py_params,
+                },
+            )?;
+            result.push((name, stub.into_any()));
+            continue;
+        }
+
         // Try to instantiate from Python registry
         let cls = PY_DRIVERS
             .lock()
@@ -112,6 +170,7 @@ pub fn register_drivers_module(parent: &Bound<'_, PyModule>) -> PyResult<()> {
     hardware.add_function(wrap_pyfunction!(robot_name, &hardware)?)?;
     hardware.add_function(wrap_pyfunction!(robot_name_from, &hardware)?)?;
     hardware.add_class::<PyDriverParams>()?;
+    hardware.add_class::<PySimStub>()?;
 
     hardware.setattr(
         "__doc__",

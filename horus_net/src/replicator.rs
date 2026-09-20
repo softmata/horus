@@ -1231,6 +1231,26 @@ impl Replicator {
 
     /// Send a system topic payload to all known peers + multicast.
     fn send_system_topic(&mut self, topic_name: &str, payload: &[u8]) {
+        // Ask the export guard, which is the only place that ever asks it about
+        // a system topic.
+        //
+        // `ImportExportGuard::allow_export` handles `_horus.*` explicitly and
+        // its comment says `deny_export = ["_horus.logs"]` "now actually
+        // works" — but its one production caller, `handle_export`, filters
+        // `self.readers`, and a reader only exists for a topic in the
+        // `TopicRegistry`. Nothing registers `_horus.logs` or `_horus.presence`
+        // there, so the guard was never asked about either, and they left the
+        // machine down this path instead: every Error and Warning line and the
+        // full node inventory, multicast once per timer tick, to any host that
+        // announced an interest. An operator who set `deny_export` got no
+        // change in behaviour and a green test telling them it was honoured.
+        //
+        // `_horus.estop` does not come through here (EstopBroadcaster owns it),
+        // so this cannot be used to silence a fleet e-stop.
+        if !self.guard.allow_export(topic_name) {
+            return;
+        }
+
         // Share the framing (and therefore the monotonic sequence) with the
         // e-stop path. This used to build its own header with a hard-coded
         // `sequence: 0`, which the receiver's dedup — which runs ahead of the
@@ -1388,6 +1408,59 @@ mod tests {
     // ─── §2/§6 process_packet dispatch (gate) ───────────────────────────────
     // These drive the private receive path directly. Run with --test-threads=1:
     // the data-packet test installs the global external emergency-stop hook.
+
+    /// `deny_export` on a system topic must actually stop it leaving.
+    ///
+    /// `ImportExportGuard::allow_export` handles `_horus.*` and its comment says
+    /// `deny_export = ["_horus.logs"]` "now actually works" — with a green test
+    /// beside it asserting exactly that. Both were true of the guard function
+    /// and false of the process: `allow_export`'s only production caller filters
+    /// `self.readers`, which is populated from the `TopicRegistry`, and nothing
+    /// registers `_horus.logs` or `_horus.presence` there. They left the machine
+    /// through `send_system_topic` instead, which never asked.
+    ///
+    /// Asserted on `system_seq` rather than on packets: `frame_system_topic`
+    /// advances it exactly once per message that gets framed, so it counts what
+    /// was sent without needing a peer, a socket or a multicast group.
+    #[test]
+    fn deny_export_on_a_system_topic_stops_it_being_broadcast() {
+        use crate::registry::{SYSTEM_TOPIC_LOGS, SYSTEM_TOPIC_PRESENCE};
+
+        let registry = Arc::new(TopicRegistry::new());
+        let mut config = NetConfig::test_config(0);
+        config.deny_export = vec![SYSTEM_TOPIC_LOGS.to_string()];
+        let mut rep = Replicator::new(registry, config).unwrap();
+
+        let before = rep.system_seq;
+        rep.send_system_topic(SYSTEM_TOPIC_LOGS, b"an error line");
+        assert_eq!(
+            rep.system_seq, before,
+            "a denied system topic must not be framed or sent"
+        );
+
+        // The one that was NOT denied still goes, so this is a filter and not
+        // an off switch.
+        rep.send_system_topic(SYSTEM_TOPIC_PRESENCE, b"node inventory");
+        assert_eq!(
+            rep.system_seq,
+            before + 1,
+            "denying one system topic must not silence the others"
+        );
+    }
+
+    /// The default is unchanged: zero-config LAN replication still exports both.
+    #[test]
+    fn system_topics_are_still_exported_by_default() {
+        use crate::registry::{SYSTEM_TOPIC_LOGS, SYSTEM_TOPIC_PRESENCE};
+
+        let registry = Arc::new(TopicRegistry::new());
+        let mut rep = Replicator::new(registry, NetConfig::test_config(0)).unwrap();
+
+        let before = rep.system_seq;
+        rep.send_system_topic(SYSTEM_TOPIC_LOGS, b"an error line");
+        rep.send_system_topic(SYSTEM_TOPIC_PRESENCE, b"node inventory");
+        assert_eq!(rep.system_seq, before + 2);
+    }
 
     fn test_replicator() -> Replicator {
         let registry = Arc::new(TopicRegistry::new());

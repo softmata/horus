@@ -1,4 +1,5 @@
 use crate::core::hlog::{clear_node_context, set_node_context};
+use crate::core::log_buffer::start_log_file_drain_once;
 use crate::core::tick_context::{clear_tick_context, set_tick_context};
 use crate::core::{DurationExt, NodeInfo, NodePresence};
 use crate::error::{HorusContext, HorusResult};
@@ -323,7 +324,6 @@ pub(crate) struct RecordingState {
 /// lifetime and dropped during shutdown — use `Drop` to clean up resources.
 pub type LifecycleStartFn = Box<dyn FnOnce() -> Option<Box<dyn Any + Send>> + Send>;
 
-/// Central orchestrator: holds nodes, drives the tick loop.
 /// What the presence refresh needs about a node the main thread does not own.
 #[derive(Debug, Clone)]
 pub(super) struct PresenceEntry {
@@ -336,6 +336,17 @@ pub(super) struct PresenceEntry {
     pub main_thread: bool,
 }
 
+/// Central orchestrator: holds nodes, drives the tick loop.
+///
+/// This is the type a HORUS program is built around: nodes are registered on
+/// it, it partitions them by scheduling class across the RT, compute, event and
+/// async-I/O executors, and it owns the loop that ticks them and enforces their
+/// deadlines.
+///
+/// The doc line above used to sit one item higher, stranded on top of
+/// `PresenceEntry`'s own comment — so the framework's primary public type
+/// rendered with no description at all, and a private struct was documented as
+/// the orchestrator.
 pub struct Scheduler {
     pub(super) nodes: Vec<RegisteredNode>,
     pub(super) running: Arc<AtomicBool>,
@@ -688,13 +699,14 @@ impl Scheduler {
         };
 
         // Network discovery is enabled by default (like ROS2).
-        // Opt out via HORUS_NET_ENABLED=false (or =0) env var, or `.network(false)`.
+        // Opt out via HORUS_NET_ENABLED=false (or 0/no/off), or `.network(false)`.
         // The actual horus_net startup is handled by a lifecycle hook registered
         // by the integration layer (e.g., the `horus` umbrella crate).
-        if std::env::var("HORUS_NET_ENABLED")
-            .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
-            .unwrap_or(false)
-        {
+        //
+        // An opt-out reads the same vocabulary as an opt-in: this site accepted
+        // `0` and `false` but not `no` or `off`, so two of the four words that
+        // mean "off" everywhere else in HORUS left networking running.
+        if horus_sys::env::env_flag("HORUS_NET_ENABLED") == Some(false) {
             s.network_enabled = false;
         }
 
@@ -708,6 +720,21 @@ impl Scheduler {
         {
             s = s.with_recording();
         }
+
+        // Drain the log ring buffer to disk if HORUS_LOG_FILE is set.
+        //
+        // `start_log_file_drain` reads the variable itself and returns `None`
+        // when it is unset, so this call is unconditional and users who do not
+        // opt in pay nothing. That guard lives INSIDE the function precisely so
+        // a call site could be unconditional — but there was no call site. The
+        // symbol appeared four times in the tree: the definition, its
+        // re-export, and two lines of one integration test that invoked it by
+        // hand. So `HORUS_LOG_FILE=1 horus run` wrote no `.horus/logs/horus.log`
+        // and `HORUS_LOG_DIR`/`_MAX_SIZE`/`_MAX_FILES` were dead with it, while
+        // the test that proves the drain works kept it green. An operator who
+        // sets a documented variable to get a post-incident log and finds an
+        // empty disk is the exact failure that variable exists to prevent.
+        start_log_file_drain_once();
 
         s
     }
@@ -873,18 +900,27 @@ impl Scheduler {
         // feature, and no watchdog is not. Say so, because silently changing a
         // safety timeout is its own problem — the operator needs to know the
         // value actually in force.
-        let ms = timeout.as_millis() as u64;
+        //
+        // That rule held for the sub-1ms case and was inverted for every other
+        // one: `as_millis()` truncates, so `.watchdog(1500_u64.us())` stored 1ms
+        // and its 3x critical rung latched a fleet-wide e-stop at 3ms instead of
+        // the 4.5ms asked for, with no diagnostic. Tightening is the direction
+        // that produces spurious halts on a healthy node. Round the whole range
+        // up, and report any value that had to change.
+        let ms = timeout.as_nanos().div_ceil(1_000_000) as u64;
         self.pending_config.realtime.watchdog_timeout_ms = if timeout.is_zero() {
             0 // explicit disable — honour it
-        } else if ms == 0 {
+        } else if !timeout.subsec_nanos().is_multiple_of(1_000_000) || ms == 0 {
+            let effective = Duration::from_millis(ms.max(1));
             crate::hlog!(
                 warn,
-                "watchdog({:?}) is below the 1ms resolution the scheduler config stores; \
-                 using 1ms. Sub-millisecond watchdogs are not supported — previously this \
-                 truncated to 0, which DISABLED the watchdog entirely.",
-                timeout
+                "watchdog({:?}) is not a whole number of milliseconds, which is all the \
+                 scheduler config stores; using {:?}. Rounded UP on purpose: a looser \
+                 watchdog is a safety feature, a tighter one halts a healthy robot.",
+                timeout,
+                effective
             );
-            1
+            ms.max(1)
         } else {
             ms
         };
@@ -907,17 +943,54 @@ impl Scheduler {
         self.pending_config.monitoring.black_box_size_mb = size_mb;
         let bb_dir = self.monitor.working_dir.join(".horus").join("blackbox");
         let bb = super::blackbox::BlackBox::new(size_mb).with_path(bb_dir);
-        self.monitor.blackbox = Some(Arc::new(Mutex::new(bb)));
+        let shared = Arc::new(Mutex::new(bb));
+
+        // Wire the external-event hook. `set_blackbox_hook` says "Called by the
+        // Scheduler at startup to wire the blackbox" and nothing called it, so
+        // `record_external_event` -- the entry point horus_net's replicator uses
+        // for peer-lost, replication-failure and desync events -- looked up an
+        // unset OnceLock and dropped every event. A distributed robot's flight
+        // recorder therefore held nothing about the network, which is the part
+        // of a distributed incident you most want a timeline of.
+        //
+        // OnceLock: the first scheduler to enable a blackbox owns the hook for
+        // the life of the process. A second scheduler's `.blackbox()` still gets
+        // its own recorder for local events; only external ones stay with the
+        // first. That is the existing contract of a process-global hook, not a
+        // new limitation.
+        let hook_target = Arc::clone(&shared);
+        super::blackbox::set_blackbox_hook(move |event| {
+            if let Ok(mut bb) = hook_target.lock() {
+                bb.record(event);
+            }
+        });
+
+        self.monitor.blackbox = Some(shared);
         // The producer side, handed to the executors. Created with the recorder
         // and never separately: an executor holding a ring the drain does not
         // know about would queue events nothing ever reads.
+        //
+        // The hook above and this ring reach the same recorder by different
+        // routes and that is deliberate: the hook is for events raised off the
+        // tick path (horus_net's replicator), the ring is for events raised ON
+        // it, which must not touch a mutex or serde where they are produced.
         self.monitor.blackbox_ring = Some(Arc::new(super::blackbox_ring::BbRing::new()));
         self
     }
 
     /// Set the maximum number of deadline misses before emergency stop.
     ///
-    /// Default: 100. Only meaningful when nodes have `.rate()` set.
+    /// Default: 100. Per node and consecutive: a tick that meets its deadline
+    /// clears the run, so a node that misses intermittently and recovers never
+    /// reaches the ceiling.
+    ///
+    /// The graduated degradation ladder (warn at 3 consecutive misses, half
+    /// rate at 5, isolate at 10) runs below this. Its terminal rung — killing
+    /// the node outright, normally at 20 — is moved above `n` when `n` is
+    /// higher, so this ceiling is always reachable; killing the node is
+    /// permanent, and a killed node cannot go on to miss anything.
+    ///
+    /// Only meaningful when nodes have `.rate()` set.
     ///
     /// # Example
     /// ```rust,ignore
@@ -1996,7 +2069,7 @@ impl Scheduler {
 
     /// Set OS-level scheduling priority using SCHED_FIFO (Linux RT-PREEMPT required).
     ///
-    /// Delegates to [`super::rt::set_realtime_priority`].
+    /// Delegates to `super::rt::set_realtime_priority` (crate-private).
     ///
     /// # Arguments
     /// * `priority` - Priority level (1-99, higher = more important)
@@ -5072,6 +5145,11 @@ impl Scheduler {
 
     /// Process control commands — delegates to execution.rs topic-based implementation.
     fn process_control_commands(&mut self) {
+        // Names asked to restart. Collected rather than applied in place because
+        // the loop below holds a mutable borrow of `self.control_topic`, and
+        // clearing `initialized` needs `self.nodes`.
+        let mut restart_requests: Vec<String> = Vec::new();
+
         // Poll the control topic for commands from CLI (horus node kill/pause/resume)
         if let Some(ref mut ctl) = self.control_topic {
             while let Some(cmd) = ctl.recv() {
@@ -5098,7 +5176,69 @@ impl Scheduler {
                         self.running
                             .store(false, std::sync::atomic::Ordering::SeqCst);
                     }
+                    ControlCommand::RestartNode { ref name } => {
+                        restart_requests.push(name.clone());
+                    }
                     _ => {} // Other commands (SetNodeRate, etc.) — not yet implemented
+                }
+            }
+        }
+
+        // Clearing `initialized` is the whole mechanism: `reinit_pending_nodes`
+        // runs on the tick loop and re-runs `init()` for any node that is not
+        // stopped, not transiently skipped, and not initialised.
+        //
+        // Two different pauses are cleared below and they are not the same
+        // thing, which this comment used to blur. `registered.is_paused` is the
+        // one-tick `Miss::Skip` flag and IS what `reinit_pending_nodes` reads;
+        // the operator pause lives in `node_controls` and is not read there at
+        // all. So lifting the operator pause is not what lets the re-init
+        // happen — it is what lets the node TICK once it has been re-inited,
+        // which matters because a wedged node is usually paused before it is
+        // restarted and would otherwise come back initialised and still frozen.
+        for name in restart_requests {
+            if let Some(ref controls) = self.node_controls {
+                controls.set_paused(&name, false);
+            }
+            // The scheduler's own `nodes` holds ONLY the main-thread group
+            // after the class partition, so searching it alone reached
+            // BestEffort nodes and reported every RT, Compute, Event and
+            // AsyncIo node as unknown — that is, every node with a `.rate()`,
+            // which is exactly what an operator restarts.
+            //
+            // `init()` needs `&mut dyn Node`, owned by the executor, so a node
+            // this scheduler does not hold is asked through the shared control
+            // map and the owning executor honours it — the same handoff the
+            // watchdog ladder uses for `enter_safe_state()`.
+            match self
+                .nodes
+                .iter_mut()
+                .find(|n| n.name.as_ref() == name.as_str())
+            {
+                Some(registered) => {
+                    registered.initialized = false;
+                    registered.is_paused = false;
+                    print_line(&format!(
+                        "[CONTROL] Node '{}' will re-initialize on the next tick",
+                        name
+                    ));
+                }
+                None => {
+                    let asked = self
+                        .node_controls
+                        .as_ref()
+                        .is_some_and(|c| c.request_restart(&name));
+                    if asked {
+                        print_line(&format!(
+                            "[CONTROL] Node '{}' will re-initialize on its executor",
+                            name
+                        ));
+                    } else {
+                        print_line(&format!(
+                            "[CONTROL] Restart requested for unknown node '{}'",
+                            name
+                        ));
+                    }
                 }
             }
         }
@@ -5862,6 +6002,15 @@ impl Scheduler {
             if let Some(deadline) = self.nodes[i].deadline {
                 let miss =
                     TimingEnforcer::check_deadline(tick_start, deadline, self.nodes[i].miss_policy);
+                if miss.is_none() {
+                    // The tick met its deadline: end the consecutive-miss run.
+                    // This is the only path that clears it, and it has to run
+                    // for every RT node with a deadline — including one with no
+                    // tick budget, which never reaches the budget block above.
+                    if let Some(ref monitor) = self.monitor.safety {
+                        monitor.record_deadline_met(&node_name);
+                    }
+                }
                 if miss.is_none() && self.nodes[i].in_safe_mode {
                     // See the RT executor: a latch that never clears turns
                     // Miss::SafeMode into a one-shot for the process lifetime.

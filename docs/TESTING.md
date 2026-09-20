@@ -544,8 +544,8 @@ coverage, and gates nothing.
 | `cli_runtime_integration` (18 ignored), `launch_and_workflow` (5), `real_project_ipc` (3) | `horus_core/tests/` | need a debug build of `-p horus --examples` plus `horus_manager` that no job produces (`integration-tests.yml:160-166`) |
 | `transient_subscribers_permanently_flip_a_topic_to_a_lossy_backend` | `participant_count_leak.rs:62` | `#[ignore]`d with the reason "documents an open defect" |
 | `naive_protocol_tears_proving_the_model_can_detect_it` | `loom_pod_broadcast.rs:225` | deliberately excluded (`integration-tests.yml:186`); it is supposed to fail, so running it in CI would be wrong — but nothing checks that it *still* fails |
-| `docs_parity` | `horus_manager/tests/docs_parity.rs` | all three of its tests are `#[ignore]`d with the reason "needs a horus-docs checkout; wired into the docs-contract workflow" (`:193,:259,:336`). `grep -rn docs_parity .github/` returns nothing. The suite that exists to catch *undocumented* new surface never runs |
-| `readme_contract`'s `#[ignore]`d test | `readme_contract.rs:146` | reason: "slow: builds a scratch crate; run in the docs-contract job". That job does not name the target. The other 10 tests in the file do run, via `integration-tests.yml:794` |
+| `docs_parity` | `horus_manager/tests/docs_parity.rs` | all three tests are `#[ignore]`d with the reason "needs a horus-docs checkout; wired into the docs-contract workflow" (`:193,:259,:336`) — and it **is** wired: `docs-contract.yml` runs `cargo test -p horus_manager --test docs_parity -- --ignored --nocapture`. This row previously read "`grep -rn docs_parity .github/` returns nothing … never runs", which was true when written and was falsified by the commit that added the invocation |
+| `readme_contract`'s `#[ignore]`d test | `readme_contract.rs:146` | reason: "slow: builds a scratch crate; run in the docs-contract job". That job **does** name the target now (`docs-contract.yml`, `--include-ignored`); this row previously said it did not. The other 10 tests in the file also run, via `integration-tests.yml:794` |
 | `cpp_toolchain_contract`'s `#[ignore]`d test | `cpp_toolchain_contract.rs:464` | reason: "slow: cross-compiles horus_cpp; run with `--ignored`". Nothing does. The other 19 run |
 | `.config/nextest.toml` | repo root config | a fully worked per-test timeout guard (60 s × 3 hard kill at `:50`, `test-threads = 1` at `:66`, `retries = 0` at `:70`, `leak-timeout = "500ms"` at `:77`, a `ci` profile with JUnit output at `:83-101` and a `soak` profile at `:103-110`) that no workflow uses — `grep -rn nextest .github/` returns nothing, and no markdown mentions it |
 | `horus_manager/tests/web_e2e/` | Puppeteer suite, `package.json:5-7` | referenced only by `.github/dependabot.yml:105`, whose own comment records that no CI workflow runs the suite and that puppeteer is `hasInstallScript: true`, so the dependency graph is exercised exclusively on workstations |
@@ -554,12 +554,18 @@ coverage, and gates nothing.
 | `tests/docker/run_all.sh` | repo `tests/docker/` | `docker-distro-tests.yml:43-61` builds the five Dockerfiles and runs the image `CMD` and `test_user_workflow.sh` directly; `run_all.sh` is unreferenced. `acceptance_linux_macos.sh` and `acceptance_windows.ps1` beside it *are* used, by `cross-platform-parity.yml` and `distribution.yml` |
 | `horus_core`'s doctests | 13 blocks tagged ```` ```rust ```` and one ```` ```no_run ```` in `horus_core/src` | see below |
 
-Three of these are worse than merely unrun, and the distinction matters when you
-are deciding what to fix first: `docs_parity`, `readme_contract` and
-`cpp_toolchain_contract` carry `#[ignore]` *reason strings asserting they are
-wired*. A reader of the source has no way to discover otherwise short of
-grepping the workflows. If you add an `#[ignore]` with a reason naming a
-workflow, add the invocation in the same commit.
+`cpp_toolchain_contract` carries an `#[ignore]` *reason string asserting it is
+wired* while nothing runs it, and a reader of the source has no way to discover
+that short of grepping the workflows. If you add an `#[ignore]` whose reason
+names a workflow, add the invocation in the same commit.
+
+`docs_parity` and `readme_contract` used to be listed here for the same fault
+and have since been wired up — which exposed the mirror-image hazard this table
+now demonstrates twice over. **A table asserting that something is unrun is
+itself untested prose, and it rots in the direction that wastes a newcomer's
+time**: it sends them to hand-run a suite CI already covers, and it teaches them
+to distrust the workflows. Re-derive the rows against
+`grep -rn '<target>' .github/` before relying on any of them.
 
 **On `nextest.toml`.** Its stated premise has partly expired: it says at `:8`
 that "None of the jobs in `.github/workflows/ci.yml` set `timeout-minutes`", and

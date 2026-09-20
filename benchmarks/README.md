@@ -71,7 +71,7 @@ the withdrawn tables dropped, and it is not comparable across kinds:
 | `CrossThread-MPMC` | `PodShm`  | `send`      | Producer-side `send()` cost under contention          |
 | `CrossProc-1P1C`   | `SpscShm` | `one-way`   | Pub-to-sub delivery, RDTSC timestamp in payload       |
 | `CrossProc-2P1C`   | `MpscShm` | `one-way`   | Pub-to-sub delivery                                   |
-| `CrossProc-1PMC`   | `SpmcShm` | `one-way`   | Pub-to-sub delivery                                   |
+| `CrossProc-1PMC`   | `PodShm`  | `one-way`   | Pub-to-sub delivery; one-to-many POD routes to broadcast |
 | `CrossProc-PodShm` | `PodShm`  | `broadcast` | Latest-value broadcast; readers may skip ahead        |
 | `RawAtomic`        | —         | `one-way`   | Raw SHM atomic store/load — the hardware floor        |
 
@@ -104,7 +104,7 @@ sudo cpupower frequency-set -g performance
 echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
 ```
 
-> Cross-process paced benchmarks (SpscShm, MpscShm, PodShm) are heavily affected by OS scheduling under `powersave` governor. The SpmcShm path (seqlock broadcast) is least affected since readers don't block.
+> Cross-process paced benchmarks (SpscShm, MpscShm) are heavily affected by OS scheduling under `powersave` governor. The `PodShm` broadcast path is least affected, since its readers do not block — a one-to-many POD topology resolves to `PodShm`, not `SpmcShm`, which is why no row above names the latter.
 
 ## License
 

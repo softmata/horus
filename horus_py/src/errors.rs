@@ -4,6 +4,7 @@
 //! - `HorusNotFoundError` — missing topics, frames, nodes
 //! - `HorusTransformError` — transform extrapolation, stale data
 //! - `HorusTimeoutError` — blocking operation timeouts
+//! - `HorusBackpressureError` — send_blocking() refused: no backpressure to wait on
 
 use horus_core::error::HorusError;
 use pyo3::create_exception;
@@ -29,6 +30,14 @@ create_exception!(
     HorusTimeoutError,
     PyException,
     "Raised when a blocking operation times out."
+);
+create_exception!(
+    _horus,
+    HorusBackpressureError,
+    PyException,
+    "Raised when send_blocking() is refused because the topic's backend has no \
+     backpressure. Unlike a timeout this is not transient: it lasts as long as \
+     the topology that caused it, so retrying cannot succeed."
 );
 
 /// Build the error message, appending actionable `.help()` text when available.

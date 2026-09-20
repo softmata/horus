@@ -1224,15 +1224,7 @@ fn check_drivers(ctx: &dispatch::ProjectContext) -> CheckResult {
         }
     };
 
-    // Merge [hardware] and legacy [drivers] entries
-    let mut all_entries: std::collections::BTreeMap<String, &crate::manifest::DriverValue> =
-        std::collections::BTreeMap::new();
-    for (k, v) in &manifest.hardware {
-        all_entries.insert(k.clone(), v);
-    }
-    for (k, v) in &manifest.drivers {
-        all_entries.entry(k.clone()).or_insert(v);
-    }
+    let all_entries = manifest.hardware_entries();
 
     if all_entries.is_empty() {
         return CheckResult {
@@ -1280,7 +1272,7 @@ fn check_drivers(ctx: &dispatch::ProjectContext) -> CheckResult {
             let urdf_path = std::path::Path::new(desc);
             let sensors = crate::urdf::extract_sensors_from_urdf(urdf_path);
             if !sensors.is_empty() {
-                let hw_keys: Vec<&str> = all_entries.keys().map(|s| s.as_str()).collect();
+                let hw_keys: Vec<&str> = all_entries.keys().copied().collect();
                 let warnings = crate::urdf::validate_driver_keys(&hw_keys, &sensors);
                 for warning in warnings {
                     details.push(format!("  ! {}", warning));
@@ -1874,9 +1866,18 @@ fn check_network() -> CheckResult {
     details.push(format!("Namespace: {}", namespace));
 
     // Check 3: horus_net enabled check
-    let net_enabled = std::env::var("HORUS_NET")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
+    //
+    // Asked the way the BUILD asks it. This used to read `HORUS_NET`, which
+    // nothing else in the tree reads — so the advice it printed
+    // ("use --net or HORUS_NET=1 to enable") handed the operator a remedy that
+    // changed nothing except that `doctor` then reported networking as enabled,
+    // confirming a state that did not exist. What actually puts horus_net in
+    // the binary is the `net` capability reaching cargo_gen, via `enable` in
+    // horus.toml or `HORUS_ENABLE`; `horus run --net` works because it appends
+    // to that list.
+    let manifest = crate::manifest::HorusManifest::load_from(std::path::Path::new("horus.toml"))
+        .unwrap_or_default();
+    let net_enabled = crate::cargo_gen::net_capability_requested(&manifest);
     let no_net = std::env::var("HORUS_NO_NETWORK")
         .map(|v| v == "1" || v == "true")
         .unwrap_or(false);
@@ -1886,7 +1887,10 @@ fn check_network() -> CheckResult {
     } else if net_enabled {
         details.push("horus_net: enabled".to_string());
     } else {
-        details.push("horus_net: available (use --net or HORUS_NET=1 to enable)".to_string());
+        details.push(
+            "horus_net: available (enable it with `horus run --net`, enable = [\"net\"] in horus.toml, or HORUS_ENABLE=net)"
+                .to_string(),
+        );
     }
 
     // Check 4: multicast reachability (basic socket test)

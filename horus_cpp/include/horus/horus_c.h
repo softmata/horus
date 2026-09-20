@@ -545,6 +545,10 @@ int          horus_params_get_i64(const HorusParams* params, const char* key, in
 int          horus_params_set_i64(const HorusParams* params, const char* key, int64_t value);
 int          horus_params_get_bool(const HorusParams* params, const char* key, bool* out);
 int          horus_params_set_bool(const HorusParams* params, const char* key, bool value);
+/* Returns the value's FULL length in bytes; writes at most buf_len-1 of them
+ * plus a NUL. A return >= buf_len means the value was truncated and names the
+ * buffer size needed to get it whole. Returns -1 if the key is absent, or if
+ * buf is NULL or buf_len is 0. Never splits a UTF-8 sequence. */
 int          horus_params_get_string(const HorusParams* params, const char* key, char* buf, size_t buf_len);
 int          horus_params_set_string(const HorusParams* params, const char* key, const char* value);
 bool         horus_params_has(const HorusParams* params, const char* key);

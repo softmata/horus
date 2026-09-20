@@ -597,6 +597,13 @@ fn measure_in_isolated_child(test_name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .output()
         .expect("spawn isolated child");
+
+    // The child created /dev/shm/horus_<ns>/ and nothing unlinks it when a
+    // process exits, so each isolated child otherwise leaves a namespace
+    // directory behind for good. Removed here because the child is the process
+    // that dies.
+    let _ = std::fs::remove_dir_all(horus_sys::shm::shm_base_dir_for(&ns));
+
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
