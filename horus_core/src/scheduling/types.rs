@@ -858,6 +858,10 @@ pub struct NodeControl {
     /// BestEffort nodes and silently reported every RT, Compute, Event and
     /// AsyncIo node as unknown — which is every node with a `.rate()`, i.e.
     /// exactly the ones an operator restarts.
+    ///
+    /// The consuming executor treats `init() == Err` as a failed restart: the
+    /// node is stopped, not marked initialised. See
+    /// `primitives::honor_restart_request_with`.
     pub restart_requested: std::sync::atomic::AtomicBool,
 }
 

@@ -44,6 +44,11 @@ pub enum ControlCommand {
     /// printed "The scheduler will re-initialize this node on next tick" and
     /// nothing happened.
     ///
+    /// An `init()` that returns `Err`, or panics, is NOT a restart: the node
+    /// is stopped and reported, not marked initialised and left ticking with
+    /// setup that failed. Same rule `reinit_pending_nodes` applies to a node
+    /// still waiting on its first init.
+    ///
     /// Added last so a command serialised by an older CLI still decodes.
     RestartNode {
         /// Name of the node to re-initialise.

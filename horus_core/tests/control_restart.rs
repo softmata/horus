@@ -136,7 +136,13 @@ fn restart_for_an_unknown_node_leaves_the_others_alone() {
         scheduler.run_for(1200_u64.ms()).expect("run_for");
     });
 
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    // Bounded poll, not a fixed sleep — the same reason the test above gives:
+    // a fixed wait is a bet that the scheduler thread got scheduled inside it,
+    // and a lost bet reports a scheduler that never ran as a restart bug.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while inits.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert_eq!(inits.load(Ordering::SeqCst), 1);
 
     ctl.send(ControlCommand::RestartNode {
@@ -149,4 +155,105 @@ fn restart_for_an_unknown_node_leaves_the_others_alone() {
         1,
         "a restart naming an unregistered node must not re-init a different one"
     );
+}
+
+/// A restart whose `init()` returns `Err` must stop the node, not mark it
+/// initialised and leave it ticking with setup that failed.
+///
+/// `honor_restart_request_with` discarded `init()`'s result (`let _ =
+/// target.init()`) and treated only a panic as failure, so a driver whose
+/// device failed to reopen kept ticking while `horus node restart` reported
+/// success — the exact shape `reinit_pending_nodes` refuses for a node whose
+/// first init failed.
+#[test]
+fn restart_whose_init_fails_stops_the_node() {
+    struct FailsOnRestart {
+        inits: Arc<AtomicU32>,
+        ticks: Arc<AtomicU32>,
+    }
+
+    impl Node for FailsOnRestart {
+        fn name(&self) -> &str {
+            "fails_on_restart"
+        }
+        fn init(&mut self) -> horus_core::error::Result<()> {
+            let n = self.inits.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                Ok(())
+            } else {
+                Err(horus_core::HorusError::Node(
+                    horus_core::error::NodeError::InitFailed {
+                        node: "fails_on_restart".to_string(),
+                        reason: "device did not reopen".to_string(),
+                    },
+                ))
+            }
+        }
+        fn tick(&mut self) {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let inits = Arc::new(AtomicU32::new(0));
+    let ticks = Arc::new(AtomicU32::new(0));
+    let sched_name = format!("restart_fail_test_{}", std::process::id());
+    let ctl_name = format!("horus.ctl.{}", sched_name);
+
+    let ctl: horus_core::communication::Topic<ControlCommand> =
+        horus_core::communication::Topic::new_with_kind(
+            &ctl_name,
+            horus_core::communication::TopicKind::System as u8,
+        )
+        .expect("control topic opens");
+
+    let inits_for_thread = inits.clone();
+    let ticks_for_thread = ticks.clone();
+    let name_for_thread = sched_name.clone();
+    let handle = std::thread::spawn(move || {
+        let mut scheduler = Scheduler::new()
+            .name(&name_for_thread)
+            .tick_rate(200_u64.hz());
+        scheduler
+            .add(FailsOnRestart {
+                inits: inits_for_thread,
+                ticks: ticks_for_thread,
+            })
+            .build()
+            .expect("node registers");
+        scheduler.run_for(3000_u64.ms()).expect("run_for");
+    });
+
+    // Startup init: bounded poll, as in the tests above.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while inits.load(Ordering::SeqCst) < 1 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(inits.load(Ordering::SeqCst), 1, "startup init never ran");
+
+    ctl.send(ControlCommand::RestartNode {
+        name: "fails_on_restart".to_string(),
+    });
+
+    // The restart re-runs init(), which fails. Wait for the attempt itself,
+    // then give any in-flight tick time to land before sampling.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while inits.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(
+        inits.load(Ordering::SeqCst),
+        2,
+        "the restart never re-ran init()"
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let settled = ticks.load(Ordering::SeqCst);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert_eq!(
+        ticks.load(Ordering::SeqCst),
+        settled,
+        "a node whose restart failed in init() must not keep ticking"
+    );
+
+    handle.join().expect("scheduler thread joins");
 }

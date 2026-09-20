@@ -186,23 +186,45 @@ fn honor_restart_request_with(
     node.is_paused = false;
 
     let target = &mut node.node;
-    let panicked = guard_fault_callback(|| {
-        let _ = target.init();
-    });
+    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| target.init()));
 
-    if panicked {
+    match init_result {
         // A node that cannot initialise must not be ticked.
-        node.is_stopped = true;
-        super::rt_executor::rt_diag(format_args!(
-            " Restart: '{}' PANICKED in init() — node stopped",
-            node.name
-        ));
-    } else {
-        node.initialized = true;
-        super::rt_executor::rt_diag(format_args!(
-            " Restart: '{}' re-initialised on its executor",
-            node.name
-        ));
+        Err(_) => {
+            node.initialized = false;
+            node.is_stopped = true;
+            super::rt_executor::rt_diag(format_args!(
+                " Restart: '{}' PANICKED in init() — node stopped",
+                node.name
+            ));
+            if let Some(ctx) = node.context.as_mut() {
+                ctx.transition_to_crashed(format!("Restart of '{}' panicked in init()", node.name));
+            }
+        }
+        // `init()` returning `Err` is NOT a successful restart. The result
+        // used to be discarded (`let _ = target.init()`), so a driver whose
+        // device failed to reopen was marked initialised and kept ticking with
+        // failed hardware while `horus node restart` reported success — the
+        // same shape `reinit_pending_nodes` already refuses for a node still
+        // waiting on its first init. Stop it and say why.
+        Ok(Err(e)) => {
+            node.initialized = false;
+            node.is_stopped = true;
+            super::rt_executor::rt_diag(format_args!(
+                " Restart: '{}' FAILED in init() — node stopped: {}",
+                node.name, e
+            ));
+            if let Some(ctx) = node.context.as_mut() {
+                ctx.transition_to_crashed(format!("Restart failed: {}", e));
+            }
+        }
+        Ok(Ok(())) => {
+            node.initialized = true;
+            super::rt_executor::rt_diag(format_args!(
+                " Restart: '{}' re-initialised on its executor",
+                node.name
+            ));
+        }
     }
 }
 
