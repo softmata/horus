@@ -912,6 +912,18 @@ const API_MISMATCH_CODES: &[&str] = &[
     "E0609", // no field on type
 ];
 
+const HARNESS_CONVERSION_E0277_NEEDLES: &[&str] = &[
+    "error[E0277]",
+    "couldn't convert the error to `HorusError`",
+    "From<&str>",
+];
+
+fn is_harness_conversion_artifact(error: &str) -> bool {
+    HARNESS_CONVERSION_E0277_NEEDLES
+        .iter()
+        .all(|needle| error.contains(needle))
+}
+
 fn is_api_mismatch(error: &str) -> bool {
     // `_DocSelf` is the synthetic receiver supplied to a bare method fragment.
     // It has no fields by design, so every `self.whatever` in such a block
@@ -927,10 +939,7 @@ fn is_api_mismatch(error: &str) -> bool {
     // compiling. A snippet that uses `?` on `Result<_, &str>` then reports
     // `From<&str> for HorusError` missing — a mismatch created by this harness
     // return type, not by a wrong public horus API in the docs.
-    if error.contains("error[E0277]")
-        && error.contains("couldn't convert the error to `HorusError`")
-        && error.contains("From<&str>")
-    {
+    if is_harness_conversion_artifact(error) {
         return false;
     }
     API_MISMATCH_CODES.iter().any(|c| error.contains(c))
