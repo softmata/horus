@@ -2378,7 +2378,7 @@ pub fn run_add(
                 }
             }
             other => {
-                // Try as terra driver name
+                // Try as a legacy driver shortname
                 DriverValue::Config(DriverTableConfig {
                     terra: Some(other.to_string()),
                     ..DriverTableConfig::default()

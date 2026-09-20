@@ -2,7 +2,7 @@
 ///
 /// Demonstrates how to wire real hardware into horus:
 /// - Load drivers from horus.toml [drivers] configuration
-/// - Use Terra HAL for standard peripherals (motors, IMU, LiDAR)
+/// - Use built-in drivers for standard peripherals (motors, IMU, LiDAR)
 /// - Create custom driver nodes for specialized hardware
 /// - Bridge hardware data into the horus topic system
 ///
@@ -77,7 +77,7 @@ impl Node for SimMotorDriver {
         //   dxl.set_torque_enable(true)?;
         hlog!(info, "Motor driver: initialized (simulated)");
         hlog!(info, "  Real driver would load from horus.toml [drivers.motor]");
-        hlog!(info, "  terra = \"dynamixel\", port = \"/dev/ttyUSB0\"");
+        hlog!(info, "  use = \"dynamixel\", port = \"/dev/ttyUSB0\"");
         Ok(())
     }
 
@@ -173,7 +173,7 @@ impl Node for SimImuDriver {
 }
 
 // ============================================================================
-// Simulated Gripper Driver — custom hardware, not a Terra driver
+// Simulated Gripper Driver — custom hardware, not a built-in driver
 // ============================================================================
 
 struct SimGripperDriver {
@@ -289,7 +289,7 @@ impl Node for ArmController {
 
 fn main() -> Result<()> {
     hlog!(info, "Driver Integration Example");
-    hlog!(info, "  Demonstrates: hardware drivers, Terra HAL, custom drivers");
+    hlog!(info, "  Demonstrates: hardware drivers, custom drivers");
     hlog!(info, "  Drivers configured in horus.toml [drivers] section");
     hlog!(info, "  All drivers SIMULATED — same patterns work with real hardware");
     hlog!(info, "");
@@ -303,8 +303,8 @@ fn main() -> Result<()> {
     //
     // The drivers are configured in horus.toml:
     //   [drivers]
-    //   motor = { terra = "dynamixel", port = "/dev/ttyUSB0" }
-    //   imu = { terra = "bno055", bus = "/dev/i2c-1" }
+    //   motor = { use = "dynamixel", port = "/dev/ttyUSB0" }
+    //   imu = { use = "bno055", bus = "/dev/i2c-1" }
 
     let mut scheduler = Scheduler::new().tick_rate(200_u64.hz());
 

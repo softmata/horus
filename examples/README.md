@@ -40,7 +40,7 @@ build output behind. Pass a name that does not exist to see the full list.
 ### Production
 | Example                                   | Language | What you'll learn                                                  |
 |-------------------------------------------|----------|--------------------------------------------------------------------|
-| [driver_integration](driver_integration/) | Rust     | Hardware drivers via `[drivers]` config, Terra HAL, custom drivers |
+| [driver_integration](driver_integration/) | Rust     | Hardware drivers via `[drivers]` config, custom driver nodes       |
 | [record_replay](record_replay/)           | Rust     | Session recording, blackbox forensics, deterministic replay        |
 
 ## C++

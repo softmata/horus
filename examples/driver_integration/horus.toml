@@ -9,14 +9,14 @@ license = "Apache-2.0"
 horus = "*"
 
 [drivers]
-# Motor controller via serial (Terra driver)
-motor = { terra = "dynamixel", port = "/dev/ttyUSB0", baudrate = "1000000" }
+# Motor controller via serial (built-in driver)
+motor = { use = "dynamixel", port = "/dev/ttyUSB0", baudrate = "1000000" }
 
 # IMU sensor via I2C
-imu = { terra = "bno055", bus = "/dev/i2c-1", address = "0x28" }
+imu = { use = "bno055", bus = "/dev/i2c-1", address = "0x28" }
 
 # LiDAR via network
-lidar = { terra = "rplidar", port = "/dev/ttyUSB1", baudrate = "256000" }
+lidar = { use = "rplidar", port = "/dev/ttyUSB1", baudrate = "256000" }
 
 # Custom Python driver (local implementation)
 gripper = { node = "GripperDriver" }
