@@ -123,6 +123,22 @@ jobs:
         env:
           HORUS_NAMESPACE: ci_macos_unit_${{ github.run_id }}
 
+      # The one horus_core test that is macOS-only, and the reason this job
+      # exists for it at all: no other macOS job builds horus_core's test
+      # targets, so `macos_reader_opens_a_live_posix_topic` — the regression
+      # that `horus topic echo`/`hz`/`bw` read the POSIX named region rather
+      # than a nonexistent file at the public topic path — was compiled by
+      # nothing and run by nothing. The filter runs exactly that test; the
+      # rest of horus_core's macOS suite has pre-existing host-dependent
+      # failures that are out of scope here.
+      - name: macOS topic reader regression (#215)
+        run: |
+          cargo test -p horus_core --lib -- \
+            macos_reader_opens_a_live_posix_topic --test-threads=1
+        env:
+          HORUS_NAMESPACE: ci_macos_reader_${{ github.run_id }}
+          RUST_BACKTRACE: 1
+
       # The two tests that execute install.sh's and uninstall.sh's own shell
       # code instead of reading it as text — completion_install_contract runs
       # the marked slices against a throw-away $HOME with a stub horus on PATH.
