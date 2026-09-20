@@ -852,6 +852,16 @@ fn write_generated_cargo_config(config_path: &Path, flags: &[String]) -> Result<
 }
 
 /// Delete a cargo config, but only one HORUS generated.
+/// Remove the `.cargo/config.toml` files HORUS wrote for `[rust].rustflags`.
+///
+/// `horus eject` calls this. The generated config is only correct while HORUS
+/// owns the build: once a root `Cargo.toml` exists, plain cargo would read
+/// those rustflags while the documentation says `[rust]` no longer applies.
+pub fn remove_generated_build_configs(project_dir: &Path) {
+    let _ = remove_generated_cargo_config(&project_dir.join(".cargo/config.toml"));
+    let _ = remove_generated_cargo_config(&project_dir.join(HORUS_DIR).join(".cargo/config.toml"));
+}
+
 fn remove_generated_cargo_config(config_path: &Path) -> Result<()> {
     if !generated_by_horus(config_path) {
         return Ok(());
@@ -1034,7 +1044,12 @@ fn write_layout_targets(
 
     if matches!(target, TargetType::Bin | TargetType::Both) {
         for (name, file) in target_files(&project_dir.join("src/bin")) {
-            if emitted_bins.iter().any(|b| b == &file) {
+            // Compare canonical paths: `source_files` may carry a relative
+            // `src/bin/tool.rs` (from auto-detection) while this walk produces
+            // `project_dir.join(...)`. A raw `==` missed that, and the same
+            // source came out as two `[[bin]]` entries with the same name —
+            // which cargo refuses.
+            if emitted_bins.iter().any(|b| same_file(b, &file)) {
                 continue;
             }
             write_target_entry(cargo, "bin", &name, &relative_to_horus(&file, horus_dir));
@@ -1049,6 +1064,18 @@ fn write_layout_targets(
         for (name, file) in target_files(&dir) {
             write_target_entry(cargo, kind, &name, &relative_to_horus(&file, horus_dir));
         }
+    }
+}
+
+/// Whether two paths name the same file, tolerating one being relative.
+///
+/// `canonicalize` resolves both and also folds symlinks; when either side does
+/// not exist (a file named in `horus.toml` that was deleted, say) the raw
+/// comparison is the best that can be done.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
     }
 }
 
@@ -1678,7 +1705,7 @@ fn relative_to_horus(file: &Path, horus_dir: &Path) -> String {
 }
 
 /// Simple relative path computation (from -> to).
-fn pathdiff(target: &Path, base: &Path) -> Result<String, ()> {
+pub(crate) fn pathdiff(target: &Path, base: &Path) -> Result<String, ()> {
     // Canonicalize if possible, otherwise use as-is
     let target = target
         .canonicalize()
@@ -1777,13 +1804,18 @@ pub fn ensure(project_dir: &Path) -> Ensured {
     // A workspace generates a root plus one manifest per member; entry-point
     // probing happens per member inside generate_workspace.
     if !manifest.is_workspace() {
-        // `generate` picks the `[[bin]]` by probing these two paths, and emits
-        // no target at all when neither exists (a `--lib` project, or Python or
-        // C++). A manifest with no target is worse than no manifest: cargo would
-        // look for `.horus/src/lib.rs`, which does not exist, and rust-analyzer
-        // reports a hard load error instead of simply having nothing to load.
-        let has_entry =
-            project_dir.join("main.rs").exists() || project_dir.join("src/main.rs").exists();
+        // `generate` emits no target when there is nothing to point at (a
+        // Python or C++ project, or an empty directory), and a manifest with no
+        // target is worse than no manifest: cargo looks for a file that does
+        // not exist and rust-analyzer reports a hard load error. Any layout
+        // `generate` CAN point at counts, which includes a `--lib` project's
+        // `src/lib.rs` and a `src/bin/`-only project — both used to be skipped
+        // here, so they had no manifest for the editor and no tests until a
+        // build happened to create one.
+        let has_entry = project_dir.join("main.rs").exists()
+            || project_dir.join("src/main.rs").exists()
+            || project_dir.join("src/lib.rs").exists()
+            || !target_files(&project_dir.join("src/bin")).is_empty();
         if !has_entry {
             return Ensured::Skipped;
         }
@@ -2636,6 +2668,69 @@ mod tests {
             !content.contains("[[bin]]"),
             "a lib project must not declare a binary target:\n{content}"
         );
+    }
+
+    /// `horus eject` calls this so `[rust].rustflags` stops applying to plain
+    /// cargo once the root manifest exists.
+    #[test]
+    fn remove_generated_build_configs_removes_what_horus_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_config = dir.path().join(".cargo/config.toml");
+        let horus_config = dir.path().join(".horus/.cargo/config.toml");
+        fs::create_dir_all(root_config.parent().unwrap()).unwrap();
+        fs::create_dir_all(horus_config.parent().unwrap()).unwrap();
+        fs::write(
+            &root_config,
+            format!(
+                "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\nrustflags = [\"-Ctarget-cpu=native\"]\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &horus_config,
+            format!("{GENERATED_CARGO_CONFIG_HEADER}\n[build]\n"),
+        )
+        .unwrap();
+
+        remove_generated_build_configs(dir.path());
+
+        assert!(
+            !root_config.exists(),
+            "the generated root config was left behind"
+        );
+        assert!(
+            !horus_config.exists(),
+            "the generated .horus config was left behind"
+        );
+    }
+
+    /// ...and it must not touch a config the user wrote.
+    #[test]
+    fn remove_generated_build_configs_spares_a_user_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_config = dir.path().join(".cargo/config.toml");
+        fs::create_dir_all(root_config.parent().unwrap()).unwrap();
+        fs::write(&root_config, "[build]\nrustflags = [\"-Copt-level=3\"]\n").unwrap();
+
+        remove_generated_build_configs(dir.path());
+
+        assert!(
+            root_config.exists(),
+            "a user's cargo config was deleted by the eject cleanup"
+        );
+    }
+
+    /// Paths that name the same file in different forms (`a.rs` vs `./a.rs`)
+    /// must compare equal, or the same source is declared twice as a `[[bin]]`
+    /// and cargo refuses the manifest.
+    #[test]
+    fn same_file_sees_through_path_form_differences() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        fs::write(&file, "").unwrap();
+        let dotted = dir.path().join(".").join("a.rs");
+        assert!(same_file(&file, &dotted), "a.rs and ./a.rs are one file");
+        assert!(!same_file(&file, &dir.path().join("b.rs")));
     }
 
     /// The generated manifest is fingerprinted byte for byte, so discovery

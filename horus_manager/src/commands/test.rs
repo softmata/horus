@@ -89,6 +89,13 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
         }
     }
 
+    // A deleted or renamed source leaves its target table behind, naming a
+    // file that is not there — the next cargo run fails on it. The mtime
+    // checks above only ever see newer files, never a removal.
+    if manifest_references_a_missing_file(&cargo_toml) {
+        return true;
+    }
+
     false
 }
 
@@ -98,9 +105,16 @@ fn newest_rs_mtime(dir: &Path) -> Option<std::time::SystemTime> {
     let entries = fs::read_dir(dir).ok()?;
     for entry in entries.flatten() {
         let path = entry.path();
-        let candidate = if path.is_dir() {
+        // `DirEntry::file_type()` does not follow symlinks; `path.is_dir()`
+        // does. A `tests/link -> tests` symlink therefore made this walk
+        // recurse until the stack ran out, crashing `horus test` instead of
+        // reporting tests.
+        let file_type = entry.file_type().ok();
+        let candidate = if file_type.is_some_and(|t| t.is_dir()) {
             newest_rs_mtime(&path)
-        } else if path.extension().is_some_and(|e| e == "rs") {
+        } else if file_type.is_some_and(|t| t.is_file())
+            && path.extension().is_some_and(|e| e == "rs")
+        {
             fs::metadata(&path).ok().and_then(|m| m.modified().ok())
         } else {
             None
@@ -110,6 +124,37 @@ fn newest_rs_mtime(dir: &Path) -> Option<std::time::SystemTime> {
         }
     }
     newest
+}
+
+/// Whether the generated manifest names a relative path that no longer exists.
+///
+/// The mtime checks above see files that are *newer*; nothing saw a file that
+/// was deleted or renamed. Its target table stays in `.horus/Cargo.toml`, and
+/// the next `cargo test`/build fails on a source that is not there. A relative
+/// path is the project's own (`../tests/foo.rs`, `packages/vendored`), so it
+/// is resolved against the manifest's directory. Absolute paths are the HORUS
+/// source tree, which `cargo_gen::is_stale` reports for the editor.
+fn manifest_references_a_missing_file(cargo_toml: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(cargo_toml) else {
+        return false;
+    };
+    let base = cargo_toml.parent().unwrap_or(Path::new("."));
+    for line in text.lines() {
+        let mut rest = line;
+        while let Some(pos) = rest.find("path = \"") {
+            rest = &rest[pos + "path = \"".len()..];
+            let Some(end) = rest.find('"') else {
+                break;
+            };
+            let value = &rest[..end];
+            rest = &rest[end + 1..];
+            let path = Path::new(value);
+            if path.is_relative() && !base.join(path).exists() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Configuration for the `horus test` command.
@@ -649,17 +694,25 @@ fn generate_test_cargo_toml(verbose: bool) -> Result<()> {
     let project_dir = std::env::current_dir()?;
     let manifest = load_or_default_manifest(&[])?;
 
-    // Find the main source file
-    let main_file = run::auto_detect_main_file()?;
-
-    if verbose {
-        println!("  {} Source file: {}", "[*]".cyan(), main_file.display());
-    }
+    // Find the main source file. A `--lib` project (or a `src/bin/`-only one)
+    // has none for the detector to find, so an empty list lets `generate`
+    // probe the layout and emit `[lib]`/the `src/bin` targets. The detector
+    // still wins when it succeeds, because it also covers entry points the
+    // probe does not know about.
+    let source_files = match run::auto_detect_main_file() {
+        Ok(main_file) => {
+            if verbose {
+                println!("  {} Source file: {}", "[*]".cyan(), main_file.display());
+            }
+            vec![main_file]
+        }
+        Err(_) => Vec::new(),
+    };
 
     crate::cargo_gen::generate(
         &manifest,
         &project_dir,
-        &[main_file],
+        &source_files,
         true, // include_dev = true for testing
     )
     .context("Failed to generate build manifest for testing")?;
@@ -1103,6 +1156,43 @@ mod tests {
             result,
             "Should need rebuild when a tests/ file is newer than the manifest"
         );
+    }
+
+    /// A deleted or renamed target leaves its table behind, naming a file that
+    /// is not there — the next cargo run fails on it, and the mtime checks
+    /// never see a removal.
+    #[test]
+    fn needs_rebuild_when_a_target_file_is_deleted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::write(
+            horus_dir.join(CARGO_TOML),
+            "[package]\nname = \"t\"\nversion = \"0.1.0\"\n\n\
+             [[test]]\nname = \"gone\"\npath = \"../tests/gone.rs\"\n",
+        )
+        .unwrap();
+
+        let result = in_tmp(&tmp, || needs_rebuild(&horus_dir));
+        assert!(
+            result,
+            "a target whose file no longer exists must force regeneration"
+        );
+    }
+
+    /// A `tests/link -> tests` symlink used to make the walk recurse until the
+    /// stack ran out; `file_type()` does not follow symlinks, so it stops.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_directory_does_not_hang_the_walk() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let tests = tmp.path().join("tests");
+        fs::create_dir_all(&tests).unwrap();
+        std::os::unix::fs::symlink(&tests, tests.join("loop")).unwrap();
+
+        // The assertion is that this returns at all.
+        let newest = newest_rs_mtime(&tests);
+        assert!(newest.is_none(), "an empty tests/ has no .rs files");
     }
 
     /// ...and a `tests/` file older than the manifest must not force one.
