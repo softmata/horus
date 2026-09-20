@@ -78,8 +78,10 @@ impl TopicMetrics {
 
     /// Receive failures.
     ///
-    /// Only [`MockTopic`](crate::testing::MockTopic) produces a non-zero value
-    /// here, from its `recv_fail_after` / `recv_fail_every_n` fault injection.
+    /// Only `MockTopic` — the `test-utils` testing double, itself behind a
+    /// `cfg(feature = "test-utils")` gate, which is why this is not a doc link
+    /// — produces a non-zero value here, from its `recv_fail_after` /
+    /// `recv_fail_every_n` fault injection.
     /// The real transport never increments it, deliberately: a `recv()` that
     /// returns `None` is an empty ring, not a failure. For real consumer-side
     /// loss — a publisher lapping a subscriber — use `Topic::missed_count()`.
