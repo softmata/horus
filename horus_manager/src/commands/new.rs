@@ -16,7 +16,26 @@ pub fn create_new_project(
     use_macro: bool,
     workspace: bool,
     lib: bool,
-) -> Result<()> {
+) -> Result<PathBuf> {
+    create_new_project_with_options(name, path, language, use_macro, workspace, lib, false)
+}
+
+/// [`create_new_project`], plus the one choice that changes what it prints:
+/// whether the caller will turn the project cargo-native afterwards.
+///
+/// `--cargo` is handled by the caller (it needs the returned path), so this
+/// only has to know not to advise `horus eject` to someone who just asked for
+/// a root manifest.
+#[allow(clippy::too_many_arguments)]
+pub fn create_new_project_with_options(
+    name: String,
+    path: Option<PathBuf>,
+    language: String,
+    use_macro: bool,
+    workspace: bool,
+    lib: bool,
+    cargo: bool,
+) -> Result<PathBuf> {
     // Validate project name before doing anything
     validate_project_name(&name)?;
 
@@ -170,6 +189,16 @@ pub fn create_new_project(
     println!("\nTo get started:");
     println!("  {} {}", "cd".cyan(), name);
     println!("  {} (auto-installs dependencies)", "horus run".cyan());
+    // The manifest cargo can find lives in `.horus/`, so a plain `cargo build`
+    // here fails with "could not find Cargo.toml". Say what to do about it at
+    // the moment the project is created, not when the error happens — unless
+    // this IS the cargo-native path, where the root manifest already exists.
+    if !cargo {
+        println!(
+            "  {} (write a root Cargo.toml if you prefer plain cargo)",
+            "horus eject".cyan()
+        );
+    }
 
     // Only claim the IDE is wired up when it actually is. On a machine where
     // find_horus_source_dir() misses, the manifest was not written and saying
@@ -181,6 +210,29 @@ pub fn create_new_project(
         );
     }
 
+    Ok(project_path)
+}
+
+/// Finish a `horus new --cargo` project: write the root manifest it asked for.
+///
+/// Split from [`create_new_project`] so the scaffolding path stays testable
+/// without a HORUS source tree: this half needs one (the manifest's HORUS
+/// dependencies are absolute paths to it) and fails with the actionable
+/// message `find_horus_source_dir` produces when it is missing.
+pub fn make_cargo_native(project_path: &std::path::Path) -> Result<()> {
+    crate::commands::eject::materialize_root_manifest(project_path, false)?;
+    println!();
+    cli_output::success("Cargo-native project: Cargo.toml is the manifest");
+    println!(
+        "  {} plain cargo works here: {}",
+        "·".dimmed(),
+        "cargo build / cargo run / cargo test".cyan()
+    );
+    println!(
+        "  {} {} in horus.toml no longer applies — put profile/lints/features in Cargo.toml",
+        "·".dimmed(),
+        "[rust]".yellow()
+    );
     Ok(())
 }
 
