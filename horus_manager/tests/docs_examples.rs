@@ -922,6 +922,16 @@ fn is_api_mismatch(error: &str) -> bool {
     if error.contains("_DocSelf") {
         return false;
     }
+    // `Ctx::Statements` wraps snippets in a closure returning
+    // `horus::error::Result<()>` so early `return Err(Error::node(..))` keeps
+    // compiling. A snippet that uses `?` on `Result<_, &str>` then reports
+    // `From<&str> for HorusError` missing — a mismatch created by this harness
+    // return type, not by a wrong public horus API in the docs.
+    if error.contains("couldn't convert the error to `HorusError`")
+        && error.contains("From<&str>")
+    {
+        return false;
+    }
     API_MISMATCH_CODES.iter().any(|c| error.contains(c))
 }
 
@@ -1411,6 +1421,24 @@ mod extractor {
         assert!(missing_dependencies("use horus::prelude::*;").is_empty());
         assert!(missing_dependencies("use serde::{Serialize, Deserialize};").is_empty());
         assert!(missing_dependencies("use std::time::Duration;").is_empty());
+    }
+
+    #[test]
+    fn harness_conversion_error_is_not_an_api_mismatch() {
+        let harness_artifact = "src/lib.rs:221:43: error[E0277]: `?` couldn't convert the error to \
+                                `HorusError`: the trait `From<&str>` is not implemented for \
+                                `HorusError`";
+        assert!(
+            !is_api_mismatch(harness_artifact),
+            "harness-induced `From<&str> for HorusError` conversion failures are advisory"
+        );
+
+        let real_bound = "src/lib.rs:11:9: error[E0277]: the trait bound `NotClone: Clone` is not \
+                          satisfied";
+        assert!(
+            is_api_mismatch(real_bound),
+            "real trait-bound failures must stay gating"
+        );
     }
 
     #[test]
