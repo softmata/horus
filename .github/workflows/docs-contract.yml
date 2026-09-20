@@ -92,6 +92,16 @@ env:
   # Verifying a different docs commit means bumping this SHA in a PR, so the
   # change is reviewed here before it runs here.
   #
+  # Bumped from 9a1a0c1 to ad08246 (horus-docs main, the merge of
+  # horus-docs#19). That PR drops the private Terra project's name from the
+  # docs, describes the legacy `terra` key as a driver shortname rather than by
+  # product name, and regenerates public/schema/horus.toml.schema.json. The
+  # schema is why the pin must move with this branch: its doc comments feed
+  # `horus schema`, and the live tier compares that output against the pinned
+  # tree, so the two sides have to be the same commit's worth of text.
+  # Verified from this tree: docs_contract 14, docs_cli_contract 7, and
+  # docs_manifest 17 with --include-ignored.
+  #
   # Bumped from 4a612b1 to 9a1a0c1 (horus-docs main, the merge of
   # horus-docs#17). That PR is the documentation half of the same bidirectional
   # audit this branch is the code half of, so the two belong at the same pin:
@@ -115,7 +125,7 @@ env:
   # it: 14 passed, 0 failed. The bump is 7 commits, not 1 — horus-docs#18 is
   # only the newest of them, and that suite result is what says the other six,
   # written by other people for other reasons, are compatible with this branch.
-  DOCS_PINNED_REF: 9a1a0c107bc2e04b75cbdd08a04462e242285bce
+  DOCS_PINNED_REF: ad08246e4a5eeb7606ff71607fbef30a54caf405
 
 jobs:
   # ── Tier 1 ────────────────────────────────────────────────────────────────
