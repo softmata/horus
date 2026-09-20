@@ -116,6 +116,17 @@ fn eject_single_crate(manifest: &HorusManifest, project_dir: &Path) -> Result<()
     let (generated_path, generated) = crate::cargo_gen::generate(manifest, project_dir, &[], true)
         .context("could not generate .horus/Cargo.toml to eject from")?;
 
+    // A manifest with no library or binary is not buildable. `generate` only
+    // emits `[lib]` for a lib target, so a stray `src/lib.rs` in a binary
+    // project can leave the manifest target-less — cargo would then fail far
+    // from here, on the user's first `cargo build`.
+    if !(generated.contains("[[bin]]") || generated.contains("[lib]")) {
+        bail!(
+            "{} has no buildable target (a binary or a library); nothing to eject",
+            project_dir.display()
+        );
+    }
+
     write_manifest(
         &project_dir.join("Cargo.toml"),
         &eject_manifest(&generated, rebase_generated_path),
@@ -248,9 +259,13 @@ fn has_rust_entry(project_dir: &Path) -> bool {
         || project_dir.join("src/lib.rs").exists()
         || fs::read_dir(project_dir.join("src/bin"))
             .map(|entries| {
-                entries
-                    .flatten()
-                    .any(|e| e.path().extension().is_some_and(|ext| ext == "rs"))
+                entries.flatten().any(|e| {
+                    let path = e.path();
+                    // Both forms cargo accepts: `src/bin/tool.rs` and
+                    // `src/bin/tool/main.rs`.
+                    (path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
+                        || (path.is_dir() && path.join("main.rs").is_file())
+                })
             })
             .unwrap_or(false)
 }
@@ -451,6 +466,16 @@ mod tests {
             Some("src/main.rs"),
             "the [[bin]] path is wrong after the roundtrip"
         );
+    }
+
+    /// Cargo also accepts `src/bin/<name>/main.rs`; the guard must not refuse
+    /// a project the generator can represent.
+    #[test]
+    fn has_rust_entry_accepts_the_src_bin_directory_form() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src/bin/tool")).unwrap();
+        fs::write(dir.path().join("src/bin/tool/main.rs"), "fn main() {}").unwrap();
+        assert!(has_rust_entry(dir.path()));
     }
 
     #[test]

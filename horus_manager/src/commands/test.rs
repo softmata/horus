@@ -86,6 +86,26 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
                     return true;
                 }
             }
+
+            // Workspace members live outside those directories — a new
+            // `crates/foo/tests/smoke.rs` has to force regeneration too.
+            if let Ok(manifest) = crate::manifest::HorusManifest::load_from(Path::new(HORUS_TOML)) {
+                if let Some(ws) = manifest.workspace.as_ref() {
+                    if let Ok(members) =
+                        crate::manifest::resolve_workspace_members(ws, Path::new("."))
+                    {
+                        for (member_dir, _) in &members {
+                            for sub in ["src", "tests", "examples", "benches"] {
+                                if newest_rs_mtime(&member_dir.join(sub))
+                                    .is_some_and(|t| t > cargo_time)
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -94,6 +114,17 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
     // checks above only ever see newer files, never a removal.
     if manifest_references_a_missing_file(&cargo_toml) {
         return true;
+    }
+
+    // ...and the same for a workspace member's manifest, which lives in
+    // `.horus/<name>/Cargo.toml` and is not covered by the root one.
+    if let Ok(entries) = fs::read_dir(".horus") {
+        for entry in entries.flatten() {
+            let member_manifest = entry.path().join("Cargo.toml");
+            if member_manifest.is_file() && manifest_references_a_missing_file(&member_manifest) {
+                return true;
+            }
+        }
     }
 
     false
@@ -699,17 +730,25 @@ fn generate_test_cargo_toml(verbose: bool) -> Result<()> {
     // probe the layout and emit `[lib]`/the `src/bin` targets. The detector
     // still wins when it succeeds, because it also covers entry points the
     // probe does not know about.
+    // `auto_detect_main_file` is language-agnostic — it checks `main.py` and
+    // `main.cpp` too — so a mixed project with a Python entry point would hand
+    // cargo a `.py` file as a `[[bin]]` path. Only a `.rs` result is usable
+    // here; anything else falls through to layout probing.
     let source_files = match run::auto_detect_main_file() {
-        Ok(main_file) => {
+        Ok(main_file) if main_file.extension().is_some_and(|ext| ext == "rs") => {
             if verbose {
                 println!("  {} Source file: {}", "[*]".cyan(), main_file.display());
             }
             vec![main_file]
         }
-        Err(_) => Vec::new(),
+        _ => Vec::new(),
     };
 
-    crate::cargo_gen::generate(
+    // `generate_for_manifest`, not `generate`: a workspace has to regenerate
+    // its root and per-member manifests. Calling the single-package generator
+    // here rewrote `.horus/Cargo.toml` without a `members` list, so `horus
+    // test` could then report success without running any workspace tests.
+    crate::cargo_gen::generate_for_manifest(
         &manifest,
         &project_dir,
         &source_files,
@@ -1193,6 +1232,45 @@ mod tests {
         // The assertion is that this returns at all.
         let newest = newest_rs_mtime(&tests);
         assert!(newest.is_none(), "an empty tests/ has no .rs files");
+    }
+
+    /// A workspace member's tests live outside the project root's scan roots
+    /// (`crates/foo/tests/…`), so the member roots are scanned too.
+    #[test]
+    fn needs_rebuild_when_a_member_test_file_appears() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::create_dir_all(tmp.path().join("crates/arm/src")).unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("crates/arm/horus.toml"),
+            "[package]\nname = \"arm\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            horus_dir.join(CARGO_TOML),
+            "[workspace]\nmembers = [\"arm\"]\n",
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = in_tmp(&tmp, || {
+            fs::create_dir_all(tmp.path().join("crates/arm/tests")).unwrap();
+            fs::write(
+                tmp.path().join("crates/arm/tests/smoke.rs"),
+                "#[test] fn t() {}",
+            )
+            .unwrap();
+            needs_rebuild(&horus_dir)
+        });
+
+        assert!(result, "a new member test file must force regeneration");
     }
 
     /// ...and a `tests/` file older than the manifest must not force one.

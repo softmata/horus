@@ -290,10 +290,16 @@ fn execute_workspace(
 ) -> Result<()> {
     let project_dir = std::env::current_dir()?;
 
-    // Generate workspace Cargo.toml + per-member Cargo.toml files
-    cli_output::info("Generating workspace build files...");
-    let (cargo_path, _) =
-        crate::cargo_gen::generate_for_manifest(&manifest, &project_dir, &[], false)?;
+    // A root `Cargo.toml` means the workspace was ejected (or hand-written):
+    // build from it rather than regenerating the `.horus` manifests the user
+    // just took ownership of.
+    let cargo_path = if project_dir.join(CARGO_TOML).exists() {
+        run_rust::warn_if_rust_section_is_ignored();
+        project_dir.join(CARGO_TOML)
+    } else {
+        cli_output::info("Generating workspace build files...");
+        crate::cargo_gen::generate_for_manifest(&manifest, &project_dir, &[], false)?.0
+    };
 
     // Build with cargo
     let mut cmd = std::process::Command::new("cargo");
