@@ -482,7 +482,11 @@ impl PyTransformFrame {
     ///     Transform once available
     ///
     /// Raises:
-    ///     ValueError: If timeout expires before transform is available
+    ///     horus.HorusTimeoutError: If timeout expires before the transform is
+    ///         available. It derives from ``Exception``, not ``ValueError`` —
+    ///         this said ``ValueError`` for a while, so the ``except
+    ///         ValueError`` recovery path a reader wrote from this docstring
+    ///         never caught the timeout and the error left the node's tick().
     #[pyo3(signature = (src, dst, timeout_sec=5.0))]
     fn wait_for_transform(
         &self,
@@ -662,7 +666,8 @@ impl PyTransformFrame {
     ///     Interpolated transform at the given timestamp
     ///
     /// Raises:
-    ///     ValueError: If timestamp is outside buffered range
+    ///     horus.HorusTransformError: If the timestamp is outside the buffered
+    ///         range. It derives from ``Exception``, not ``ValueError``.
     fn tf_at_strict(&self, src: &str, dst: &str, timestamp_ns: u64) -> PyResult<PyTransform> {
         self.inner
             .tf_at_strict(src, dst, timestamp_ns)

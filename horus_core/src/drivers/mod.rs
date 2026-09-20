@@ -72,6 +72,80 @@ pub fn load() -> HorusResult<Vec<(String, Box<dyn Node>)>> {
     load_from(&path)
 }
 
+/// Whether a `[hardware.<name>]` table asks to be substituted by a stub under
+/// `horus run --sim`.
+///
+/// `simulated` is an ALIAS of `sim`, not a second key. `horus add <name>
+/// --driver --source sim` — and `--source simulated`, and `--source sim3d` —
+/// all write `simulated = true` into horus.toml, so HORUS generated a key its
+/// own loader then ignored: the entry constructed the REAL driver under
+/// `horus run --sim`, which is the exact failure `--sim` exists to prevent.
+/// `horus check` said nothing either, because `simulated` is a known field
+/// rather than an unknown one, and the loader's `RESERVED` list kept it away
+/// from the driver as well.
+///
+/// A free function so the truth table can be tested without a config file or
+/// the process-global environment — the same reason `sim_mode_enabled` is one.
+fn asks_for_simulation(config: &toml::value::Table) -> bool {
+    config
+        .get("sim")
+        .or_else(|| config.get("simulated"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Whether a `HORUS_SIM_MODE` value asks for simulation.
+///
+/// Presence alone used to mean "on", so the two most natural ways to say *off*
+/// both turned simulation on. A deploy script setting `HORUS_SIM_MODE=0` to
+/// force real hardware silently got inert stubs: actuators never commanded,
+/// sensors never read, nothing logged. Parse the value.
+///
+/// It parses through [`horus_sys::env`], the project-wide vocabulary shared
+/// with `HORUS_LOG_FILE` and `HORUS_NET_ENABLED`, so the words that mean "no"
+/// agree everywhere: `0`, `false`, `no`, `off` and the empty string are all
+/// off, and an unrecognised value (`HORUS_SIM_MODE=maybe`) leaves the default
+/// in force — simulation stays OFF, the safe direction for a flag that
+/// disconnects the robot from its hardware.
+///
+/// A free function taking the value so the truth table can be tested without
+/// racing on the process-global environment. It used to be a *copy* of this
+/// predicate living inside `#[cfg(test)] mod sim_mode_tests`, which is a thing
+/// that can silently stop matching what ships.
+fn sim_mode_enabled(value: Option<&str>) -> bool {
+    value.and_then(horus_sys::env::parse_flag).unwrap_or(false)
+}
+
+/// Whether this process is running under `horus run --sim`.
+fn sim_mode_active() -> bool {
+    sim_mode_enabled(std::env::var("HORUS_SIM_MODE").ok().as_deref())
+}
+
+/// The `HORUS_SIM_TARGETS` filter, or `None` for "every entry that asks".
+fn sim_targets() -> Option<Vec<String>> {
+    std::env::var("HORUS_SIM_TARGETS")
+        .ok()
+        .map(|s| s.split(',').map(String::from).collect())
+}
+
+/// Whether this named entry gets a stub in this process.
+///
+/// The one predicate behind both loaders. `load_from` substitutes a
+/// `SimStubNode`; `load_config_entries` reports it to its caller. They used to
+/// disagree: `load_config_entries` had no simulation handling at all, so the
+/// Python path built the REAL driver under `horus run --sim` -- the exact
+/// failure `--sim` exists to prevent, and the one `asks_for_simulation`
+/// already documents.
+fn entry_is_simulated(name: &str, config: &toml::value::Table) -> bool {
+    if !asks_for_simulation(config) || !sim_mode_active() {
+        return false;
+    }
+    match sim_targets() {
+        Some(targets) => targets.iter().any(|t| t == name),
+        None => true, // no filter = all sim targets
+    }
+}
+
 /// Load hardware nodes from a specific config file.
 ///
 /// Useful for testing with alternate configs or multi-robot setups.
@@ -90,27 +164,6 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
         .and_then(|v| v.as_table())
         .cloned()
         .unwrap_or_default();
-
-    // Presence alone used to enable simulation, so `HORUS_SIM_MODE=0` and
-    // `HORUS_SIM_MODE=false` both turned it *on*. A deploy script setting `=0`
-    // to force real hardware got inert `SimStubNode`s instead — actuators never
-    // commanded, sensors never read, and nothing said so. Parse the value, the
-    // way HORUS_NET_ENABLED already does.
-    // Through `env_flag` now. The shape below was already the fix for
-    // `=false` turning simulation ON, but it still treated every value it did
-    // not recognise as an opt-in — so `HORUS_SIM_MODE=no` swapped every driver
-    // for an inert `SimStubNode`, and `=maybe` would have too. An unrecognised
-    // value now leaves the default (off) in force, which is the safe direction
-    // for a flag that disconnects the robot from its hardware.
-    let sim_mode = horus_sys::env::env_flag("HORUS_SIM_MODE").unwrap_or(false);
-
-    let selective_targets: Option<Vec<String>> = if sim_mode {
-        std::env::var("HORUS_SIM_TARGETS")
-            .ok()
-            .map(|s| s.split(',').map(String::from).collect())
-    } else {
-        None
-    };
 
     // Reserved keys that are NOT passed as NodeParams
     const RESERVED: &[&str] = &[
@@ -139,24 +192,15 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
             }
         };
 
-        // Check sim override
-        let is_sim_target = config.get("sim").and_then(|v| v.as_bool()).unwrap_or(false);
-
-        if sim_mode && is_sim_target {
-            let should_sim = match &selective_targets {
-                Some(targets) => targets.iter().any(|t| t == name),
-                None => true, // no filter = all sim targets
-            };
-            if should_sim {
-                log::info!("hardware.{name}: simulation mode — using stub");
-                nodes.push((
-                    name.clone(),
-                    Box::new(SimStubNode {
-                        node_name: format!("{name}_sim_stub"),
-                    }),
-                ));
-                continue;
-            }
+        if entry_is_simulated(name, config) {
+            log::info!("hardware.{name}: simulation mode — using stub");
+            nodes.push((
+                name.clone(),
+                Box::new(SimStubNode {
+                    node_name: format!("{name}_sim_stub"),
+                }),
+            ));
+            continue;
         }
 
         // Determine the node type name from 'use' field (new) or legacy source keys
@@ -230,7 +274,7 @@ pub fn load_from<P: AsRef<Path>>(path: P) -> HorusResult<Vec<(String, Box<dyn No
                 })
                 .unwrap_or_default();
 
-            Box::new(ExecDriver::from_config(exec_path, args, &params)?)
+            Box::new(ExecDriver::from_config(name, exec_path, args, &params)?)
         } else {
             // Look up in node registry
             match registry::lookup(&use_name) {
@@ -291,9 +335,21 @@ pub fn robot_name() -> HorusResult<Option<String>> {
     robot_name_from(find_manifest()?)
 }
 
+/// Parse `[hardware]` into `(name, use_name, params, simulated)` tuples.
+///
+/// The non-instantiating half of [`load_from`]: it resolves the same key
+/// fallback chain and the same simulation predicate, but hands the decision
+/// back instead of constructing a node. The Python binding uses it, which is
+/// why `simulated` is reported rather than acted on -- a Python driver class
+/// is not a `Box<dyn Node>` this crate can substitute a stub for.
+///
+/// `simulated` is true when the entry asks for it (`sim` or its alias
+/// `simulated`) AND this process runs under `horus run --sim`. It used to be
+/// absent entirely, so `hardware.load()` in Python built the REAL driver under
+/// `--sim` while the same manifest under Rust got a stub.
 pub fn load_config_entries<P: AsRef<Path>>(
     path: P,
-) -> HorusResult<Vec<(String, String, NodeParams)>> {
+) -> HorusResult<Vec<(String, String, NodeParams, bool)>> {
     let path = path.as_ref();
     let content = std::fs::read_to_string(path)
         .map_err(|e| ConfigError::Other(format!("failed to read {}: {}", path.display(), e)))?;
@@ -378,7 +434,12 @@ pub fn load_config_entries<P: AsRef<Path>>(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        entries.push((name.clone(), use_name, NodeParams::new(param_map)));
+        entries.push((
+            name.clone(),
+            use_name,
+            NodeParams::new(param_map),
+            entry_is_simulated(name, config),
+        ));
     }
 
     Ok(entries)
@@ -411,17 +472,60 @@ pub fn find_manifest() -> HorusResult<std::path::PathBuf> {
 }
 
 #[cfg(test)]
-mod sim_mode_tests {
-    /// Mirrors the `HORUS_SIM_MODE` predicate in `load_from`.
-    ///
-    /// Kept as a free function so the truth table can be tested without racing
-    /// on the process-global environment, which every other test in this crate
-    /// also reads.
-    fn sim_mode_enabled(value: Option<&str>) -> bool {
-        value
-            .map(|v| !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false")))
-            .unwrap_or(false)
+mod sim_target_tests {
+    use super::asks_for_simulation;
+
+    fn table(toml_src: &str) -> toml::value::Table {
+        toml::from_str(toml_src).expect("test table")
     }
+
+    /// `simulated` must substitute the stub, because HORUS writes that key.
+    ///
+    /// `horus add <name> --driver --source sim` (and `--source simulated`, and
+    /// `--source sim3d`) all emit `simulated = true`. The loader read only
+    /// `sim`, so an entry HORUS generated itself constructed the REAL driver
+    /// under `horus run --sim` — the exact failure `--sim` exists to prevent —
+    /// and `horus check` stayed quiet, because `simulated` is a known field
+    /// rather than an unknown one.
+    #[test]
+    fn simulated_is_an_alias_of_sim() {
+        assert!(
+            asks_for_simulation(&table("use = \"rplidar\"\nsimulated = true\n")),
+            "`simulated = true` is what `horus add --source sim` writes; the \
+             loader must honour it"
+        );
+        assert!(asks_for_simulation(&table(
+            "use = \"rplidar\"\nsim = true\n"
+        )));
+    }
+
+    /// Neither key, or either set false, means the real driver.
+    #[test]
+    fn the_real_driver_is_the_default() {
+        assert!(!asks_for_simulation(&table("use = \"rplidar\"\n")));
+        assert!(!asks_for_simulation(&table(
+            "use = \"rplidar\"\nsim = false\n"
+        )));
+        assert!(!asks_for_simulation(&table(
+            "use = \"rplidar\"\nsimulated = false\n"
+        )));
+    }
+
+    /// An explicit `sim` wins over the alias — it is the documented key.
+    #[test]
+    fn sim_takes_precedence_over_the_alias() {
+        assert!(!asks_for_simulation(&table(
+            "sim = false\nsimulated = true\n"
+        )));
+    }
+}
+
+#[cfg(test)]
+mod sim_mode_tests {
+    // The predicate under test is the one that ships. It used to be a private
+    // copy declared right here, which could stop matching `load_from` without
+    // a single test going red.
+    use super::sim_mode_enabled;
 
     /// Presence alone used to mean "on", so the two most natural ways to say
     /// *off* both turned simulation on. A deploy script setting
@@ -429,19 +533,22 @@ mod sim_mode_tests {
     /// actuators never commanded, sensors never read, nothing logged.
     #[test]
     fn falsy_values_disable_simulation() {
-        assert!(!sim_mode_enabled(Some("0")));
-        assert!(!sim_mode_enabled(Some("false")));
-        assert!(!sim_mode_enabled(Some("False")));
-        assert!(!sim_mode_enabled(Some("FALSE")));
-        assert!(!sim_mode_enabled(Some("")));
+        for falsy in ["0", "false", "False", "FALSE", "no", "NO", "off", "Off", ""] {
+            assert!(
+                !sim_mode_enabled(Some(falsy)),
+                "{falsy:?} must not enable simulation"
+            );
+        }
     }
 
     #[test]
     fn truthy_values_enable_simulation() {
-        assert!(sim_mode_enabled(Some("1")));
-        assert!(sim_mode_enabled(Some("true")));
-        assert!(sim_mode_enabled(Some("TRUE")));
-        assert!(sim_mode_enabled(Some("yes")));
+        for truthy in ["1", "true", "TRUE", "yes", "YES", "on", "On"] {
+            assert!(
+                sim_mode_enabled(Some(truthy)),
+                "{truthy:?} must enable simulation"
+            );
+        }
     }
 
     #[test]
@@ -449,16 +556,30 @@ mod sim_mode_tests {
         assert!(!sim_mode_enabled(None));
     }
 
-    /// Matches the `HORUS_NET_ENABLED` predicate in the scheduler, so the two
-    /// env vars cannot drift into disagreeing about what "0" means.
+    /// An unrecognised value keeps the default — and the default for a flag
+    /// that disconnects hardware is OFF.
     #[test]
-    fn agrees_with_horus_net_enabled_convention() {
-        for falsy in ["0", "false", "False"] {
-            let net_disabled = falsy == "0" || falsy.eq_ignore_ascii_case("false");
+    fn an_unrecognised_value_leaves_simulation_off() {
+        for junk in ["maybe", "2", "yep", "sim", "-1"] {
+            assert!(
+                !sim_mode_enabled(Some(junk)),
+                "{junk:?} must not be an opt-in"
+            );
+        }
+    }
+
+    /// Matches the project-wide vocabulary in `horus_sys::env`, which the
+    /// scheduler's `HORUS_NET_ENABLED` opt-out also reads, so the two env vars
+    /// cannot drift into disagreeing about what "no" means.
+    #[test]
+    fn agrees_with_the_project_vocabulary() {
+        for v in [
+            "0", "false", "False", "no", "off", "", "1", "true", "yes", "on", "maybe",
+        ] {
             assert_eq!(
-                !sim_mode_enabled(Some(falsy)),
-                net_disabled,
-                "HORUS_SIM_MODE and HORUS_NET_ENABLED must agree on {falsy:?}"
+                sim_mode_enabled(Some(v)),
+                horus_sys::env::parse_flag(v).unwrap_or(false),
+                "HORUS_SIM_MODE must agree with the project vocabulary on {v:?}"
             );
         }
     }

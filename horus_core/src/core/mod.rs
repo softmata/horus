@@ -39,8 +39,8 @@ pub mod timer;
 // Log buffer types — pub for hlog! macro expansion and CLI log viewing (horus log)
 #[doc(hidden)]
 pub use log_buffer::{
-    start_log_file_drain, LogEntry, LogType, SharedLogBuffer, GLOBAL_ERROR_BUFFER,
-    GLOBAL_LOG_BUFFER, GLOBAL_REMOTE_LOG_BUFFER,
+    start_log_file_drain, start_log_file_drain_once, LogEntry, LogType, SharedLogBuffer,
+    GLOBAL_ERROR_BUFFER, GLOBAL_LOG_BUFFER, GLOBAL_REMOTE_LOG_BUFFER,
 };
 
 pub use duration_ext::{DurationExt, Frequency};

@@ -72,6 +72,14 @@ fn count_in_isolated_child(test_name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .output()
         .expect("spawn isolated child");
+    // The child materialised /dev/shm/horus_<ns>/ and nothing unlinks it when a
+    // process exits, so without this every isolated child left a namespace
+    // directory behind — one per test, per run, forever. They accumulate across
+    // CI runs and local runs alike, and a full /dev/shm is the documented cause
+    // of the rotating, unattributable failures this suite otherwise shows.
+    // Removed here rather than in the child: the child is the process that dies.
+    let _ = std::fs::remove_dir_all(horus_sys::shm::shm_base_dir_for(&ns));
+
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),

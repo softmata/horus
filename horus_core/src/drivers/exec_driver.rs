@@ -73,8 +73,19 @@ impl ExecDriver {
         }
     }
 
-    /// Create from a path string, args, and NodeParams (parsed from horus.toml).
+    /// Create from a manifest entry name, path, args, and NodeParams.
+    ///
+    /// `name` is the `[hardware.<name>]` key. It used to be discarded and the
+    /// driver's name derived from the binary's file stem, so two `[hardware]`
+    /// entries pointing at one binary were indistinguishable in the logs while
+    /// the scheduler knew them by their distinct manifest keys. It is also what
+    /// `HORUS_DRIVER_NAME` is supposed to carry: only `from_params` ever set
+    /// that variable, and its sole caller is a unit test, so an exec driver
+    /// reading it on the live path got nothing — while the environment-surface
+    /// contract asserts "`HORUS_DRIVER_NAME` is injected into every user-written
+    /// exec driver".
     pub fn from_config(
+        name: &str,
         path: &str,
         args: Vec<String>,
         params: &NodeParams,
@@ -108,14 +119,11 @@ impl ExecDriver {
             }
         }
 
-        let name = std::path::Path::new(path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("exec_driver")
-            .to_string();
+        // The name the operator wrote, not the binary's file stem.
+        env.insert("HORUS_DRIVER_NAME".to_string(), name.to_string());
 
         Ok(Self::new(
-            &name,
+            name,
             ExecDriverConfig {
                 path: PathBuf::from(path),
                 args,
@@ -356,6 +364,43 @@ mod tests {
         assert_eq!(driver.name(), "lidar");
         assert_eq!(driver.config.max_retries, 5);
         assert!(driver.config.env.contains_key("HORUS_PARAM_PORT"));
+    }
+
+    /// The live path must name the driver after the `[hardware.<name>]` key
+    /// and inject `HORUS_DRIVER_NAME`.
+    ///
+    /// `from_config` is what a horus.toml exec entry actually takes;
+    /// `from_params` is called only by the test above. `from_config` used to
+    /// discard the entry name and derive the driver's name from the binary's
+    /// FILE STEM, so two `[hardware]` entries pointing at one binary were
+    /// indistinguishable in the logs while the scheduler knew them apart. It
+    /// injected `HORUS_PARAM_*` and no name at all, so an exec driver reading
+    /// `HORUS_DRIVER_NAME` on the live path got nothing — while the
+    /// environment-surface contract asserts it "is injected into every
+    /// user-written exec driver".
+    #[test]
+    fn from_config_names_the_driver_after_the_manifest_entry() {
+        let params = NodeParams::new(HashMap::new());
+
+        let driver = ExecDriver::from_config("front_lidar", "./rplidar_driver", vec![], &params)
+            .expect("from_config");
+
+        assert_eq!(
+            driver.name(),
+            "front_lidar",
+            "the driver must be named after the [hardware.<name>] key, not the \
+             binary's file stem — two entries can share one binary"
+        );
+        assert_eq!(
+            driver
+                .config
+                .env
+                .get("HORUS_DRIVER_NAME")
+                .map(String::as_str),
+            Some("front_lidar"),
+            "HORUS_DRIVER_NAME must reach the child on the path horus.toml \
+             actually takes"
+        );
     }
 
     #[test]

@@ -72,7 +72,17 @@ pub struct LaunchNode {
     #[serde(default)]
     pub args: Vec<String>,
 
-    /// Namespace prefix for topics
+    /// Shared-memory tree for THIS node, overriding the file-level one.
+    ///
+    /// Not a topic prefix. There is no prefix or remap mechanism in horus_core;
+    /// `HORUS_NAMESPACE` names the shared-memory tree, which is isolation. This
+    /// is exported after the file-level value so the more specific one wins.
+    ///
+    /// **A node with its own namespace cannot see its siblings' topics, and
+    /// they cannot see its.** That is what a separate SHM tree means, and it is
+    /// the whole effect of this key — so set it when you want that node
+    /// isolated, and leave it unset otherwise. If you wanted a topic prefix,
+    /// this is not it, and HORUS does not have one.
     #[serde(default)]
     pub namespace: Option<String>,
 
@@ -690,10 +700,25 @@ pub fn run_launch(
 
         // Check if any process has exited
         let mut stopped_indices: Vec<usize> = Vec::new();
+        // What to record for nodes that leave `processes` this iteration.
+        //
+        // The session manifest is what `horus launch --status` reads, and its
+        // STATUS column has "crashed" and "stopped" arms that nothing could
+        // reach: `status` was assigned exactly once, `"running"` at
+        // construction, and never mutated. So a node that died was still listed
+        // as running — and this very loop already knows it died, because it
+        // logs `NodeCrashed` two lines down.
+        let mut departed: Vec<(String, &'static str)> = Vec::new();
         for (i, entry) in processes.iter_mut().enumerate() {
             match entry.child.try_wait() {
                 Ok(Some(status)) => {
                     let should_restart = should_restart_node(&entry.node.restart, &status);
+                    // A non-zero exit is a crash; a clean one is an ordinary stop.
+                    let final_status = if status.success() {
+                        "stopped"
+                    } else {
+                        "crashed"
+                    };
 
                     if !status.success() {
                         println!(
@@ -760,6 +785,7 @@ pub fn run_launch(
                                     e
                                 );
                                 stopped_indices.push(i);
+                                departed.push((entry.name.clone(), final_status));
                             }
                         }
                     } else if should_restart {
@@ -770,8 +796,10 @@ pub fn run_launch(
                             MAX_RESTARTS,
                         );
                         stopped_indices.push(i);
+                        departed.push((entry.name.clone(), final_status));
                     } else {
                         stopped_indices.push(i);
+                        departed.push((entry.name.clone(), final_status));
                     }
                 }
                 Ok(None) => {} // Still running
@@ -786,13 +814,18 @@ pub fn run_launch(
             processes.remove(i);
         }
 
-        // Update session manifest with current process states
-        for (i, entry) in processes.iter().enumerate() {
-            if let Some(se) = session.processes.get_mut(i) {
-                se.pid = entry.child.id();
-                se.restart_count = entry.restart_count;
-            }
-        }
+        // Update session manifest with current process states.
+        //
+        // Keyed by NAME, not by position. The positional form went wrong the
+        // moment anything was removed from `processes`: the indices shifted, so
+        // a surviving node's PID was written into a dead node's row, and an
+        // operator asking whether the perception node crashed was told
+        // "running" beside a PID belonging to a different, healthy process.
+        let live: Vec<(String, u32, u32)> = processes
+            .iter()
+            .map(|e| (e.name.clone(), e.child.id(), e.restart_count))
+            .collect();
+        refresh_session_manifest(&mut session, &live, &departed);
         // Re-discover Schedulers every ~2s (every 20 iterations)
         if session.processes.iter().any(|e| e.scheduler_name.is_none()) {
             session.discover_schedulers();
@@ -883,6 +916,43 @@ pub fn run_launch(
     session.remove();
 
     Ok(())
+}
+
+/// Write the supervisor's view of each node back into the session manifest.
+///
+/// `live` is `(name, pid, restart_count)` for every node still supervised;
+/// `departed` names the nodes that left this iteration and why.
+///
+/// Keyed by NAME, not by position. The positional form this replaces went wrong
+/// the moment anything was removed from the live vector: the indices shifted,
+/// so a surviving node's PID was written into a dead node's row, and an
+/// operator asking whether the perception node crashed was told "running"
+/// beside a PID belonging to a different, healthy process.
+///
+/// It also sets `status`, which nothing used to mutate. `show_launch_status`
+/// colours "running", "crashed" and "stopped", but the field was assigned
+/// exactly once — `"running"` at construction — so the other two arms could not
+/// be reached and every node read as running forever. The monitor loop already
+/// knows the outcome: it logs `NodeCrashed` in the same iteration.
+fn refresh_session_manifest(
+    session: &mut LaunchSession,
+    live: &[(String, u32, u32)],
+    departed: &[(String, &'static str)],
+) {
+    for (name, status) in departed {
+        if let Some(se) = session.processes.iter_mut().find(|se| &se.name == name) {
+            se.status = (*status).to_string();
+        }
+    }
+    for (name, pid, restart_count) in live {
+        if let Some(se) = session.processes.iter_mut().find(|se| &se.name == name) {
+            se.pid = *pid;
+            se.restart_count = *restart_count;
+            // Still supervised — including a node that crashed a moment ago and
+            // was successfully respawned.
+            se.status = "running".to_string();
+        }
+    }
 }
 
 /// Show active launch sessions read from SHM manifests.
@@ -1008,16 +1078,43 @@ fn should_restart_node(policy: &str, status: &std::process::ExitStatus) -> bool 
     }
 }
 
+/// The shared-memory tree a node is launched into: its own, else the file's.
+///
+/// One function so `run_launch` and `print_launch_plan` cannot disagree about
+/// which value wins — `--dry-run` describing a launch that does not happen is
+/// the defect this file has already had twice.
+fn effective_namespace<'a>(
+    file_level: Option<&'a str>,
+    node_level: Option<&'a str>,
+) -> Option<&'a str> {
+    node_level.or(file_level)
+}
+
 /// Print the launch plan (dry run)
 fn print_launch_plan(config: &LaunchConfig, global_namespace: &Option<String>) {
     for (i, node) in config.nodes.iter().enumerate() {
-        let full_name = match (global_namespace, &node.namespace) {
-            (Some(global), Some(local)) => format!("{}/{}/{}", global, local, node.name),
-            (Some(ns), None) | (None, Some(ns)) => format!("{}/{}", ns, node.name),
-            (None, None) => node.name.clone(),
-        };
-
-        println!("  {}. {}", i + 1, full_name.white().bold());
+        // The name the child is actually given (`HORUS_NODE_NAME`), which is
+        // the bare one. This used to compose `global/local/name` — an identity
+        // no process ever receives, so `--dry-run` described a launch that does
+        // not happen. Both namespaces are shown separately below, because they
+        // do something: each names an SHM tree, and a node-level one overrides
+        // the file-level value for that node alone.
+        println!("  {}. {}", i + 1, node.name.white().bold());
+        match (
+            effective_namespace(global_namespace.as_deref(), node.namespace.as_deref()),
+            node.namespace.is_some(),
+        ) {
+            (Some(ns), true) => println!(
+                "     {} {} {}",
+                "Namespace:".dimmed(),
+                ns,
+                "(shared-memory tree — isolated from the other nodes)".yellow()
+            ),
+            (Some(ns), false) => {
+                println!("     {} {} (shared-memory tree)", "Namespace:".dimmed(), ns)
+            }
+            (None, _) => {}
+        }
 
         if let Some(ref pkg) = node.package {
             println!("     {} {}", "Package:".dimmed(), pkg);
@@ -1186,10 +1283,7 @@ fn launch_node(
     //
     // Node-level last so it wins: a setting on the node is more specific than
     // the file's default, which is the only reason to write one.
-    if let Some(ref ns) = namespace {
-        cmd.env("HORUS_NAMESPACE", ns);
-    }
-    if let Some(ref ns) = node.namespace {
+    if let Some(ns) = effective_namespace(namespace.as_deref(), node.namespace.as_deref()) {
         cmd.env("HORUS_NAMESPACE", ns);
     }
 
@@ -1531,23 +1625,22 @@ nodes:
         );
     }
 
+    /// A node-level `namespace:` overrides the file-level one for that node.
+    ///
+    /// This test used to compute `global/local/node` from its own inputs and
+    /// assert the result equalled what it had just computed — it called nothing
+    /// from this module and would have passed against any implementation. The
+    /// composed identity it described is gone (no process was ever given it),
+    /// and what the key does now is select a shared-memory tree.
     #[test]
-    fn node_namespace_construction() {
-        // Mirrors the logic in run_launch/print_launch_plan
-        let cases = vec![
-            (Some("global"), Some("local"), "node", "global/local/node"),
-            (Some("global"), None, "node", "global/node"),
-            (None, Some("local"), "node", "local/node"),
-            (None, None, "node", "node"),
-        ];
-        for (global, local, name, expected) in cases {
-            let full = match (global, local) {
-                (Some(g), Some(l)) => format!("{}/{}/{}", g, l, name),
-                (Some(ns), None) | (None, Some(ns)) => format!("{}/{}", ns, name),
-                (None, None) => name.to_string(),
-            };
-            assert_eq!(full, expected);
-        }
+    fn a_node_level_namespace_overrides_the_file_level_one() {
+        assert_eq!(
+            effective_namespace(Some("/robot"), Some("/arm")),
+            Some("/arm")
+        );
+        assert_eq!(effective_namespace(Some("/robot"), None), Some("/robot"));
+        assert_eq!(effective_namespace(None, Some("/arm")), Some("/arm"));
+        assert_eq!(effective_namespace(None, None), None);
     }
 
     #[test]
@@ -2498,5 +2591,97 @@ nodes:
             }
         }
         n
+    }
+}
+
+#[cfg(test)]
+mod session_manifest_tests {
+    use super::{refresh_session_manifest, LaunchProcessEntry, LaunchSession};
+
+    fn entry(name: &str, pid: u32) -> LaunchProcessEntry {
+        LaunchProcessEntry {
+            name: name.to_string(),
+            pid,
+            status: "running".to_string(),
+            scheduler_name: None,
+            control_topic: None,
+            node_names: Vec::new(),
+            restart_count: 0,
+        }
+    }
+
+    fn session(names: &[(&str, u32)]) -> LaunchSession {
+        LaunchSession {
+            session: "s".to_string(),
+            launcher_pid: 1,
+            start_time: 0,
+            launch_file: "robot.launch.yaml".to_string(),
+            namespace: None,
+            processes: names.iter().map(|(n, p)| entry(n, *p)).collect(),
+        }
+    }
+
+    /// A node that died must not be listed as running, beside somebody else's PID.
+    ///
+    /// The refresh used to walk the live vector and the manifest in parallel by
+    /// INDEX. The monitor loop removes a dead node from the live vector, so
+    /// from that point the two are misaligned: the survivor's PID was written
+    /// into the dead node's row. Combined with `status` never being mutated —
+    /// it was assigned `"running"` once at construction, and
+    /// `show_launch_status`'s "crashed" and "stopped" arms were unreachable —
+    /// `horus launch --status` told an operator the crashed perception node was
+    /// running, and showed a healthy process's PID next to it.
+    #[test]
+    fn a_departed_node_is_not_reported_as_running_with_a_live_pid() {
+        let mut s = session(&[("perception", 100), ("control", 200), ("logger", 300)]);
+
+        // `perception` crashed and was dropped from the supervisor's vector;
+        // the other two are still up.
+        let live = vec![
+            ("control".to_string(), 200u32, 0u32),
+            ("logger".to_string(), 300u32, 0u32),
+        ];
+        let departed = vec![("perception".to_string(), "crashed")];
+
+        refresh_session_manifest(&mut s, &live, &departed);
+
+        let perception = s.processes.iter().find(|e| e.name == "perception").unwrap();
+        assert_eq!(
+            perception.status, "crashed",
+            "the loop that logs NodeCrashed already knows this node died"
+        );
+        assert_eq!(
+            perception.pid, 100,
+            "a dead node must keep its own PID — the positional refresh wrote \
+             the SURVIVOR's pid into this row"
+        );
+
+        let control = s.processes.iter().find(|e| e.name == "control").unwrap();
+        assert_eq!(control.status, "running");
+        assert_eq!(control.pid, 200, "a live node keeps its own PID");
+        let logger = s.processes.iter().find(|e| e.name == "logger").unwrap();
+        assert_eq!(logger.pid, 300);
+    }
+
+    /// A clean exit is "stopped", not "crashed".
+    #[test]
+    fn a_node_that_exited_cleanly_reads_as_stopped() {
+        let mut s = session(&[("oneshot", 42)]);
+        refresh_session_manifest(&mut s, &[], &[("oneshot".to_string(), "stopped")]);
+        assert_eq!(s.processes[0].status, "stopped");
+    }
+
+    /// A node that crashed and was respawned is running again.
+    #[test]
+    fn a_respawned_node_reads_as_running_again() {
+        let mut s = session(&[("flaky", 7)]);
+        s.processes[0].status = "crashed".to_string();
+
+        // Back in the live set under a new PID, with a restart recorded.
+        refresh_session_manifest(&mut s, &[("flaky".to_string(), 99, 1)], &[]);
+
+        assert_eq!(s.processes[0].status, "running");
+        assert_eq!(s.processes[0].pid, 99);
+        assert_eq!(s.processes[0].restart_count, 1);
     }
 }

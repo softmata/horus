@@ -232,3 +232,62 @@ fn no_hooks_suppresses_the_post_hook_as_well() {
         "--no-hooks must disable post_run as well as pre_run:\n{combined}"
     );
 }
+
+/// Symmetry of the key names is not the property that matters.
+///
+/// `every_phase_has_both_a_pre_and_a_post_hook` pins the table, and the table
+/// was symmetric while `post_test` still had success-only semantics: it sat
+/// after an early `?` in the `Commands::Test` arm, so a failing `horus test`
+/// skipped it entirely. That is backwards for the phase this file's own header
+/// calls the one that had teardown — `post_test = ["release-bench"]` exists to
+/// release the bench, and it was skipped precisely when the tests aborted
+/// mid-run and the hardware was most likely left live.
+///
+/// So this reads the dispatch itself. Every `post_` phase must go through
+/// `run_teardown_hooks`, whose contract is "after a command finished, whatever
+/// the outcome", and none may go through the plain `run_hooks`, which is the
+/// setup form and only runs on the path that reached it.
+#[test]
+fn every_post_hook_is_dispatched_as_teardown() {
+    let main_rs = std::fs::read_to_string("src/main.rs").expect("horus_manager/src/main.rs");
+
+    let post_phases: Vec<&str> = KNOWN_HOOKS
+        .iter()
+        .copied()
+        .filter(|h| h.starts_with("post_"))
+        .collect();
+    assert!(
+        !post_phases.is_empty(),
+        "precondition: there are post_ hooks to check"
+    );
+
+    let mut wrong = Vec::new();
+    for phase in &post_phases {
+        let teardown = format!("run_teardown_hooks(\"{phase}\"");
+        let setup = format!("run_hooks(\"{phase}\"");
+        // These two patterns cannot overlap: the character before `hooks("` is
+        // `_` in `run_teardown_hooks(`, so `run_hooks("` is not a substring of
+        // it. Counting them independently is therefore exact.
+        let setup_calls = main_rs.matches(&setup).count();
+
+        if !main_rs.contains(&teardown) {
+            wrong.push(format!(
+                "`{phase}` is never dispatched through run_teardown_hooks, so it \
+                 does not run when the command failed"
+            ));
+        }
+        if setup_calls > 0 {
+            wrong.push(format!(
+                "`{phase}` is dispatched through the plain run_hooks in {setup_calls} \
+                 place(s); that form is skipped when the command failed"
+            ));
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "a post_ hook that does not run on the failure path is a hook that \
+         skips teardown exactly when teardown matters:\n  {}",
+        wrong.join("\n  ")
+    );
+}

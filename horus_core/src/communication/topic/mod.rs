@@ -561,9 +561,9 @@ pub(crate) use header::{TOPIC_MAGIC, TOPIC_VERSION};
 // Public debug flag API for external tools (TUI monitor)
 #[doc(hidden)]
 pub use header::{
-    read_latest_slot_bytes, read_slots_since, read_topic_header_info, read_topic_messages_total,
-    read_topic_sequence, set_topic_verbose, shm_map_count, TopicHeaderInfo, TopicKind, TopicReader,
-    TopicSlotRead, TOPIC_VERBOSE_OFFSET,
+    peek_topic_type_name, read_latest_slot_bytes, read_slots_since, read_topic_header_info,
+    read_topic_messages_total, read_topic_sequence, set_topic_verbose, shm_map_count,
+    TopicHeaderInfo, TopicKind, TopicReader, TopicSlotRead, TOPIC_VERBOSE_OFFSET,
 };
 use local_state::LocalState;
 pub(crate) use metrics::MigrationMetrics;
@@ -609,6 +609,31 @@ pub enum SendBlockingError {
          the other broadcast backend and is drop-oldest too."
     )]
     NoBackpressure,
+}
+
+/// Whether the backend named by [`Topic::backend_name`] refuses a send when its
+/// ring is full.
+///
+/// Keyed by NAME rather than by the private `BackendMode`, because the bindings
+/// are where this question actually gets asked and a name is all they can see:
+/// `backend_type` is a string over both the Python and C++ FFI. Answering it
+/// there by re-deriving the mapping is how a binding drifts from the runtime, so
+/// `provides_backpressure()` is defined in terms of this too and the two cannot
+/// disagree.
+///
+/// - `SpscShm`, `MpscShm`, `SpmcShm` — ring-full is a real `Err`: the send paths
+///   compare the claimed sequence against `header.tail` and refuse.
+/// - `PodShm`, `FanoutShm` — broadcast, overwrite-oldest by construction, so
+///   there is no full condition to report.
+/// - Anything else, including `Unknown`, fails closed. `Unknown` is the state
+///   EVERY topic is in until its first send or recv — including at the "assert
+///   this at startup" moment the doc comment above recommends. Answering `true`
+///   there made the assertion pass on a topic that was about to resolve to
+///   `PodShm` and silently drop, so the check a caller writes to catch a lossy
+///   e-stop channel could not catch one. An unresolved backend is not a promise
+///   of backpressure.
+pub fn backend_provides_backpressure(backend_name: &str) -> bool {
+    matches!(backend_name, "SpscShm" | "MpscShm" | "SpmcShm")
 }
 
 impl From<SendBlockingError> for crate::error::HorusError {
@@ -1474,6 +1499,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         unsafe { &*(self.storage.as_ptr() as *const TopicHeader) }
     }
 
+    /// Bump the "new data exists" counter the staleness watchdog reads.
+    ///
+    /// `RingTopic::send` does this inline. It lives here as well so the public
+    /// `Topic::try_send` / `Topic::send_blocking` can do it exactly once per
+    /// call: it must NOT move into `RingTopic::try_send`, which
+    /// `send_lossy_retry` calls up to ~70 times for a single message.
+    #[inline(always)]
+    fn bump_messages_total(&self) {
+        self.header().messages_total.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Check if verbose content logging is enabled via the SHM header flag.
     /// Uses the stable `header_ptr` (not `LocalState::cached_header_ptr`, which
     /// is repurposed by the role=Both same-instance fast path).
@@ -1712,13 +1748,17 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         }
 
         let header = self.header();
-        let slot = if is_producer {
+        // Reaching here means this handle does NOT yet hold the role — the
+        // early return above covers the case where it does — so the entry's
+        // per-role handle count is incremented for it unconditionally.
+        let (slot, generation) = if is_producer {
             header.register_producer()?
         } else {
             header.register_consumer()?
         };
 
         local.slot_index = slot as i32;
+        local.participant_generation = generation;
         local.cached_header_ptr = self.storage.as_ptr() as *const TopicHeader;
         local.cached_epoch = header.migration_epoch.load(Ordering::Acquire);
         // Sync BEFORE deriving the data pointer, and derive it from the synced
@@ -1910,10 +1950,6 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
                         }
                     }
                     MigrationResult::NotNeeded => {
-                        local.cached_mode = header.mode();
-                        break;
-                    }
-                    MigrationResult::Failed => {
                         local.cached_mode = header.mode();
                         break;
                     }
@@ -2757,7 +2793,10 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
             self.metrics.messages_sent.load(Ordering::Relaxed),
             self.metrics.messages_received.load(Ordering::Relaxed),
             self.metrics.send_failures.load(Ordering::Relaxed),
-            self.metrics.recv_failures.load(Ordering::Relaxed),
+            // The real transport has no recv-failure notion: a `recv()` that
+            // returns `None` is an empty ring. Only `MockTopic` reports one,
+            // from its fault injection. See `TopicMetrics::recv_failures`.
+            0,
             self.metrics.send_retry_overruns.load(Ordering::Relaxed),
         )
     }
@@ -2832,6 +2871,19 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         // ~28ns of ~95ns, and it should be done on purpose rather than by
         // flipping this line.
         self.header().messages_total.fetch_add(1, Ordering::Relaxed);
+        // The per-handle counter behind `TopicMetrics::messages_sent`, which was
+        // incremented ONLY inside `send_with_content_logging` — a `#[cold]` path
+        // reached only while the `horus monitor` TUI has set the topic's verbose
+        // flag. So the public accessor read 0 in every normal run, however much
+        // traffic the topic carried, while `MockTopic` (the stand-in users write
+        // their tests against) maintained it faithfully. A test double that
+        // reports what the real thing does not is the one defect a double
+        // cannot have.
+        //
+        // This is a process-local, uncontended relaxed increment on a counter
+        // only this handle writes — not the contended shared-memory RMW the
+        // comment above prices at ~28 ns.
+        self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
         if unlikely(self.is_verbose()) {
             self.send_with_content_logging(msg);
             // Notify event nodes watching this topic. Gated inside
@@ -2977,7 +3029,9 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         self.send_lossy(msg);
         let ipc_ns = start.elapsed().as_nanos() as u64;
 
-        self.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
+        // NOT counted here: `send()` counts every send before dispatching to
+        // this cold path, so incrementing again would double-count while the
+        // monitor's verbose flag is set.
         self.state
             .store(ConnectionState::Connected.into_u8(), Ordering::Relaxed);
         use crate::core::hlog::{current_node_name, current_tick_number};
@@ -3379,6 +3433,21 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         if unlikely(self.is_verbose()) {
             return self.recv_with_content_logging();
         }
+        let received = self.recv_uncounted();
+        if received.is_some() {
+            // Counts DELIVERED messages, the mirror of `messages_sent`. As
+            // there, this used to move only on the `#[cold]` verbose path, so
+            // the public accessor read 0 in every normal run.
+            self.metrics
+                .messages_received
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        received
+    }
+
+    /// `recv()` without the metrics bookkeeping.
+    #[inline(always)]
+    fn recv_uncounted(&self) -> Option<T> {
         // Fast path: role=Both (same-instance, same-thread pub+sub) and POD.
         //
         // Gated on `is_pod` in lockstep with `send`: this reads back through
@@ -3510,8 +3579,22 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
         T: Copy,
     {
         // Ensure we're registered as a consumer so the header is initialized
-        if self.local().role == TopicRole::Unregistered && self.ensure_consumer().is_err() {
-            return None;
+        if self.local().role == TopicRole::Unregistered {
+            if let Err(e) = self.ensure_consumer() {
+                // See `dispatch::recv_uninitialized`: silence here is a
+                // subscriber that reads `None` forever and looks idle.
+                if dispatch::should_report_endpoint_exhaustion(
+                    self.name(),
+                    dispatch::Exhausted::ParticipantTable,
+                ) {
+                    tracing::warn!(
+                        "topic '{}': this reader is NOT registered and will see nothing — {}",
+                        self.name(),
+                        e
+                    );
+                }
+                return None;
+            }
         }
 
         // Role==Both AND POD uses the local fast path (LocalState head/tail
@@ -3666,22 +3749,7 @@ impl<T: Clone + Send + Sync + Serialize + DeserializeOwned + 'static> RingTopic<
     /// );
     /// ```
     pub fn provides_backpressure(&self) -> bool {
-        match self.mode() {
-            // Ring-full is a real Err on these: the mp/sp send paths compare the
-            // claimed sequence against `header.tail` and refuse.
-            BackendMode::SpscShm | BackendMode::MpscShm | BackendMode::SpmcShm => true,
-            // Broadcast: overwrite-oldest by construction, no full condition.
-            BackendMode::PodShm | BackendMode::FanoutShm => false,
-            // Fail closed. `Unknown` means the backend has not been resolved
-            // yet, which is the state EVERY topic is in until its first
-            // send/recv — including at the "assert this at startup" moment the
-            // doc comment above recommends. Answering `true` there made the
-            // assertion pass on a topic that was about to resolve to PodShm and
-            // silently drop, so the check a caller writes to catch a lossy
-            // e-stop channel could not catch one. An unresolved backend is not
-            // a promise of backpressure.
-            BackendMode::Unknown => false,
-        }
+        backend_provides_backpressure(self.backend_name())
     }
 
     #[cfg(test)]
@@ -3783,6 +3851,34 @@ impl<T> Drop for RingTopic<T> {
             // flock blocks any concurrent claim until the bit is already clear).
             local.fanout_pub_lock.take();
             local.fanout_sub_lock.take();
+        }
+
+        // Give the participant registration back.
+        //
+        // Nothing inside a living process used to do this, so the counts only
+        // ever grew — and `detect_optimal_backend` reads them, so one transient
+        // subscriber on a fresh thread permanently converted a backpressured
+        // command topic to overwrite-oldest, for the life of the segment.
+        //
+        // `release_participant` refuses unless the (slot, generation) still
+        // names THIS registration and this is the last handle sharing it. It
+        // has to: a slot is not owned for a handle's lifetime, and
+        // under-counting is the dangerous direction.
+        if local.slot_index >= 0 {
+            // `Drop` carries no bounds on `T`, so `header()` (which does) is
+            // not callable here. Same mapping, same invariant: storage was
+            // sized and aligned for a `TopicHeader` in the constructor.
+            let header = unsafe { &*(self.storage.as_ptr() as *const header::TopicHeader) };
+            // Give back only the roles this handle actually registered — one
+            // thread can hold a publisher and a subscriber handle on the same
+            // topic (that is the role=Both fast path), and they share an entry.
+            header.release_participant(
+                local.slot_index as usize,
+                local.participant_generation,
+                local.role.can_send(),
+                local.role.can_recv(),
+            );
+            local.slot_index = -1;
         }
 
         // Notify network layer (horus_net) that this topic instance is dropped
@@ -4552,6 +4648,35 @@ where
         // A backpressure-aware publisher is still a publisher; this had no
         // registration block, so `try_send`-only nodes were unattributed.
         self.register_pub_lazy();
+        // `messages_total` is not a metric — `SubscriptionFreshness` watches it
+        // as the "new data exists" signal behind `.subscribe_with_timeout()`,
+        // and that drives `StalePolicy::SafeState` and `Stop`. Only `send()`
+        // used to bump it, so a topic driven entirely by `try_send` read as 0
+        // messages and 0 Hz while carrying full traffic, and could safe-state
+        // or halt a subscriber node whose data was arriving normally. That is
+        // the exact failure the counter was introduced to prevent, and these
+        // are the APIs the docs send users to on critical topics.
+        //
+        // Counted before the call, like `send()`: this is an attempt count, so
+        // a publisher hammering a full ring keeps it moving.
+        //
+        // KNOWN LIMITATION, and the reason this note is not a reassurance. An
+        // earlier version of it claimed a ring nobody drains is "a different
+        // fault, and one the subscriber's own staleness sees". That is
+        // circular: `SubscriptionFreshness::refresh` derives freshness from
+        // this counter and from nothing else, so while a full ring drops every
+        // message the subscriber still observes the count advancing and stays
+        // "fresh" — the watchdog cannot see the fault it is watching for.
+        //
+        // Bumping on SUCCESS instead would close it, and is the right shape:
+        // `try_send` failing means nothing was published, which is exactly what
+        // staleness should report. It is not done here because it moves the
+        // meaning of the counter at seven call sites across two crates and
+        // changes when `StalePolicy::SafeState`/`Stop` fire on a live robot —
+        // that belongs in its own change with its own tests, not in a merge.
+        // Until then, a stalled consumer is visible in `dropped_count()` /
+        // `send_retry_overruns()`, not in staleness.
+        self.ring.bump_messages_total();
         self.ring.try_send(msg)
     }
 
@@ -4614,7 +4739,17 @@ where
         timeout: std::time::Duration,
     ) -> Result<(), SendBlockingError> {
         self.register_pub_lazy();
-        self.ring.send_blocking(msg, timeout)
+        let result = self.ring.send_blocking(msg, timeout);
+        // Same "new data exists" signal as `try_send` above — but NOT for
+        // `NoBackpressure`. That refusal is returned before the send is even
+        // attempted, so nothing reached the ring; counting it would report a
+        // healthy flow on a topic delivering nothing, which is worse than the
+        // silence it replaced. A `Timeout` did engage the ring, so it counts as
+        // an attempt like `send()`'s dropped message does.
+        if !matches!(result, Err(SendBlockingError::NoBackpressure)) {
+            self.ring.bump_messages_total();
+        }
+        result
     }
 
     /// Low-level receive without logging/recording hooks.
@@ -4694,6 +4829,13 @@ impl Topic<Image> {
     /// Try to send an image without blocking. Returns `Err(img)` if the ring is full.
     pub fn try_send(&self, img: Image) -> Result<(), Image> {
         self.register_pub("Image");
+        // Same "new data exists" signal the typed `try_send` counts. Pool-backed
+        // types reach `ring.try_send` directly rather than through it, so they
+        // were left out of that fix — and these are the high-bandwidth topics
+        // (camera, lidar, depth) where a staleness watchdog matters most:
+        // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
+        // subscriber whose frames were arriving normally.
+        self.ring.bump_messages_total();
         let wire = img.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -4753,6 +4895,13 @@ impl Topic<PointCloud> {
     /// Try to send a point cloud without blocking. Returns `Err(pc)` if the ring is full.
     pub fn try_send(&self, pc: PointCloud) -> Result<(), PointCloud> {
         self.register_pub("PointCloud");
+        // Same "new data exists" signal the typed `try_send` counts. Pool-backed
+        // types reach `ring.try_send` directly rather than through it, so they
+        // were left out of that fix — and these are the high-bandwidth topics
+        // (camera, lidar, depth) where a staleness watchdog matters most:
+        // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
+        // subscriber whose frames were arriving normally.
+        self.ring.bump_messages_total();
         let wire = pc.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -4812,6 +4961,13 @@ impl Topic<DepthImage> {
     /// Try to send a depth image without blocking. Returns `Err(depth)` if the ring is full.
     pub fn try_send(&self, depth: DepthImage) -> Result<(), DepthImage> {
         self.register_pub("DepthImage");
+        // Same "new data exists" signal the typed `try_send` counts. Pool-backed
+        // types reach `ring.try_send` directly rather than through it, so they
+        // were left out of that fix — and these are the high-bandwidth topics
+        // (camera, lidar, depth) where a staleness watchdog matters most:
+        // `SubscriptionFreshness` would read 0 Hz and safe-state or halt a
+        // subscriber whose frames were arriving normally.
+        self.ring.bump_messages_total();
         let wire = depth.to_wire(&self.pool);
         match self.ring.try_send(wire) {
             Ok(()) => {
@@ -5258,6 +5414,181 @@ mod untrusted_ring_geometry_tests {
         );
         topic.send(7);
         assert_eq!(topic.recv(), Some(7));
+        drop(topic);
+        cleanup(&name);
+    }
+}
+
+#[cfg(test)]
+mod staleness_signal_tests {
+    use super::{SendBlockingError, Topic};
+    use std::time::Duration;
+
+    /// `backend_provides_backpressure` must answer for every backend there is,
+    /// and answer `false` for anything it does not recognise.
+    ///
+    /// The Python and C++ bindings only ever see the backend NAME, so this
+    /// string table is what they ask. A backend added without a row here would
+    /// silently report "no backpressure" — which fails closed, but would make
+    /// `send_blocking` refuse on a backend that actually supports it. The match
+    /// below is exhaustive over `BackendMode`, so adding a variant stops
+    /// compiling here rather than going unnoticed.
+    #[test]
+    fn every_backend_name_has_a_backpressure_answer() {
+        use super::backend_provides_backpressure;
+        use super::types::BackendMode;
+
+        let expected = [
+            (BackendMode::Unknown, false),
+            (BackendMode::PodShm, false),
+            (BackendMode::FanoutShm, false),
+            (BackendMode::SpscShm, true),
+            (BackendMode::SpmcShm, true),
+            (BackendMode::MpscShm, true),
+        ];
+
+        for (mode, provides) in expected {
+            // Mirrors `RingTopic::backend_name`; exhaustive on purpose.
+            let name = match mode {
+                BackendMode::Unknown => "Unknown",
+                BackendMode::PodShm => "PodShm",
+                BackendMode::SpscShm => "SpscShm",
+                BackendMode::SpmcShm => "SpmcShm",
+                BackendMode::MpscShm => "MpscShm",
+                BackendMode::FanoutShm => "FanoutShm",
+            };
+            assert_eq!(
+                backend_provides_backpressure(name),
+                provides,
+                "{name} is on the wrong side of the backpressure table"
+            );
+        }
+
+        assert!(
+            !backend_provides_backpressure("SomethingNewAndUnknown"),
+            "an unrecognised backend must fail closed — an unresolved backend \
+             is not a promise of backpressure"
+        );
+    }
+
+    fn cleanup(name: &str) {
+        if let Some(path) = horus_sys::shm::topic_shm_path_checked(name) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// `messages_total` is the staleness watchdog's "new data exists" signal.
+    ///
+    /// `SubscriptionFreshness::refresh` watches it behind
+    /// `.subscribe_with_timeout()`, and its answer drives
+    /// `StalePolicy::SafeState` and `StalePolicy::Stop`. Only `RingTopic::send`
+    /// bumped it, so a topic published entirely through `try_send` read as 0
+    /// messages and 0 Hz while carrying every message — and could safe-state or
+    /// halt a subscriber whose data was arriving normally. That is precisely
+    /// the failure the counter exists to prevent, and `try_send` /
+    /// `send_blocking` are the two APIs the docs point users to on critical
+    /// topics.
+    #[test]
+    fn try_send_moves_the_staleness_counter() {
+        let name = format!("staleness_try_send_{}", std::process::id());
+        cleanup(&name);
+        let Ok(topic) = Topic::<u64>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        assert_eq!(topic.ring.header().messages_total(), 0);
+        for i in 0..10u64 {
+            let _ = topic.try_send(i);
+        }
+
+        assert_eq!(
+            topic.ring.header().messages_total(),
+            10,
+            "ten try_send calls delivered ten messages; a watchdog reading this \
+             counter must not conclude the topic is dead"
+        );
+
+        drop(topic);
+        cleanup(&name);
+    }
+
+    /// Pool-backed types count too.
+    ///
+    /// `Image`, `PointCloud` and `DepthImage` have their own `try_send`, which
+    /// reaches `ring.try_send` directly rather than through the typed one — so
+    /// they were left out when the staleness counter was wired into the typed
+    /// path. These are the high-bandwidth topics a freshness watchdog is most
+    /// likely to be guarding: a camera publishing through `try_send` read as
+    /// 0 Hz, and `StalePolicy::SafeState` would safe-state a subscriber whose
+    /// frames were arriving normally.
+    #[test]
+    fn pool_backed_try_send_moves_the_staleness_counter() {
+        let name = format!("staleness_pool_{}", std::process::id());
+        cleanup(&name);
+        let Ok(topic) = Topic::<crate::memory::Image>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        let before = topic.ring.header().messages_total();
+        let mut sent = 0u64;
+        for _ in 0..5 {
+            let Ok(img) = crate::memory::Image::new(4, 4, crate::types::ImageEncoding::Rgb8) else {
+                eprintln!("skipping: no tensor pool available");
+                return;
+            };
+            if topic.try_send(img).is_ok() {
+                sent += 1;
+            }
+        }
+
+        assert!(sent > 0, "precondition: the topic accepted some frames");
+        assert_eq!(
+            topic.ring.header().messages_total() - before,
+            5,
+            "every try_send is counted, delivered or refused — the typed path \
+             counts attempts the same way, and a publisher hammering a full \
+             ring is still alive"
+        );
+
+        drop(topic);
+        cleanup(&name);
+    }
+
+    /// The same for `send_blocking`, on a topic that has backpressure.
+    #[test]
+    fn send_blocking_moves_the_staleness_counter() {
+        let name = format!("staleness_send_blocking_{}", std::process::id());
+        cleanup(&name);
+        let Ok(topic) = Topic::<u64>::new(&name) else {
+            eprintln!("skipping: no shared memory available");
+            return;
+        };
+
+        let mut delivered = 0u64;
+        for i in 0..10u64 {
+            match topic.send_blocking(i, Duration::from_millis(50)) {
+                Ok(()) => delivered += 1,
+                // A broadcast backend refuses before it ever touches the ring.
+                Err(SendBlockingError::NoBackpressure) => {}
+                Err(SendBlockingError::Timeout) => delivered += 1,
+            }
+        }
+
+        assert_eq!(
+            topic.ring.header().messages_total(),
+            delivered,
+            "every send_blocking that engaged the ring must move the counter, \
+             and a NoBackpressure refusal — which never reaches the ring — must \
+             not, or a topic delivering nothing would read as healthy"
+        );
+        assert!(
+            delivered > 0,
+            "precondition: a single-subscriber topic has backpressure, so these \
+             sends must have engaged the ring"
+        );
+
         drop(topic);
         cleanup(&name);
     }

@@ -559,7 +559,28 @@ check_rust_version() {
     [ -n "$found" ] || return 0
 
     # Compare as version numbers, not as strings: 1.100 is newer than 1.9.
-    if [ "$(printf '%s\n%s\n' "$required" "$found" | sort -V | head -n1)" != "$required" ]; then
+    #
+    # Done in awk rather than with `sort -V`, because this gate has to fail
+    # OPEN. `sort -V` is not POSIX; where it is missing or errors, the command
+    # substitution is empty, `"" != "$required"` is true, and the installer
+    # aborts telling the user their toolchain is too old — an accusation it has
+    # not actually established, about a machine that may well be fine. The two
+    # guards directly above deliberately return 0 when they cannot determine an
+    # answer; this one used to be the odd one out. POSIX awk is everywhere
+    # rustc is, and it compares field by field, so 1.100 > 1.9 as intended.
+    if ! awk -v have="$found" -v want="$required" '
+        BEGIN {
+            nh = split(have, H, ".")
+            nw = split(want, W, ".")
+            n = (nh > nw ? nh : nw)
+            for (i = 1; i <= n; i++) {
+                h = (i <= nh ? H[i] + 0 : 0)
+                w = (i <= nw ? W[i] + 0 : 0)
+                if (h > w) exit 0
+                if (h < w) exit 1
+            }
+            exit 0
+        }' </dev/null 2>/dev/null; then
         fail "Rust $required or newer is required; found $found."
         echo "  Run: rustup update stable"
         exit 1
@@ -914,6 +935,68 @@ else
     ok "Added to PATH"
 fi
 
+# A prefix install hangs entirely on this variable being in the environment that
+# runs `horus`. Both readers take it from there and from nowhere else --
+# version.rs says so outright: "HORUS_PREFIX is the whole interface ... there is
+# no second name to read, and no way to discover a prefix install from outside
+# its own tree". Without it `horus run`'s cache root falls back to
+# ~/.horus/cache and the version gate reads a state root holding none of this
+# install's files.
+#
+# OUTSIDE the PATH check, and deliberately. This first landed inside the else
+# arm, which made it dead for the population it exists to repair: a prefix
+# install puts ${HORUS_PREFIX}/bin on PATH, so every re-install and upgrade
+# takes the "PATH already configured" arm and would never have been given the
+# variable. That is the same mistake this file already records 60 lines above
+# for the shell-integration block that used to live there.
+#
+# The rc file and its directory may therefore not exist yet, and SHELL_RC is
+# only assigned in the else arm -- so re-detect nothing, just guard on it.
+if [ -n "${HORUS_PREFIX:-}" ] && [ -n "$SHELL_RC" ] && [ -z "$TARGET_USER" ]; then
+    mkdir -p "$(dirname "$SHELL_RC")" 2>/dev/null || true
+    case "$SHELL_RC" in
+        */config.fish)
+            # Value-aware, like the POSIX arm below. Testing only for the
+            # PRESENCE of `set -gx HORUS_PREFIX` treated a line naming a
+            # DIFFERENT prefix as "already configured", so a fish user who
+            # reinstalled to a new location kept the old export and a shell
+            # that pointed at a tree the installer had just replaced. The
+            # POSIX arm was fixed for exactly this; fish was left behind.
+            if grep -qE "^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|\$)" "$SHELL_RC" 2>/dev/null; then
+                grep -qF "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" "$SHELL_RC" 2>/dev/null || {
+                    sed -E -i.horusbak "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|\$)/d" "$SHELL_RC" 2>/dev/null || \
+                        sed -E -i '' "/^[[:space:]]*set +(-[a-zA-Z]+ +)*HORUS_PREFIX([[:space:]]|\$)/d" "$SHELL_RC" 2>/dev/null
+                    rm -f "${SHELL_RC}.horusbak" 2>/dev/null
+                    echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+                }
+            else
+                echo "set -gx HORUS_PREFIX \"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+            fi
+            ;;
+        *)
+            # Value-aware: a stale line naming a DIFFERENT prefix must be
+            # replaced, not treated as "already configured".
+            #
+            # `grep -E` / `sed -E`, not a BRE with `\?`. That quantifier is a GNU
+            # extension: on the BSD tools macOS ships it matches nothing, so the
+            # stale line was never found and the installer appended a second
+            # HORUS_PREFIX line beneath it. The first one wins when the rc is
+            # sourced, so a moved prefix kept pointing at the old tree. CI's
+            # macOS parity job caught exactly that.
+            if grep -qE "^(export )?HORUS_PREFIX=" "$SHELL_RC" 2>/dev/null; then
+                grep -qF "HORUS_PREFIX=\"${HORUS_PREFIX}\"" "$SHELL_RC" 2>/dev/null || {
+                    sed -E -i.horusbak "/^(export )?HORUS_PREFIX=/d" "$SHELL_RC" 2>/dev/null || \
+                        sed -E -i '' "/^(export )?HORUS_PREFIX=/d" "$SHELL_RC" 2>/dev/null
+                    rm -f "${SHELL_RC}.horusbak" 2>/dev/null
+                    echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+                }
+            else
+                echo "export HORUS_PREFIX=\"${HORUS_PREFIX}\"" >> "$SHELL_RC"
+            fi
+            ;;
+    esac
+fi
+
 # --- Shell integration ---
 #
 # `horus env --init` writes ~/.horus/env.sh and appends a source line to
@@ -1106,23 +1189,18 @@ if [ -n "$TARGET_USER" ]; then
 fi
 
 if [ -n "${HORUS_PREFIX:-}" ]; then
-    # find_horus_source_dir() (run_rust.rs) searches HORUS_SOURCE, a handful of
-    # fixed development paths, then the two cache roots — none of which is an
-    # arbitrary prefix. Say so rather than let the first `horus run` discover it.
-    warn "Installed under ${HORUS_PREFIX}, which 'horus run' does not search. Each user needs:"
+    # HORUS_PREFIX is what makes `horus run` search this prefix's cache and what
+    # points the version gate at this install's state root. Both read it from
+    # the environment of the running process, so it has to be exported --
+    # exporting HORUS_SOURCE instead only papered over the first of the two.
+    warn "Installed under ${HORUS_PREFIX}. Each user needs:"
     echo "      export PATH=\"${INSTALL_DIR}:\$PATH\""
-    echo "      export HORUS_SOURCE=\"${HORUS_SRC_DIR}\""
+    echo "      export HORUS_PREFIX=\"${HORUS_PREFIX}\""
     echo ""
     # Nothing outside the prefix records where the prefix was, so the uninstaller
     # cannot find it either — uninstall.sh reads HORUS_PREFIX from its own
     # environment for exactly this case (uninstall.sh:55-58).
     warn "To remove it later, pass the same prefix:"
     echo "      curl -fsSL https://github.com/softmata/horus/raw/main/uninstall.sh | HORUS_PREFIX=${HORUS_PREFIX} bash -s -- --yes"
-    echo ""
-    # version.rs reads ~/.horus/installed_version and ~/.horus/install_manifest.toml
-    # unconditionally, so the copies written under the prefix are state nothing
-    # reads back. The gate stays quiet rather than mis-firing, but it also cannot
-    # warn about drift on this install.
-    warn "The version gate is inactive for a prefix install: version.rs looks in ~/.horus, not ${HORUS_PREFIX}."
     echo ""
 fi
