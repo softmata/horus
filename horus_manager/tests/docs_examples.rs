@@ -927,7 +927,8 @@ fn is_api_mismatch(error: &str) -> bool {
     // compiling. A snippet that uses `?` on `Result<_, &str>` then reports
     // `From<&str> for HorusError` missing — a mismatch created by this harness
     // return type, not by a wrong public horus API in the docs.
-    if error.contains("couldn't convert the error to `HorusError`")
+    if error.contains("error[E0277]")
+        && error.contains("couldn't convert the error to `HorusError`")
         && error.contains("From<&str>")
     {
         return false;
