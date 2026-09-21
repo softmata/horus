@@ -140,6 +140,53 @@ fn default_manifest() -> HorusManifest {
     }
 }
 
+/// Build the package itself — for a project with no main file (`--lib`, or a
+/// `src/bin/*.rs`-only layout). Cargo discovers the `[lib]`/`[[bin]]` targets
+/// from the manifest, so no target file has to be named.
+fn build_package(release: bool) -> Result<()> {
+    super::ensure_horus_directory()?;
+    let project_dir = std::env::current_dir()?;
+
+    let manifest_path = if Path::new(CARGO_TOML).exists() {
+        warn_if_rust_section_is_ignored();
+        project_dir.join(CARGO_TOML)
+    } else {
+        let manifest = load_or_default_manifest(&[])?;
+        crate::cargo_gen::generate(&manifest, &project_dir, &[], false)?.0
+    };
+
+    let build_start = std::time::Instant::now();
+    let spinner = progress::build_spinner("Building with cargo...");
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build").arg("--manifest-path").arg(&manifest_path);
+    crate::build_dirs::apply(&mut cmd, &project_dir);
+    if release {
+        cmd.arg("--release");
+    }
+    if let Some(features) = features::get_all_cargo_features() {
+        cmd.arg("--features").arg(&features);
+        eprintln!(
+            "  {} Auto-enabling features: {}",
+            "\u{f0cb1}".cyan(),
+            features.green()
+        );
+    }
+
+    let status = cmd.status()?;
+    if !status.success() {
+        finish_error(&spinner, "Cargo build failed");
+        bail!("Cargo build failed");
+    }
+    finish_success(
+        &spinner,
+        &format!(
+            "Build complete ({:.1}s)",
+            build_start.elapsed().as_secs_f64()
+        ),
+    );
+    Ok(())
+}
+
 pub fn execute_build_only(
     files: Vec<PathBuf>,
     release: bool,
@@ -162,13 +209,24 @@ pub fn execute_build_only(
             if let Ok(manifest) = crate::manifest::HorusManifest::load_from(manifest_path) {
                 if manifest.is_workspace() {
                     let project_dir = std::env::current_dir()?;
-                    cli_output::info("Generating workspace build files...");
-                    let (cargo_path, _) = crate::cargo_gen::generate_for_manifest(
-                        &manifest,
-                        &project_dir,
-                        &[],
-                        false,
-                    )?;
+                    // A root `Cargo.toml` means the workspace was ejected (or
+                    // hand-written): build from it. Regenerating the `.horus`
+                    // manifests here would ignore the manifest the user just
+                    // took ownership of.
+                    let root_manifest = project_dir.join(CARGO_TOML);
+                    let cargo_path = if root_manifest.exists() {
+                        warn_if_rust_section_is_ignored();
+                        root_manifest
+                    } else {
+                        cli_output::info("Generating workspace build files...");
+                        crate::cargo_gen::generate_for_manifest(
+                            &manifest,
+                            &project_dir,
+                            &[],
+                            false,
+                        )?
+                        .0
+                    };
 
                     let mut cmd = std::process::Command::new("cargo");
                     cmd.arg("build").arg("--manifest-path").arg(&cargo_path);
@@ -199,12 +257,21 @@ pub fn execute_build_only(
         mode.yellow()
     );
 
-    // Resolve target file(s)
+    // Resolve target file(s). A library or `src/bin`-only project has no main
+    // file for the detector to find; the package itself is then what gets
+    // built, and cargo discovers its targets from the (generated) manifest.
     let target_files: Vec<PathBuf> = if files.is_empty() {
-        vec![super::auto_detect_main_file()?]
+        match super::auto_detect_main_file() {
+            Ok(main_file) => vec![main_file],
+            Err(_) => Vec::new(),
+        }
     } else {
         files
     };
+
+    if target_files.is_empty() {
+        return build_package(release);
+    }
 
     // Several files: this is `execute_multiple_files`' Phase 1 - the same batch
     // build, minus the spawn.
@@ -1246,7 +1313,7 @@ fn cached_version_skew(found: &Path, cli_version: &str) -> Option<String> {
 /// generates `.horus/Cargo.toml` — so a `[rust]` section is parsed, accepted by
 /// `horus check`, and then silently ignored. That is the exact failure this
 /// feature exists to remove, so it must not be reintroduced by it.
-fn warn_if_rust_section_is_ignored() {
+pub(super) fn warn_if_rust_section_is_ignored() {
     let Ok(text) = std::fs::read_to_string(crate::manifest::HORUS_TOML) else {
         return;
     };
