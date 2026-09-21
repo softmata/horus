@@ -305,6 +305,11 @@ fn execute_workspace(
     let mut cmd = std::process::Command::new("cargo");
     cmd.arg("build");
     cmd.arg("--manifest-path").arg(&cargo_path);
+    // One target directory for both layouts. Without this, a root manifest
+    // (an ejected workspace) writes its binaries to `<root>/target` while
+    // `binary_path` below looks in `.horus/target` — so `horus run -p member`
+    // found nothing and exited successfully without running anything.
+    crate::build_dirs::apply(&mut cmd, &project_dir);
 
     if release {
         cmd.arg("--release");

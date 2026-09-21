@@ -95,6 +95,15 @@ fn needs_rebuild(horus_dir: &Path) -> bool {
                         crate::manifest::resolve_workspace_members(ws, Path::new("."))
                     {
                         for (member_dir, _) in &members {
+                            // The member's own manifest feeds its generated
+                            // Cargo file (deps, target type), so an edit to it
+                            // has to regenerate too.
+                            if fs::metadata(member_dir.join(HORUS_TOML))
+                                .and_then(|m| m.modified())
+                                .is_ok_and(|t| t > cargo_time)
+                            {
+                                return true;
+                            }
                             for sub in ["src", "tests", "examples", "benches"] {
                                 if newest_rs_mtime(&member_dir.join(sub))
                                     .is_some_and(|t| t > cargo_time)
@@ -1271,6 +1280,44 @@ mod tests {
         });
 
         assert!(result, "a new member test file must force regeneration");
+    }
+
+    /// A member's own `horus.toml` feeds its generated Cargo file (deps,
+    /// target type), so editing it forces regeneration too.
+    #[test]
+    fn needs_rebuild_when_a_member_manifest_changes() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let horus_dir = tmp.path().join(".horus");
+        fs::create_dir_all(&horus_dir).unwrap();
+        fs::create_dir_all(tmp.path().join("crates/arm/src")).unwrap();
+        fs::write(
+            tmp.path().join(HORUS_TOML),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            tmp.path().join("crates/arm/horus.toml"),
+            "[package]\nname = \"arm\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            horus_dir.join(CARGO_TOML),
+            "[workspace]\nmembers = [\"arm\"]\n",
+        )
+        .unwrap();
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let result = in_tmp(&tmp, || {
+            fs::write(
+                tmp.path().join("crates/arm/horus.toml"),
+                "[package]\nname = \"arm\"\nversion = \"0.2.0\"\n",
+            )
+            .unwrap();
+            needs_rebuild(&horus_dir)
+        });
+
+        assert!(result, "an edited member manifest must force regeneration");
     }
 
     /// ...and a `tests/` file older than the manifest must not force one.

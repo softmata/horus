@@ -174,6 +174,22 @@ fn eject_workspace(manifest: &HorusManifest, project_dir: &Path) -> Result<()> {
         );
     }
 
+    // A member with no Rust target would be a target-less package in the
+    // ejected workspace, which cargo rejects with "no targets specified" —
+    // after the generated manifests have already been deleted. Refuse before
+    // writing anything. (A Python or C++ workspace is the common case.)
+    for (member_dir, _) in &members {
+        let member_dir = project_dir.join(member_dir);
+        if !has_rust_entry(&member_dir) {
+            bail!(
+                "workspace member {} has no Rust target (main.rs, lib.rs or \
+                 src/bin/*.rs), so the ejected workspace would not build; \
+                 refusing to eject",
+                member_dir.display()
+            );
+        }
+    }
+
     for ((member_dir, _), name) in members.iter().zip(&names) {
         // `resolve_workspace_members` returns member directories relative to
         // the project; make them absolute for filesystem work.
@@ -591,6 +607,40 @@ mod tests {
         );
         let _: toml::Value =
             toml::from_str(&root_manifest).expect("ejected workspace manifest must parse");
+    }
+
+    /// A workspace with a member that has no Rust target (a Python member, say)
+    /// must be refused before anything is written: the ejected workspace would
+    /// be rejected by cargo with "no targets specified", after the generated
+    /// manifests had already been deleted.
+    #[test]
+    fn a_workspace_with_a_targetless_member_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("crates/py")).unwrap();
+        fs::write(
+            root.join(HORUS_TOML),
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\n\n\
+             [workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/py/horus.toml"),
+            "[package]\nname = \"py\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/py/main.py"), "print('hi')\n").unwrap();
+
+        let err = materialize_root_manifest(root, false)
+            .expect_err("a targetless member must be refused");
+        assert!(
+            err.to_string().contains("no Rust target"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !root.join("Cargo.toml").exists(),
+            "a root manifest was written despite the refusal"
+        );
     }
 
     /// A `src/bin/`-only project is a valid Rust project; eject must not refuse
