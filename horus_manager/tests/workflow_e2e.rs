@@ -207,6 +207,54 @@ fn test_workflow_python_generated_pyproject_valid() {
     }
 }
 
+/// A mixed run with one Rust file must launch the Rust and Python processes.
+#[test]
+fn test_workflow_mixed_rust_python_runs_single_rust_node() {
+    let tmp = TempDir::new().unwrap();
+    fs::create_dir_all(tmp.path().join("src")).unwrap();
+    fs::create_dir_all(tmp.path().join("scripts")).unwrap();
+    fs::write(
+        tmp.path().join("src/main.rs"),
+        "fn main() { println!(\"rust node started\"); }\n",
+    )
+    .unwrap();
+    fs::write(
+        tmp.path().join("scripts/consumer.py"),
+        "print(\"python node started\")\n",
+    )
+    .unwrap();
+
+    let output = horus_cmd()
+        .args(["run", "src/main.rs", "scripts/consumer.py"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        output.status.success(),
+        "mixed run should succeed, got:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("[main] rust node started"),
+        "Rust process should start, got:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("[consumer] python node started"),
+        "Python process should start, got:\n{}",
+        combined
+    );
+    assert!(
+        !combined.contains("Failed to start [main]"),
+        "Rust process should not fail to spawn, got:\n{}",
+        combined
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Generated file validation
 // ═══════════════════════════════════════════════════════════════════════════

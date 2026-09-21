@@ -57,6 +57,8 @@ and `Unreleased` is left empty rather than deleted.
 
 - `horus topic echo`, `hz`, and `bw` now read live macOS POSIX shared-memory
   topics through the public topic path.
+- Mixed `horus run` commands now launch a single Rust file alongside Python
+  files.
 
 ## [0.4.1] — 2026-09-03
 

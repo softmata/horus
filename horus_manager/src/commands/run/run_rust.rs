@@ -589,15 +589,22 @@ pub(super) fn build_rust_files_batch(
     let project_dir = env::current_dir()?;
     crate::cargo_gen::generate(&manifest, &project_dir, &file_paths, false)?;
 
-    // Collect binary names from file stems (matches cargo_gen's [[bin]] entries)
-    let binary_names: Vec<String> = file_paths
-        .iter()
-        .map(|fp| {
-            crate::cargo_gen::sanitize_cargo_name(
-                fp.file_stem().and_then(|s| s.to_str()).unwrap_or("node"),
-            )
-        })
-        .collect();
+    // cargo_gen uses the package name for one explicit source file and file
+    // stems for multiple [[bin]] entries.
+    let binary_names: Vec<String> = if file_paths.len() == 1 {
+        vec![crate::cargo_gen::sanitize_cargo_name(
+            &manifest.package.name,
+        )]
+    } else {
+        file_paths
+            .iter()
+            .map(|fp| {
+                crate::cargo_gen::sanitize_cargo_name(
+                    fp.file_stem().and_then(|s| s.to_str()).unwrap_or("node"),
+                )
+            })
+            .collect()
+    };
 
     // Clean if requested
     if clean {
@@ -635,10 +642,17 @@ pub(super) fn build_rust_files_batch(
     let mut executables = Vec::new();
 
     let child_env = super::build_child_env()?;
-    for name in binary_names {
-        let binary_path = crate::build_dirs::binary_path(&std::env::current_dir()?, profile, &name)
-            .display()
-            .to_string();
+    for (file_path, binary_name) in file_paths.iter().zip(binary_names) {
+        let name = crate::cargo_gen::sanitize_cargo_name(
+            file_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("node"),
+        );
+        let binary_path =
+            crate::build_dirs::binary_path(&std::env::current_dir()?, profile, &binary_name)
+                .display()
+                .to_string();
         executables.push(ExecutableInfo {
             name,
             command: binary_path,
