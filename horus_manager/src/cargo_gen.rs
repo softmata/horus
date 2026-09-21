@@ -69,7 +69,22 @@ pub fn generate(
     // not emit a second entry for `src/bin/foo.rs` when it was named as an
     // entry point too.
     let mut emitted_bins: Vec<PathBuf> = Vec::new();
-    if source_files.is_empty() {
+    // A project declared `type = "lib"` must not get a binary target, even
+    // when a `main.rs` sits next to its `src/lib.rs` or a source file was
+    // named explicitly. `type = "both"` is how a project asks for both.
+    let wants_bin = matches!(
+        manifest.package.target_type,
+        TargetType::Bin | TargetType::Both
+    );
+    if !wants_bin {
+        if !project_dir.join("src/lib.rs").exists() {
+            anyhow::bail!(
+                "{} declares type = \"lib\" but has no src/lib.rs; \
+                 fix the declaration or add the file",
+                project_dir.display()
+            );
+        }
+    } else if source_files.is_empty() {
         // Default: look for main.rs in project root
         let main_rs = project_dir.join("main.rs");
         let src_main = project_dir.join("src/main.rs");
@@ -2743,6 +2758,36 @@ mod tests {
         let dotted = dir.path().join(".").join("a.rs");
         assert!(same_file(&file, &dotted), "a.rs and ./a.rs are one file");
         assert!(!same_file(&file, &dir.path().join("b.rs")));
+    }
+
+    /// A `type = "lib"` declaration wins over a stray `main.rs` (or an
+    /// explicitly named source file): the project asked for a library, and
+    /// `type = "both"` is how it asks for both.
+    #[test]
+    fn a_lib_declaration_suppresses_binary_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".horus")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn f() {}").unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.package.target_type = TargetType::Lib;
+        let (_, content) = generate(&manifest, root, &[], false).unwrap();
+        assert!(content.contains("[lib]"), "missing [lib]:\n{content}");
+        assert!(
+            !content.contains("[[bin]]"),
+            "a lib declaration must suppress [[bin]]:\n{content}"
+        );
+
+        // Even when a source file is named explicitly.
+        let named = vec![root.join("src/main.rs")];
+        let (_, content) = generate(&manifest, root, &named, false).unwrap();
+        assert!(
+            !content.contains("[[bin]]"),
+            "an explicitly named source must not override the declaration:\n{content}"
+        );
     }
 
     /// The generated manifest is fingerprinted byte for byte, so discovery

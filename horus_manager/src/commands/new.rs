@@ -16,8 +16,13 @@ pub fn create_new_project(
     use_macro: bool,
     workspace: bool,
     lib: bool,
-) -> Result<PathBuf> {
+) -> Result<()> {
+    // The public signature stays `Result<()>`: this function is re-exported
+    // from `horus_manager::commands`, and callers that return its result as
+    // `Result<()>` must keep compiling. The CLI uses the `_with_options` form,
+    // which also returns the path so `--cargo` can finish the job.
     create_new_project_with_options(name, path, language, use_macro, workspace, lib, false)
+        .map(|_| ())
 }
 
 /// [`create_new_project`], plus the one choice that changes what it prints:
@@ -234,6 +239,20 @@ pub fn make_cargo_native(project_path: &std::path::Path) -> Result<()> {
         "[rust]".yellow()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod public_api_tests {
+    use super::*;
+
+    /// `create_new_project` is re-exported from `horus_manager::commands`;
+    /// its signature is part of the library surface. This pins the unit
+    /// return, which `--cargo`'s path needs to be free to change elsewhere.
+    #[test]
+    fn create_new_project_keeps_its_public_unit_result() {
+        let _: fn(String, Option<PathBuf>, String, bool, bool, bool) -> Result<()> =
+            create_new_project;
+    }
 }
 
 /// Whether prompting a human is possible and wanted.
