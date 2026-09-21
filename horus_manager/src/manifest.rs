@@ -1655,6 +1655,13 @@ pub fn resolve_workspace_members(
         }
     }
 
+    // Deterministic order. `glob` walks the filesystem, so two calls for the
+    // same workspace could return the members in different orders — and both
+    // `generate_workspace` and its callers pair this list with the generated
+    // member names positionally. A reshuffle there pairs one member's manifest
+    // with another member's directory.
+    members.sort_by(|a, b| a.0.cmp(&b.0));
+
     Ok(members)
 }
 
@@ -1894,6 +1901,42 @@ fn schema_generation_works() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `glob` walks the filesystem, so the member list has to be sorted or two
+    /// resolutions of one workspace can disagree — and both the workspace
+    /// generator and its callers pair the list with generated names
+    /// positionally.
+    #[test]
+    fn resolve_workspace_members_is_sorted_and_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["zzz", "aaa", "mmm"] {
+            let member = dir.path().join("crates").join(name);
+            std::fs::create_dir_all(&member).unwrap();
+            std::fs::write(
+                member.join("horus.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+            )
+            .unwrap();
+        }
+        let ws = WorkspaceConfig {
+            members: vec!["crates/*".to_string()],
+            exclude: vec![],
+            dependencies: std::collections::BTreeMap::new(),
+        };
+
+        let first = resolve_workspace_members(&ws, dir.path()).unwrap();
+        let second = resolve_workspace_members(&ws, dir.path()).unwrap();
+        let names: Vec<String> = first
+            .iter()
+            .map(|(dir, _)| dir.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(names, vec!["aaa", "mmm", "zzz"], "members are not sorted");
+        assert_eq!(
+            first.iter().map(|(d, _)| d.clone()).collect::<Vec<_>>(),
+            second.iter().map(|(d, _)| d.clone()).collect::<Vec<_>>(),
+            "two resolutions disagreed"
+        );
+    }
 
     // ── TOML parsing ────────────────────────────────────────────────────
 

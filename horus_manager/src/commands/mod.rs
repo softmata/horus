@@ -15,6 +15,7 @@ pub mod doc_extract_html;
 pub mod doc_extract_python;
 pub mod doc_extract_rust;
 pub mod doctor;
+pub mod eject;
 pub mod env;
 pub mod fmt;
 pub mod github_auth;

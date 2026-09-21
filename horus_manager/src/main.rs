@@ -22,6 +22,7 @@ use horus_manager::commands;
 Project:
   init              Initialize HORUS workspace in current directory
   new               Create a new HORUS project
+  eject             Write a root Cargo.toml and hand the build to cargo
   run               Run a HORUS project or file(s)
   build             Build the HORUS project without running
   lock              Generate or verify horus.lock (pin dependency versions)
@@ -197,6 +198,29 @@ enum Commands {
         /// never mentions, so the documented one-liner could not be scripted.
         #[arg(short = 'y', long = "yes")]
         yes: bool,
+
+        /// Create a Cargo-owned project: a root Cargo.toml, not `.horus/`
+        ///
+        /// The default is a managed project — `horus.toml` is the manifest and
+        /// `.horus/Cargo.toml` is generated, which is why plain `cargo build`
+        /// does not work there. This writes the root manifest up front, so
+        /// `cargo build` / `cargo run` / `cargo test` work from the first
+        /// command. `[rust]` in horus.toml is inert in this mode.
+        #[arg(long = "cargo", conflicts_with_all = ["python", "cpp", "workspace", "from"])]
+        cargo: bool,
+    },
+
+    /// Write a root Cargo.toml and hand the build to cargo
+    ///
+    /// A managed project (`horus.toml` + generated `.horus/Cargo.toml`) has no
+    /// manifest cargo can find at the project root, so plain `cargo build`
+    /// fails there. Eject writes one, from the generated manifest, and from
+    /// then on `horus build`/`run`/`test` build from it directly. `[rust]` in
+    /// horus.toml becomes inert; profile/lints/features move to Cargo.toml.
+    Eject {
+        /// Replace an existing root Cargo.toml
+        #[arg(long)]
+        force: bool,
     },
 
     /// Run a HORUS project or file(s)
@@ -2457,6 +2481,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
             lib,
             yes,
             from,
+            cargo,
         } => {
             warn_about_deprecated_new_short_flags();
             // `--yes` reuses the same signal the non-TTY path uses, so a
@@ -2480,7 +2505,7 @@ fn run_command(command: Commands) -> HorusResult<()> {
                 "python"
             } else if cpp {
                 "cpp"
-            } else if rust || use_macro || workspace {
+            } else if rust || use_macro || workspace || cargo {
                 "rust"
             } else {
                 "" // Will use interactive prompt
@@ -2491,16 +2516,24 @@ fn run_command(command: Commands) -> HorusResult<()> {
             // create_new_project, which the unit tests exercise directly.
             horus_manager::version::check_and_prompt_update().map_err(HorusError::from)?;
 
-            commands::new::create_new_project(
+            let project_path = commands::new::create_new_project_with_options(
                 name,
                 path,
                 language.to_string(),
                 use_macro,
                 workspace,
                 lib,
+                cargo,
             )
-            .map_err(HorusError::from)
+            .map_err(HorusError::from)?;
+
+            if cargo {
+                commands::new::make_cargo_native(&project_path).map_err(HorusError::from)?;
+            }
+            Ok(())
         }
+
+        Commands::Eject { force } => commands::eject::run_eject(force).map_err(HorusError::from),
 
         Commands::Run {
             files,
