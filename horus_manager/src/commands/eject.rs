@@ -15,7 +15,7 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize as _;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cli_output;
 use crate::manifest::{HorusManifest, HORUS_TOML};
@@ -92,7 +92,7 @@ pub fn materialize_root_manifest(project_dir: &Path, force: bool) -> Result<()> 
     }
 
     if manifest.is_workspace() {
-        eject_workspace(&manifest, project_dir)
+        eject_workspace(&manifest, project_dir, force)
     } else {
         eject_single_crate(&manifest, project_dir)
     }
@@ -148,7 +148,7 @@ fn eject_single_crate(manifest: &HorusManifest, project_dir: &Path) -> Result<()
 /// paths are rebased from `.horus/<name>/` to the member directory, which is
 /// not always the same depth — a `members/arm/ws` layout would otherwise get
 /// paths that resolve somewhere else.
-fn eject_workspace(manifest: &HorusManifest, project_dir: &Path) -> Result<()> {
+fn eject_workspace(manifest: &HorusManifest, project_dir: &Path, force: bool) -> Result<()> {
     let ws = manifest
         .workspace
         .as_ref()
@@ -174,10 +174,8 @@ fn eject_workspace(manifest: &HorusManifest, project_dir: &Path) -> Result<()> {
         );
     }
 
-    // A member with no Rust target would be a target-less package in the
-    // ejected workspace, which cargo rejects with "no targets specified" —
-    // after the generated manifests have already been deleted. Refuse before
-    // writing anything. (A Python or C++ workspace is the common case.)
+    // A member with no Rust file at all (a Python or C++ member) is the common
+    // case, and worth its own message before anything is generated.
     for (member_dir, _) in &members {
         let member_dir = project_dir.join(member_dir);
         if !has_rust_entry(&member_dir) {
@@ -190,23 +188,47 @@ fn eject_workspace(manifest: &HorusManifest, project_dir: &Path) -> Result<()> {
         }
     }
 
+    // `.horus/<name>` → the real member directory, so an inter-member path
+    // dependency (`base = { path = "../base" }`, written from `.horus/arm/`)
+    // is retargeted to `crates/base` rather than to the generated directory
+    // whose manifest is about to be deleted.
+    let generated_to_real: Vec<(PathBuf, PathBuf)> = names
+        .iter()
+        .zip(&members)
+        .map(|(name, (dir, _))| (project_dir.join(".horus").join(name), project_dir.join(dir)))
+        .collect();
+
+    // Build every manifest first, then validate all of them, then write. A
+    // refusal or a read error half-way through the writes would otherwise
+    // leave a workspace with some of its manifests ejected and some not.
+    let mut writes: Vec<(PathBuf, String)> = Vec::new();
     for ((member_dir, _), name) in members.iter().zip(&names) {
-        // `resolve_workspace_members` returns member directories relative to
-        // the project; make them absolute for filesystem work.
-        let member_dir = project_dir.join(member_dir);
-        let generated_member = project_dir.join(".horus").join(name).join("Cargo.toml");
+        let real_dir = project_dir.join(member_dir);
+        let generated_dir = project_dir.join(".horus").join(name);
+        let generated_member = generated_dir.join("Cargo.toml");
         let text = fs::read_to_string(&generated_member).with_context(|| {
             format!(
                 "generated member manifest {} is missing",
                 generated_member.display()
             )
         })?;
-        let horus_member_dir = project_dir.join(".horus").join(name);
+
+        // `has_rust_entry` alone is not enough: a default (`Bin`) member whose
+        // only Rust file is `src/lib.rs` passes it, but `generate_member_cargo`
+        // emits no `[lib]` for a bin target — a target-less package cargo
+        // rejects. Check what was actually generated.
+        if !(text.contains("[[bin]]") || text.contains("[lib]")) {
+            bail!(
+                "workspace member {} has no buildable target (its `type` and its \
+                 sources disagree); refusing to eject",
+                real_dir.display()
+            );
+        }
+
         let ejected = eject_manifest(&text, |value| {
-            rebase_between(value, &horus_member_dir, &member_dir)
+            rebase_member_path(value, &generated_dir, &real_dir, &generated_to_real)
         });
-        write_manifest(&member_dir.join("Cargo.toml"), &ejected)?;
-        let _ = fs::remove_file(&generated_member);
+        writes.push((real_dir.join("Cargo.toml"), ejected));
     }
 
     // The root manifest keeps its `[workspace.dependencies]`, `[patch]` tables
@@ -223,10 +245,29 @@ fn eject_workspace(manifest: &HorusManifest, project_dir: &Path) -> Result<()> {
             .join(", ")
     );
     root = replace_members_line(&root, &members_line)?;
-    write_manifest(&project_dir.join("Cargo.toml"), &root)?;
+    writes.push((project_dir.join("Cargo.toml"), root));
+
+    // Refuse to overwrite anything the user owns before writing any of it —
+    // the root check in the caller cannot see member manifests.
+    for (path, _) in &writes {
+        if path.exists() && !force {
+            bail!(
+                "{} already exists — this workspace already has a Cargo-owned \
+                 manifest. Delete it first, or pass --force to replace it.",
+                path.display()
+            );
+        }
+    }
+
+    for (path, text) in &writes {
+        write_manifest(path, text)?;
+    }
 
     let _ = fs::remove_file(project_dir.join(".horus/Cargo.toml"));
     let _ = fs::remove_file(project_dir.join(".horus/Cargo.lock"));
+    for name in &names {
+        let _ = fs::remove_file(project_dir.join(".horus").join(name).join("Cargo.toml"));
+    }
     finish(project_dir);
     Ok(())
 }
@@ -377,12 +418,53 @@ fn rebase_generated_path(value: &str) -> String {
     }
 }
 
-/// Rebase a relative path from one directory to another.
-fn rebase_between(value: &str, from_dir: &Path, to_dir: &Path) -> String {
+/// Collapse `.` and `..` components lexically.
+///
+/// `Path::canonicalize` would also resolve symlinks and requires every
+/// component to exist; this only needs to make prefix matching see through a
+/// `..`, which is all `rebase_member_path` asks of it.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Rebase a member's relative path from `.horus/<name>/` to its real directory.
+///
+/// A path that names a generated member directory — an inter-member dependency
+/// — is retargeted to the real member first, because the generated directory
+/// is deleted by the eject.
+fn rebase_member_path(
+    value: &str,
+    from_dir: &Path,
+    to_dir: &Path,
+    generated_to_real: &[(PathBuf, PathBuf)],
+) -> String {
     if Path::new(value).is_absolute() {
         return value.to_string();
     }
-    let target = from_dir.join(value);
+    // Normalize lexically first: `../sibling` from `.horus/<name>/` must be
+    // recognised as the generated sibling directory before it is retargeted,
+    // and a member's own paths (`../../crates/<name>/...`) must not match that
+    // same prefix.
+    let target = normalize(&from_dir.join(value));
+    let target = generated_to_real
+        .iter()
+        .find_map(|(generated, real)| {
+            target
+                .strip_prefix(normalize(generated))
+                .ok()
+                .map(|rest| real.join(rest))
+        })
+        .unwrap_or(target);
     crate::cargo_gen::pathdiff(&target, to_dir)
         .unwrap_or_else(|_| target.to_string_lossy().to_string())
 }
@@ -607,6 +689,126 @@ mod tests {
         );
         let _: toml::Value =
             toml::from_str(&root_manifest).expect("ejected workspace manifest must parse");
+    }
+
+    /// An inter-member path dependency is written from `.horus/<name>/` as a
+    /// sibling path (`../<name>`). After the eject it must name the real
+    /// member directory, not the generated one whose manifest is deleted.
+    #[test]
+    fn workspace_inter_member_paths_follow_the_real_member() {
+        if crate::commands::run::find_horus_source_dir().is_err() {
+            eprintln!("skipping: HORUS source tree not found");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("crates/messages/src")).unwrap();
+        fs::create_dir_all(root.join("crates/controller/src")).unwrap();
+        fs::write(
+            root.join(HORUS_TOML),
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\n\n\
+             [workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/messages/horus.toml"),
+            "[package]\nname = \"my-messages\"\nversion = \"0.1.0\"\ntype = \"lib\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/messages/src/lib.rs"), "pub fn m() {}").unwrap();
+        fs::write(
+            root.join("crates/controller/horus.toml"),
+            "[package]\nname = \"my-controller\"\nversion = \"0.1.0\"\n\n\
+             [dependencies]\nmy-messages = { path = \"../messages\" }\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/controller/src/main.rs"), "fn main() {}").unwrap();
+
+        materialize_root_manifest(root, false).unwrap();
+
+        let controller = fs::read_to_string(root.join("crates/controller/Cargo.toml")).unwrap();
+        assert!(
+            controller.contains("my-messages = { path = \"../messages\" }"),
+            "the inter-member dep does not name the real member:\n{controller}"
+        );
+        assert!(
+            !root.join(".horus/my-messages/Cargo.toml").exists(),
+            "the generated member manifest was left behind"
+        );
+    }
+
+    /// A member manifest the user already owns must be refused without
+    /// `--force`, before any other member is written.
+    #[test]
+    fn an_existing_member_manifest_is_refused_without_force() {
+        if crate::commands::run::find_horus_source_dir().is_err() {
+            eprintln!("skipping: HORUS source tree not found");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("crates/arm/src")).unwrap();
+        fs::write(
+            root.join(HORUS_TOML),
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\n\n\
+             [workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/arm/horus.toml"),
+            "[package]\nname = \"arm\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/arm/src/main.rs"), "fn main() {}").unwrap();
+        fs::write(
+            root.join("crates/arm/Cargo.toml"),
+            "[package]\nname = \"arm\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        let err = materialize_root_manifest(root, false)
+            .expect_err("an existing member manifest must be refused");
+        assert!(
+            err.to_string().contains("already exists"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !root.join("Cargo.toml").exists(),
+            "the root manifest was written despite the refusal"
+        );
+    }
+
+    /// A default (`Bin`) member whose only Rust file is `src/lib.rs` passes
+    /// `has_rust_entry` but generates no target — cargo would reject the
+    /// ejected workspace. The generated manifest is what decides.
+    #[test]
+    fn a_member_whose_type_and_sources_disagree_is_refused() {
+        if crate::commands::run::find_horus_source_dir().is_err() {
+            eprintln!("skipping: HORUS source tree not found");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("crates/arm/src")).unwrap();
+        fs::write(
+            root.join(HORUS_TOML),
+            "[package]\nname = \"root\"\nversion = \"0.1.0\"\n\n\
+             [workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("crates/arm/horus.toml"),
+            "[package]\nname = \"arm\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("crates/arm/src/lib.rs"), "pub fn f() {}").unwrap();
+
+        let err = materialize_root_manifest(root, false)
+            .expect_err("a target-less member must be refused");
+        assert!(
+            err.to_string().contains("no buildable target"),
+            "unexpected error: {err}"
+        );
     }
 
     /// A workspace with a member that has no Rust target (a Python member, say)
