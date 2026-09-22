@@ -14,7 +14,7 @@ use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::manifest::{DepSource, DependencyValue, HorusManifest};
+use crate::manifest::{DepSource, DependencyValue, HorusManifest, TargetType};
 
 /// The `.horus` build directory name.
 const HORUS_DIR: &str = ".horus";
@@ -65,7 +65,26 @@ pub fn generate(
     writeln!(cargo).unwrap();
 
     // ── Binary targets ───────────────────────────────────────────────────
-    if source_files.is_empty() {
+    // The paths already written as `[[bin]]`, so the layout pass below does
+    // not emit a second entry for `src/bin/foo.rs` when it was named as an
+    // entry point too.
+    let mut emitted_bins: Vec<PathBuf> = Vec::new();
+    // A project declared `type = "lib"` must not get a binary target, even
+    // when a `main.rs` sits next to its `src/lib.rs` or a source file was
+    // named explicitly. `type = "both"` is how a project asks for both.
+    let wants_bin = matches!(
+        manifest.package.target_type,
+        TargetType::Bin | TargetType::Both
+    );
+    if !wants_bin {
+        if !project_dir.join("src/lib.rs").exists() {
+            anyhow::bail!(
+                "{} declares type = \"lib\" but has no src/lib.rs; \
+                 fix the declaration or add the file",
+                project_dir.display()
+            );
+        }
+    } else if source_files.is_empty() {
         // Default: look for main.rs in project root
         let main_rs = project_dir.join("main.rs");
         let src_main = project_dir.join("src/main.rs");
@@ -75,16 +94,19 @@ pub fn generate(
                 project_name,
                 &relative_to_horus(&main_rs, &horus_dir),
             );
+            emitted_bins.push(main_rs);
         } else if src_main.exists() {
             write_bin_entry(
                 &mut cargo,
                 project_name,
                 &relative_to_horus(&src_main, &horus_dir),
             );
+            emitted_bins.push(src_main);
         }
     } else if source_files.len() == 1 {
         let rel = relative_to_horus(&source_files[0], &horus_dir);
         write_bin_entry(&mut cargo, project_name, &rel);
+        emitted_bins.push(source_files[0].clone());
     } else {
         for file in source_files {
             let stem = file
@@ -93,8 +115,12 @@ pub fn generate(
                 .unwrap_or_else(|| "main".to_string());
             let rel = relative_to_horus(file, &horus_dir);
             write_bin_entry(&mut cargo, &stem, &rel);
+            emitted_bins.push(file.clone());
         }
     }
+
+    // ── Layout targets: lib, src/bin, tests, examples, benches ───────────
+    write_layout_targets(&mut cargo, project_dir, &horus_dir, manifest, &emitted_bins);
 
     // ── Auto-install missing registry deps ────────────────────────────────
     auto_install_registry_deps(&manifest.dependencies, project_dir, &horus_dir)?;
@@ -841,6 +867,16 @@ fn write_generated_cargo_config(config_path: &Path, flags: &[String]) -> Result<
 }
 
 /// Delete a cargo config, but only one HORUS generated.
+/// Remove the `.cargo/config.toml` files HORUS wrote for `[rust].rustflags`.
+///
+/// `horus eject` calls this. The generated config is only correct while HORUS
+/// owns the build: once a root `Cargo.toml` exists, plain cargo would read
+/// those rustflags while the documentation says `[rust]` no longer applies.
+pub fn remove_generated_build_configs(project_dir: &Path) {
+    let _ = remove_generated_cargo_config(&project_dir.join(".cargo/config.toml"));
+    let _ = remove_generated_cargo_config(&project_dir.join(HORUS_DIR).join(".cargo/config.toml"));
+}
+
 fn remove_generated_cargo_config(config_path: &Path) -> Result<()> {
     if !generated_by_horus(config_path) {
         return Ok(());
@@ -865,7 +901,7 @@ fn writable_by_horus(config_path: &Path) -> bool {
 /// Write driver dependencies from `[drivers]` config tables.
 ///
 /// For each `[drivers.NAME]` entry:
-/// - `terra = "dynamixel"` → adds `terra-serial = { version = "0.2", features = ["dynamixel"] }`
+/// - `use = "dynamixel"` → no dependency (the driver is resolved at runtime)
 /// - `package = "horus-driver-x"` → adds `horus-driver-x = "*"`
 /// - `node = "MyDriver"` → no dependency (local code)
 /// - `camera = "opencv"` / `gps = true` → no dependency (legacy, handled by feature flags)
@@ -875,7 +911,7 @@ fn write_driver_deps(
 ) {
     use crate::manifest::DriverValue;
 
-    // Track crates already added to avoid duplicates (e.g., two drivers using terra-serial).
+    // Track crates already added to avoid duplicates (e.g., two drivers naming the same crate).
     // Value = (explicit version if the driver pinned one, features). A BTreeMap keeps the
     // generated dependency lines in deterministic order (the old HashMap produced
     // run-to-run line reshuffling → spurious diffs / non-reproducible Cargo.toml).
@@ -884,8 +920,8 @@ fn write_driver_deps(
     for value in drivers.values() {
         match *value {
             DriverValue::Config(cfg) => {
-                // Terra drivers: no longer auto-resolved — user adds terra-horus
-                // as a normal dependency in [dependencies]. Skip terra entries.
+                // Shortname drivers are no longer auto-resolved to crates — the
+                // driver is resolved at runtime from the node registry. Skip them.
                 if let Some(package) = &cfg.package {
                     // Registry package — version resolved at install time, emit as "*".
                     added_crates
@@ -969,10 +1005,120 @@ fn toml_path(path: impl std::fmt::Display) -> String {
 
 /// Write a `[[bin]]` entry.
 fn write_bin_entry(cargo: &mut String, name: &str, path: &str) {
-    writeln!(cargo, "[[bin]]").unwrap();
+    write_target_entry(cargo, "bin", name, path);
+}
+
+/// One `[[<kind>]]` table (`bin`, `test`, `example`, `bench`).
+fn write_target_entry(cargo: &mut String, kind: &str, name: &str, path: &str) {
+    writeln!(cargo, "[[{kind}]]").unwrap();
     writeln!(cargo, "name = \"{}\"", sanitize_cargo_name(name)).unwrap();
     writeln!(cargo, "path = \"{}\"", toml_path(path)).unwrap();
     writeln!(cargo).unwrap();
+}
+
+/// Emit the target sections cargo would discover if the manifest lived at the
+/// project root: `[lib]`, `src/bin/*`, `tests/*`, `examples/*`, `benches/*`.
+///
+/// WHY THIS EXISTS. `.horus/Cargo.toml` is the only manifest cargo reads in a
+/// managed project, and cargo discovers targets relative to the *manifest's*
+/// directory — `.horus/`, not the project root. Only `[[bin]]` entries were
+/// emitted, so a project's `tests/` directory compiled and ran **zero tests**:
+/// `horus test` and `cargo test --manifest-path .horus/Cargo.toml` both
+/// reported success with nothing executed, which is worse than failing.
+/// Examples and benches had the same hole, and a `--lib` project's
+/// `src/lib.rs` was emitted as a `[[bin]]`, so cargo failed looking for a
+/// `main` in it.
+///
+/// The discovery rules match cargo's own: top-level `*.rs` files are targets,
+/// `dir/name/main.rs` is a target named `name`, and anything deeper
+/// (`tests/common/mod.rs`) is a helper module, not a target.
+fn write_layout_targets(
+    cargo: &mut String,
+    project_dir: &Path,
+    horus_dir: &Path,
+    manifest: &HorusManifest,
+    emitted_bins: &[PathBuf],
+) {
+    let target = &manifest.package.target_type;
+
+    if matches!(target, TargetType::Lib | TargetType::Both) {
+        let lib = project_dir.join("src/lib.rs");
+        if lib.exists() {
+            writeln!(cargo, "[lib]").unwrap();
+            writeln!(
+                cargo,
+                "path = \"{}\"",
+                toml_path(relative_to_horus(&lib, horus_dir))
+            )
+            .unwrap();
+            writeln!(cargo).unwrap();
+        }
+    }
+
+    if matches!(target, TargetType::Bin | TargetType::Both) {
+        for (name, file) in target_files(&project_dir.join("src/bin")) {
+            // Compare canonical paths: `source_files` may carry a relative
+            // `src/bin/tool.rs` (from auto-detection) while this walk produces
+            // `project_dir.join(...)`. A raw `==` missed that, and the same
+            // source came out as two `[[bin]]` entries with the same name —
+            // which cargo refuses.
+            if emitted_bins.iter().any(|b| same_file(b, &file)) {
+                continue;
+            }
+            write_target_entry(cargo, "bin", &name, &relative_to_horus(&file, horus_dir));
+        }
+    }
+
+    for (dir, kind) in [
+        (project_dir.join("tests"), "test"),
+        (project_dir.join("examples"), "example"),
+        (project_dir.join("benches"), "bench"),
+    ] {
+        for (name, file) in target_files(&dir) {
+            write_target_entry(cargo, kind, &name, &relative_to_horus(&file, horus_dir));
+        }
+    }
+}
+
+/// Whether two paths name the same file, tolerating one being relative.
+///
+/// `canonicalize` resolves both and also folds symlinks; when either side does
+/// not exist (a file named in `horus.toml` that was deleted, say) the raw
+/// comparison is the best that can be done.
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// The top-level target files in `dir` as `(target name, path)`, sorted by
+/// name so the generated manifest is deterministic — the fingerprint compares
+/// it byte for byte and a reshuffled manifest would trigger a rebuild.
+///
+/// `dir/name/main.rs` is one target named `name`; `dir/common/mod.rs` is not a
+/// target at all. Both match cargo's auto-discovery rules.
+fn target_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if path.extension().is_some_and(|e| e == "rs") {
+                if let Some(stem) = path.file_stem() {
+                    files.push((stem.to_string_lossy().to_string(), path));
+                }
+            }
+        } else if path.is_dir() && path.join("main.rs").is_file() {
+            if let Some(name) = path.file_name() {
+                files.push((name.to_string_lossy().to_string(), path.join("main.rs")));
+            }
+        }
+    }
+    files.sort();
+    files
 }
 
 /// Write horus core/library/macros path dependencies.
@@ -1572,7 +1718,7 @@ fn relative_to_horus(file: &Path, horus_dir: &Path) -> String {
 }
 
 /// Simple relative path computation (from -> to).
-fn pathdiff(target: &Path, base: &Path) -> Result<String, ()> {
+pub(crate) fn pathdiff(target: &Path, base: &Path) -> Result<String, ()> {
     // Canonicalize if possible, otherwise use as-is
     let target = target
         .canonicalize()
@@ -1627,7 +1773,7 @@ pub fn sanitize_cargo_name(name: &str) -> String {
 
 // ─── Workspace generation ────────────────────────────────────────────────────
 
-use crate::manifest::{resolve_workspace_members, TargetType};
+use crate::manifest::resolve_workspace_members;
 /// Outcome of [`ensure`], so callers can tell "nothing to do" from "it broke".
 #[derive(Debug, PartialEq, Eq)]
 pub enum Ensured {
@@ -1671,13 +1817,26 @@ pub fn ensure(project_dir: &Path) -> Ensured {
     // A workspace generates a root plus one manifest per member; entry-point
     // probing happens per member inside generate_workspace.
     if !manifest.is_workspace() {
-        // `generate` picks the `[[bin]]` by probing these two paths, and emits
-        // no target at all when neither exists (a `--lib` project, or Python or
-        // C++). A manifest with no target is worse than no manifest: cargo would
-        // look for `.horus/src/lib.rs`, which does not exist, and rust-analyzer
-        // reports a hard load error instead of simply having nothing to load.
-        let has_entry =
-            project_dir.join("main.rs").exists() || project_dir.join("src/main.rs").exists();
+        // `generate` emits no target when there is nothing to point at (a
+        // Python or C++ project, or an empty directory), and a manifest with no
+        // target is worse than no manifest: cargo looks for a file that does
+        // not exist and rust-analyzer reports a hard load error. Any layout
+        // `generate` CAN point at counts, which includes a `--lib` project's
+        // `src/lib.rs` and a `src/bin/`-only project — both used to be skipped
+        // here, so they had no manifest for the editor and no tests until a
+        // build happened to create one.
+        // Mirror `write_layout_targets`' selection exactly: a `[lib]` is only
+        // emitted for `Lib`/`Both`, so a default (`Bin`) project whose only
+        // Rust file is `src/lib.rs` would otherwise get a manifest with no
+        // target at all — worse than the `Skipped` it used to return.
+        let target = &manifest.package.target_type;
+        let wants_bin = matches!(target, TargetType::Bin | TargetType::Both);
+        let wants_lib = matches!(target, TargetType::Lib | TargetType::Both);
+        let has_entry = (wants_bin
+            && (project_dir.join("main.rs").exists()
+                || project_dir.join("src/main.rs").exists()
+                || !target_files(&project_dir.join("src/bin")).is_empty()))
+            || (wants_lib && project_dir.join("src/lib.rs").exists());
         if !has_entry {
             return Ensured::Skipped;
         }
@@ -1980,27 +2139,33 @@ fn generate_member_cargo(
     // ── Target sections ───────────────────────────────────────────────────
     let target = &member_manifest.package.target_type;
 
-    if matches!(target, TargetType::Lib | TargetType::Both) {
-        let lib_path = member_source_dir.join("src/lib.rs");
-        if lib_path.exists() {
-            let rel = relative_to_horus(&lib_path, member_horus_dir);
-            writeln!(cargo, "[lib]").unwrap();
-            writeln!(cargo, "path = \"{}\"", toml_path(&rel)).unwrap();
-            writeln!(cargo).unwrap();
-        }
-    }
-
+    let mut emitted_bins: Vec<PathBuf> = Vec::new();
     if matches!(target, TargetType::Bin | TargetType::Both) {
         let main_path = member_source_dir.join("src/main.rs");
         let root_main = member_source_dir.join("main.rs");
         if main_path.exists() {
             let rel = relative_to_horus(&main_path, member_horus_dir);
             write_bin_entry(&mut cargo, &member_manifest.package.name, &rel);
+            emitted_bins.push(main_path);
         } else if root_main.exists() {
             let rel = relative_to_horus(&root_main, member_horus_dir);
             write_bin_entry(&mut cargo, &member_manifest.package.name, &rel);
+            emitted_bins.push(root_main);
         }
     }
+
+    // The member's own tests/examples/benches/src-bin targets. Cargo discovers
+    // targets relative to the manifest directory, which is `.horus/<name>/` —
+    // nothing under the member's real directory is found without this, so a
+    // `crates/foo/tests/smoke.rs` compiled to nothing. Same discovery and same
+    // `[lib]`/`src/bin` handling as a single package.
+    write_layout_targets(
+        &mut cargo,
+        member_source_dir,
+        member_horus_dir,
+        member_manifest,
+        &emitted_bins,
+    );
 
     // ── [dependencies] ────────────────────────────────────────────────────
     writeln!(cargo, "[dependencies]").unwrap();
@@ -2457,6 +2622,197 @@ mod tests {
         );
 
         assert_eq!(fs::read_to_string(&cargo_path).unwrap(), content);
+    }
+
+    /// Cargo discovers targets relative to the manifest's directory, and the
+    /// only manifest it reads is `.horus/Cargo.toml`. A project's `tests/`,
+    /// `examples/` and `benches/` therefore have to be declared explicitly or
+    /// they compile to nothing: `horus test` used to report success having run
+    /// zero tests.
+    #[test]
+    fn generate_emits_layout_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".horus")).unwrap();
+        fs::create_dir_all(root.join("src/bin")).unwrap();
+        fs::create_dir_all(root.join("tests/common")).unwrap();
+        fs::create_dir_all(root.join("examples/nested")).unwrap();
+        fs::create_dir_all(root.join("benches")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("src/bin/tool.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("tests/smoke.rs"), "#[test] fn t() {}").unwrap();
+        fs::write(root.join("tests/common/mod.rs"), "pub fn helper() {}").unwrap();
+        fs::write(root.join("examples/demo.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("examples/nested/main.rs"), "fn main() {}").unwrap();
+        fs::write(root.join("benches/bench.rs"), "fn main() {}").unwrap();
+
+        let manifest = test_manifest(BTreeMap::new());
+        let (_, content) = generate(&manifest, root, &[], false).unwrap();
+
+        for needle in [
+            "[[bin]]\nname = \"test-project\"\npath = \"../src/main.rs\"",
+            "[[bin]]\nname = \"tool\"\npath = \"../src/bin/tool.rs\"",
+            "[[test]]\nname = \"smoke\"\npath = \"../tests/smoke.rs\"",
+            "[[example]]\nname = \"demo\"\npath = \"../examples/demo.rs\"",
+            "[[example]]\nname = \"nested\"\npath = \"../examples/nested/main.rs\"",
+            "[[bench]]\nname = \"bench\"\npath = \"../benches/bench.rs\"",
+        ] {
+            assert!(content.contains(needle), "missing {needle:?}:\n{content}");
+        }
+
+        // `tests/common/mod.rs` is a helper module, not a target — cargo does
+        // not auto-discover it either, and declaring it would compile it as an
+        // empty test binary.
+        assert!(
+            !content.contains("common"),
+            "a nested module became a target:\n{content}"
+        );
+
+        let _: toml::Value = toml::from_str(&content)
+            .unwrap_or_else(|e| panic!("generated manifest is not valid TOML: {e}\n{content}"));
+    }
+
+    /// `--lib` projects must get a `[lib]`, not a `[[bin]]` pointing at
+    /// `src/lib.rs` — cargo reads the latter as a binary and fails looking for
+    /// a `main` in it.
+    #[test]
+    fn generate_emits_a_lib_target_for_lib_projects() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".horus")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn answer() -> u32 { 42 }").unwrap();
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.package.target_type = TargetType::Lib;
+        let (_, content) = generate(&manifest, root, &[], false).unwrap();
+
+        assert!(
+            content.contains("[lib]\npath = \"../src/lib.rs\""),
+            "missing [lib] target:\n{content}"
+        );
+        assert!(
+            !content.contains("[[bin]]"),
+            "a lib project must not declare a binary target:\n{content}"
+        );
+    }
+
+    /// `horus eject` calls this so `[rust].rustflags` stops applying to plain
+    /// cargo once the root manifest exists.
+    #[test]
+    fn remove_generated_build_configs_removes_what_horus_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_config = dir.path().join(".cargo/config.toml");
+        let horus_config = dir.path().join(".horus/.cargo/config.toml");
+        fs::create_dir_all(root_config.parent().unwrap()).unwrap();
+        fs::create_dir_all(horus_config.parent().unwrap()).unwrap();
+        fs::write(
+            &root_config,
+            format!(
+                "{GENERATED_CARGO_CONFIG_HEADER}\n[build]\nrustflags = [\"-Ctarget-cpu=native\"]\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            &horus_config,
+            format!("{GENERATED_CARGO_CONFIG_HEADER}\n[build]\n"),
+        )
+        .unwrap();
+
+        remove_generated_build_configs(dir.path());
+
+        assert!(
+            !root_config.exists(),
+            "the generated root config was left behind"
+        );
+        assert!(
+            !horus_config.exists(),
+            "the generated .horus config was left behind"
+        );
+    }
+
+    /// ...and it must not touch a config the user wrote.
+    #[test]
+    fn remove_generated_build_configs_spares_a_user_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let root_config = dir.path().join(".cargo/config.toml");
+        fs::create_dir_all(root_config.parent().unwrap()).unwrap();
+        fs::write(&root_config, "[build]\nrustflags = [\"-Copt-level=3\"]\n").unwrap();
+
+        remove_generated_build_configs(dir.path());
+
+        assert!(
+            root_config.exists(),
+            "a user's cargo config was deleted by the eject cleanup"
+        );
+    }
+
+    /// Paths that name the same file in different forms (`a.rs` vs `./a.rs`)
+    /// must compare equal, or the same source is declared twice as a `[[bin]]`
+    /// and cargo refuses the manifest.
+    #[test]
+    fn same_file_sees_through_path_form_differences() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.rs");
+        fs::write(&file, "").unwrap();
+        let dotted = dir.path().join(".").join("a.rs");
+        assert!(same_file(&file, &dotted), "a.rs and ./a.rs are one file");
+        assert!(!same_file(&file, &dir.path().join("b.rs")));
+    }
+
+    /// A `type = "lib"` declaration wins over a stray `main.rs` (or an
+    /// explicitly named source file): the project asked for a library, and
+    /// `type = "both"` is how it asks for both.
+    #[test]
+    fn a_lib_declaration_suppresses_binary_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".horus")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "pub fn f() {}").unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+
+        let mut manifest = test_manifest(BTreeMap::new());
+        manifest.package.target_type = TargetType::Lib;
+        let (_, content) = generate(&manifest, root, &[], false).unwrap();
+        assert!(content.contains("[lib]"), "missing [lib]:\n{content}");
+        assert!(
+            !content.contains("[[bin]]"),
+            "a lib declaration must suppress [[bin]]:\n{content}"
+        );
+
+        // Even when a source file is named explicitly.
+        let named = vec![root.join("src/main.rs")];
+        let (_, content) = generate(&manifest, root, &named, false).unwrap();
+        assert!(
+            !content.contains("[[bin]]"),
+            "an explicitly named source must not override the declaration:\n{content}"
+        );
+    }
+
+    /// The generated manifest is fingerprinted byte for byte, so discovery
+    /// order must not depend on the filesystem's `readdir` order.
+    #[test]
+    fn layout_targets_are_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join(".horus")).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("tests")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        for name in ["z_last", "a_first", "m_middle"] {
+            fs::write(root.join(format!("tests/{name}.rs")), "#[test] fn t() {}").unwrap();
+        }
+
+        let manifest = test_manifest(BTreeMap::new());
+        let (_, first) = generate(&manifest, root, &[], false).unwrap();
+        let (_, second) = generate(&manifest, root, &[], false).unwrap();
+        assert_eq!(first, second, "two generations disagreed");
+
+        let a = first.find("a_first").expect("a_first missing");
+        let m = first.find("m_middle").expect("m_middle missing");
+        let z = first.find("z_last").expect("z_last missing");
+        assert!(a < m && m < z, "targets are not name-sorted:\n{first}");
     }
 
     /// The generated manifest re-emits the root workspace's `[patch]` tables.
@@ -3978,6 +4334,112 @@ mod tests {
             content.contains("src/main.rs"),
             "bin path missing: {}",
             content
+        );
+    }
+
+    /// A member's `tests/`, `examples/`, `benches/` and `src/bin/` targets are
+    /// declared too. Cargo discovers relative to the member manifest's
+    /// directory — `.horus/<name>/` — so without this a
+    /// `crates/foo/tests/smoke.rs` compiled to nothing.
+    #[test]
+    fn workspace_member_gets_its_layout_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        for sub in ["src/bin", "tests", "examples", "benches"] {
+            fs::create_dir_all(dir.path().join("crates/arm").join(sub)).unwrap();
+        }
+        fs::write(dir.path().join("crates/arm/src/main.rs"), "fn main() {}").unwrap();
+        fs::write(
+            dir.path().join("crates/arm/src/bin/tool.rs"),
+            "fn main() {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("crates/arm/tests/smoke.rs"),
+            "#[test] fn t() {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("crates/arm/examples/demo.rs"),
+            "fn main() {}",
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("crates/arm/benches/bench.rs"),
+            "fn main() {}",
+        )
+        .unwrap();
+
+        let root = HorusManifest {
+            workspace: Some(WorkspaceConfig {
+                members: vec!["crates/*".to_string()],
+                exclude: vec![],
+                dependencies: BTreeMap::new(),
+            }),
+            ..empty_manifest()
+        };
+        let member = HorusManifest {
+            package: PackageInfo {
+                name: "arm".to_string(),
+                version: "0.1.0".to_string(),
+                ..PackageInfo::default()
+            },
+            ..empty_manifest()
+        };
+
+        generate_workspace(&root, dir.path(), &[(PathBuf::from("crates/arm"), member)]).unwrap();
+
+        let content = fs::read_to_string(dir.path().join(".horus/arm/Cargo.toml")).unwrap();
+        for needle in [
+            "[[test]]\nname = \"smoke\"\npath = \"../../crates/arm/tests/smoke.rs\"",
+            "[[example]]\nname = \"demo\"\npath = \"../../crates/arm/examples/demo.rs\"",
+            "[[bench]]\nname = \"bench\"\npath = \"../../crates/arm/benches/bench.rs\"",
+            "[[bin]]\nname = \"tool\"\npath = \"../../crates/arm/src/bin/tool.rs\"",
+        ] {
+            assert!(content.contains(needle), "missing {needle:?}:\n{content}");
+        }
+    }
+
+    /// A default (`Bin`) project whose only Rust file is `src/lib.rs` must
+    /// stay `Skipped`: `generate` emits `[lib]` only for a lib target, so
+    /// "ensuring" it would write a manifest with no target — worse than none.
+    #[test]
+    fn ensure_skips_a_lib_file_in_a_bin_project() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("horus.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}").unwrap();
+
+        assert!(
+            matches!(ensure(dir.path()), Ensured::Skipped),
+            "a Bin project with only src/lib.rs has no target to generate"
+        );
+    }
+
+    /// ...and a declared lib project does get one.
+    #[test]
+    fn ensure_generates_for_a_lib_project() {
+        if crate::commands::run::find_horus_source_dir().is_err() {
+            eprintln!("skipping: HORUS source tree not found");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("horus.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\ntype = \"lib\"\n",
+        )
+        .unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}").unwrap();
+
+        assert!(matches!(ensure(dir.path()), Ensured::Generated));
+        let content = fs::read_to_string(dir.path().join(".horus/Cargo.toml")).unwrap();
+        assert!(
+            content.contains("[lib]\npath = \"../src/lib.rs\""),
+            "missing [lib]:\n{content}"
         );
     }
 

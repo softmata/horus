@@ -1,14 +1,14 @@
-# Driver Integration — Hardware Abstraction & Terra HAL
+# Driver Integration — Hardware Abstraction
 
-Demonstrates how to integrate real hardware into horus using the `[drivers]` configuration in `horus.toml` and the Terra Hardware Abstraction Layer.
+Demonstrates how to integrate real hardware into horus using the `[drivers]` configuration in `horus.toml` and a hardware abstraction layer.
 
 ## Architecture
 
 ```
 horus.toml [drivers]
-    ├── motor = { terra = "dynamixel" }    → SimMotorDriver (200Hz)
-    ├── imu = { terra = "bno055" }         → SimImuDriver (200Hz)
-    ├── lidar = { terra = "rplidar" }      → (not used in this example)
+    ├── motor = { use = "dynamixel" }      → SimMotorDriver (200Hz)
+    ├── imu = { use = "bno055" }           → SimImuDriver (200Hz)
+    ├── lidar = { use = "rplidar" }        → (not used in this example)
     └── gripper = { node = "GripperDriver" } → SimGripperDriver (50Hz)
                                                       │
                                               ArmController (50Hz)
@@ -18,7 +18,7 @@ horus.toml [drivers]
 ## What This Demonstrates
 
 - **`[drivers]` in horus.toml**: Declarative hardware configuration
-- **Terra drivers**: `dynamixel`, `bno055`, `rplidar` — standard robotics peripherals
+- **Built-in drivers**: `dynamixel`, `bno055`, `rplidar` — standard robotics peripherals
 - **Custom drivers**: `{ node = "GripperDriver" }` for non-standard hardware
 - **Driver lifecycle**: `init()` connects hardware, `tick()` reads/writes, `shutdown()` disables
 - **Simulated drivers**: Same API as real hardware, runs without physical devices
@@ -27,9 +27,9 @@ horus.toml [drivers]
 
 ```toml
 [drivers]
-motor = { terra = "dynamixel", port = "/dev/ttyUSB0", baudrate = "1000000" }
-imu = { terra = "bno055", bus = "/dev/i2c-1", address = "0x28" }
-lidar = { terra = "rplidar", port = "/dev/ttyUSB1", baudrate = "256000" }
+motor = { use = "dynamixel", port = "/dev/ttyUSB0", baudrate = "1000000" }
+imu = { use = "bno055", bus = "/dev/i2c-1", address = "0x28" }
+lidar = { use = "rplidar", port = "/dev/ttyUSB1", baudrate = "256000" }
 gripper = { node = "GripperDriver" }
 ```
 
@@ -37,9 +37,9 @@ gripper = { node = "GripperDriver" }
 
 | ROS2                                   | Horus                                          |
 |----------------------------------------|------------------------------------------------|
-| `ros2_control` hardware_interface      | `[drivers]` in horus.toml + Terra HAL          |
+| `ros2_control` hardware_interface      | `[drivers]` in horus.toml + built-in drivers   |
 | `controller_manager`                   | `Scheduler` with driver nodes at high priority |
-| `micro-ros-agent`                      | Terra serial/I2C/CAN drivers                   |
+| `micro-ros-agent`                      | Built-in serial/I2C/CAN drivers                |
 | Custom `LifecycleNode` hardware driver | Node with `init()`/`tick()`/`shutdown()`       |
 | `robot_state_publisher`                | Driver node publishes to topic directly        |
 

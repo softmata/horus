@@ -308,8 +308,8 @@ fn deps_equal(a: &DependencyValue, b: &DependencyValue) -> bool {
 
 /// Collect crate names that are auto-generated from the `[hardware]`/`[drivers]` section.
 ///
-/// Terra drivers no longer auto-resolve to crates — users add terra-horus as a
-/// normal dependency. Only package drivers generate Cargo deps.
+/// Shortname drivers no longer auto-resolve to crates. Only package drivers
+/// generate Cargo deps.
 fn collect_driver_crates(manifest: &HorusManifest) -> Vec<String> {
     let mut crates = Vec::new();
     for driver_val in manifest.hardware_entries().into_values() {

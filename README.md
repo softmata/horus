@@ -342,11 +342,11 @@ action!  { Navigate { goal { x: f64, y: f64 } feedback { dist: f64 } result { ok
 
 ### Hardware Drivers
 
-Declare hardware in `horus.toml`, access typed handles in code. 30+ [Terra HAL](https://github.com/softmata/terra) drivers — Dynamixel, RPLiDAR, RealSense, CAN, EtherCAT, and more.
+Declare hardware in `horus.toml`, access typed handles in code. 30+ drivers — Dynamixel, RPLiDAR, RealSense, CAN, EtherCAT, and more.
 
 ```toml
 [drivers.arm]
-terra = "dynamixel"
+use = "dynamixel"
 port = "/dev/ttyUSB0"
 baudrate = 1000000
 ```
