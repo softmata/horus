@@ -912,9 +912,18 @@ const API_MISMATCH_CODES: &[&str] = &[
     "E0609", // no field on type
 ];
 
+/// Stable fragments of the harness-induced E0277.
+///
+/// The quotes around a type name are NOT stable: the same rustc message has
+/// been observed as `` `HorusError` `` and as `'HorusError'`, and a matcher
+/// keyed on one of them silently stops filtering on the other. No needle here
+/// includes a quote, so both forms match — and no quote is stripped from the
+/// diagnostic either, because the message contains an apostrophe of its own
+/// ("couldn't") that stripping would destroy.
 const HARNESS_CONVERSION_E0277_NEEDLES: &[&str] = &[
     "error[E0277]",
-    "couldn't convert the error to `HorusError`",
+    "couldn't convert the error to",
+    "HorusError",
     "From<&str>",
 ];
 
@@ -1435,12 +1444,30 @@ mod extractor {
 
     #[test]
     fn harness_conversion_error_is_not_an_api_mismatch() {
-        let harness_artifact = "src/lib.rs:221:43: error[E0277]: `?` couldn't convert the error to \
-                                `HorusError`: the trait `From<&str>` is not implemented for \
-                                `HorusError`";
+        // Both quoting styles the same rustc message has been observed with.
+        // Keying on either one alone is what made the first version of this
+        // filter brittle: the CI log it was written for used single quotes.
+        for quoted in [
+            "src/lib.rs:221:43: error[E0277]: `?` couldn't convert the error to \
+             `HorusError`: the trait `From<&str>` is not implemented for `HorusError`",
+            "src/lib.rs:221:43: error[E0277]: `?` couldn't convert the error to \
+             'HorusError': the trait `From<&str>` is not implemented for 'HorusError'",
+        ] {
+            assert!(
+                !is_api_mismatch(quoted),
+                "harness-induced `From<&str> for HorusError` conversion failures are advisory: \
+                 {quoted}"
+            );
+        }
+
+        // A conversion to any other error type is not the harness artifact and
+        // must keep gating.
+        let other_conversion = "src/lib.rs:5:9: error[E0277]: `?` couldn't convert the error to \
+                                `CustomError`: the trait `From<&str>` is not implemented for \
+                                `CustomError`";
         assert!(
-            !is_api_mismatch(harness_artifact),
-            "harness-induced `From<&str> for HorusError` conversion failures are advisory"
+            is_api_mismatch(other_conversion),
+            "only the conversion to HorusError is a harness artifact"
         );
 
         let real_bound = "src/lib.rs:11:9: error[E0277]: the trait bound `NotClone: Clone` is not \
