@@ -912,6 +912,27 @@ const API_MISMATCH_CODES: &[&str] = &[
     "E0609", // no field on type
 ];
 
+/// Stable fragments of the harness-induced E0277.
+///
+/// The quotes around a type name are NOT stable: the same rustc message has
+/// been observed as `` `HorusError` `` and as `'HorusError'`, and a matcher
+/// keyed on one of them silently stops filtering on the other. No needle here
+/// includes a quote, so both forms match — and no quote is stripped from the
+/// diagnostic either, because the message contains an apostrophe of its own
+/// ("couldn't") that stripping would destroy.
+const HARNESS_CONVERSION_E0277_NEEDLES: &[&str] = &[
+    "error[E0277]",
+    "couldn't convert the error to",
+    "HorusError",
+    "From<&str>",
+];
+
+fn is_harness_conversion_artifact(error: &str) -> bool {
+    HARNESS_CONVERSION_E0277_NEEDLES
+        .iter()
+        .all(|needle| error.contains(needle))
+}
+
 fn is_api_mismatch(error: &str) -> bool {
     // `_DocSelf` is the synthetic receiver supplied to a bare method fragment.
     // It has no fields by design, so every `self.whatever` in such a block
@@ -920,6 +941,14 @@ fn is_api_mismatch(error: &str) -> bool {
     // not a wrong field on a horus struct, and gating on it would fail dozens
     // of blocks that document perfectly good code.
     if error.contains("_DocSelf") {
+        return false;
+    }
+    // `Ctx::Statements` wraps snippets in a closure returning
+    // `horus::error::Result<()>` so early `return Err(Error::node(..))` keeps
+    // compiling. A snippet that uses `?` on `Result<_, &str>` then reports
+    // `From<&str> for HorusError` missing — a mismatch created by this harness
+    // return type, not by a wrong public horus API in the docs.
+    if is_harness_conversion_artifact(error) {
         return false;
     }
     API_MISMATCH_CODES.iter().any(|c| error.contains(c))
@@ -1411,6 +1440,42 @@ mod extractor {
         assert!(missing_dependencies("use horus::prelude::*;").is_empty());
         assert!(missing_dependencies("use serde::{Serialize, Deserialize};").is_empty());
         assert!(missing_dependencies("use std::time::Duration;").is_empty());
+    }
+
+    #[test]
+    fn harness_conversion_error_is_not_an_api_mismatch() {
+        // Both quoting styles the same rustc message has been observed with.
+        // Keying on either one alone is what made the first version of this
+        // filter brittle: the CI log it was written for used single quotes.
+        for quoted in [
+            "src/lib.rs:221:43: error[E0277]: `?` couldn't convert the error to \
+             `HorusError`: the trait `From<&str>` is not implemented for `HorusError`",
+            "src/lib.rs:221:43: error[E0277]: `?` couldn't convert the error to \
+             'HorusError': the trait `From<&str>` is not implemented for 'HorusError'",
+        ] {
+            assert!(
+                !is_api_mismatch(quoted),
+                "harness-induced `From<&str> for HorusError` conversion failures are advisory: \
+                 {quoted}"
+            );
+        }
+
+        // A conversion to any other error type is not the harness artifact and
+        // must keep gating.
+        let other_conversion = "src/lib.rs:5:9: error[E0277]: `?` couldn't convert the error to \
+                                `CustomError`: the trait `From<&str>` is not implemented for \
+                                `CustomError`";
+        assert!(
+            is_api_mismatch(other_conversion),
+            "only the conversion to HorusError is a harness artifact"
+        );
+
+        let real_bound = "src/lib.rs:11:9: error[E0277]: the trait bound `NotClone: Clone` is not \
+                          satisfied";
+        assert!(
+            is_api_mismatch(real_bound),
+            "real trait-bound failures must stay gating"
+        );
     }
 
     #[test]
