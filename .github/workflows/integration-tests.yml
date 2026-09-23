@@ -1129,6 +1129,62 @@ jobs:
           RUST_BACKTRACE: 1
 
   # ═══════════════════════════════════════════════════════════════
+  # User Journey E2E — the sequences a developer actually runs,
+  # asserted on their outcome (a test file runs, a dependency
+  # resolves, an ejected project builds with plain cargo).
+  # ═══════════════════════════════════════════════════════════════
+  user-journeys:
+    name: User Journey E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      HORUS_NAMESPACE: ci_${{ github.run_id }}
+      # The journeys build real projects. One shared target directory means the
+      # horus/horus_core dependency tree compiles once instead of once per
+      # journey — build_dirs::target_dir honours an exported CARGO_TARGET_DIR
+      # and resolves it to an absolute path for both the build and the artifact
+      # lookup. Every journey uses a unique project name, so no two binaries
+      # collide (the caveat documented in build_dirs.rs).
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target/journey-shared
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+
+      - name: Cache Cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-journeys-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-journeys-
+
+      - name: Setup Shared Memory
+        run: |
+          SHM_DIR="/dev/shm/horus_ci_${GITHUB_RUN_ID:-$$}"
+          mkdir -p "$SHM_DIR"/{topics,nodes,control,network,scheduler}
+          chmod -R 700 "$SHM_DIR"
+
+      # Serial on purpose: the journeys share CARGO_TARGET_DIR, and the
+      # scheduler installs a process-wide SIGTERM handler.
+      - name: Run the user journeys
+        run: |
+          cargo test -p horus_manager --test user_journeys -- \
+            --ignored --test-threads=1 --nocapture
+        env:
+          RUST_BACKTRACE: 1
+
+  # ═══════════════════════════════════════════════════════════════
   # Runtime Integration Tests — scheduler, topics, multi-node
   # ═══════════════════════════════════════════════════════════════
   runtime-integration:
@@ -1372,7 +1428,7 @@ jobs:
   integration-success:
     name: Integration Tests Success
     permissions: {}
-    needs: [ipc-integration, cli-integration, generated-project, runtime-integration]
+    needs: [ipc-integration, cli-integration, generated-project, runtime-integration, user-journeys]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -1382,6 +1438,7 @@ jobs:
           echo "CLI Integration: ${{ needs.cli-integration.result }}"
           echo "Generated Project: ${{ needs.generated-project.result }}"
           echo "Runtime Integration: ${{ needs.runtime-integration.result }}"
+          echo "User Journeys: ${{ needs.user-journeys.result }}"
           FAILURES=""
 
           # Generated project must build against the real horus crate
@@ -1402,6 +1459,11 @@ jobs:
           # Runtime integration must pass
           if [[ "${{ needs.runtime-integration.result }}" != "success" ]]; then
             FAILURES="$FAILURES Runtime"
+          fi
+
+          # The user journeys are outcome assertions, not exit codes
+          if [[ "${{ needs.user-journeys.result }}" != "success" ]]; then
+            FAILURES="$FAILURES UserJourneys"
           fi
 
           if [[ -n "$FAILURES" ]]; then

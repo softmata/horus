@@ -18,6 +18,30 @@ fn horus_cmd() -> Command {
     cargo_bin_cmd!("horus")
 }
 
+/// Whether a cargo toolchain exists at all.
+///
+/// The journeys that compile are meaningless without one. They used to swallow
+/// a failed build ("may fail if cargo/toolchain not available — that's OK"),
+/// which made a broken build indistinguishable from a missing toolchain: the
+/// assertions simply vanished. Now the absence of a toolchain skips LOUDLY, and
+/// its presence makes a failed build a failed test.
+fn has_cargo_toolchain() -> bool {
+    std::process::Command::new("cargo")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Returns true when the test should skip because there is no toolchain, and
+/// says so on stderr — a skipped journey has to be visible in the log.
+fn skip_without_toolchain(test: &str) -> bool {
+    if has_cargo_toolchain() {
+        return false;
+    }
+    eprintln!("SKIP {test}: no cargo toolchain on PATH");
+    true
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Journey 1: Rust project from scratch
 // ═══════════════════════════════════════════════════════════════════════════
@@ -106,39 +130,50 @@ fn test_rust_build_generates_cargo_toml() {
 
     let proj = tmp.path().join(proj_name);
 
-    // Build the project (may fail if cargo/toolchain not available — that's OK)
+    // Without a toolchain this half of the journey cannot run, so skip LOUDLY.
+    // With one, a failed build is a failed test: "may fail if cargo/toolchain
+    // not available — that's OK" made a broken build indistinguishable from a
+    // missing toolchain, and the assertions below simply vanished.
+    if skip_without_toolchain("test_rust_build_generates_cargo_toml") {
+        return;
+    }
+
     let output = horus_cmd()
         .args(["build"])
         .current_dir(&proj)
         .output()
         .unwrap();
+    assert!(
+        output.status.success(),
+        "horus build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-    // If build succeeded, verify generated Cargo.toml
-    if output.status.success() {
-        let cargo_toml_path = proj.join(".horus/Cargo.toml");
-        if cargo_toml_path.exists() {
-            let content = fs::read_to_string(&cargo_toml_path).unwrap();
-            let cargo_toml: toml::Value =
-                toml::from_str(&content).expect(".horus/Cargo.toml must be valid TOML");
+    let cargo_toml_path = proj.join(".horus/Cargo.toml");
+    assert!(
+        cargo_toml_path.exists(),
+        "horus build succeeded but generated no .horus/Cargo.toml"
+    );
+    let content = fs::read_to_string(&cargo_toml_path).unwrap();
+    let cargo_toml: toml::Value =
+        toml::from_str(&content).expect(".horus/Cargo.toml must be valid TOML");
 
-            assert!(
-                cargo_toml.get("package").is_some(),
-                ".horus/Cargo.toml must have [package]"
-            );
-            assert!(
-                cargo_toml.get("dependencies").is_some(),
-                ".horus/Cargo.toml must have [dependencies]"
-            );
+    assert!(
+        cargo_toml.get("package").is_some(),
+        ".horus/Cargo.toml must have [package]"
+    );
+    assert!(
+        cargo_toml.get("dependencies").is_some(),
+        ".horus/Cargo.toml must have [dependencies]"
+    );
 
-            // Should have horus_core as a dependency
-            let deps = cargo_toml.get("dependencies").unwrap();
-            assert!(
-                deps.get("horus_core").is_some() || deps.get("horus").is_some(),
-                ".horus/Cargo.toml should depend on horus_core or horus"
-            );
-        }
-    }
-    // If build failed (no toolchain), the test still passes — we just verified scaffold
+    // Should have horus_core as a dependency
+    let deps = cargo_toml.get("dependencies").unwrap();
+    assert!(
+        deps.get("horus_core").is_some() || deps.get("horus").is_some(),
+        ".horus/Cargo.toml should depend on horus_core or horus"
+    );
 }
 
 /// Verify incremental rebuild is faster than clean build.
@@ -160,6 +195,10 @@ fn test_rust_incremental_build_faster() {
 
     let proj = tmp.path().join(proj_name);
 
+    if skip_without_toolchain("test_rust_incremental_build_faster") {
+        return;
+    }
+
     // First build (cold)
     let start = Instant::now();
     let first = horus_cmd()
@@ -168,11 +207,12 @@ fn test_rust_incremental_build_faster() {
         .output()
         .unwrap();
     let first_duration = start.elapsed();
-
-    if !first.status.success() {
-        // Can't test incremental if first build fails (no toolchain)
-        return;
-    }
+    assert!(
+        first.status.success(),
+        "first horus build failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
 
     // Second build (incremental — no changes)
     let start = Instant::now();
@@ -686,34 +726,41 @@ fn test_horus_test_workflow() {
 
     let proj = tmp.path().join("test-wf");
 
-    // Run horus test — may fail if no test module in scaffolded code, but should not panic
+    if skip_without_toolchain("test_horus_test_workflow") {
+        return;
+    }
+
+    // A test the user wrote. This layout — a top-level `tests/` directory —
+    // used to compile to nothing while `horus test` reported success, so the
+    // assertion that matters is that the test's name appears in the output.
+    let tests_dir = proj.join("tests");
+    fs::create_dir_all(&tests_dir).unwrap();
+    fs::write(
+        tests_dir.join("workflow_smoke.rs"),
+        "#[test]\nfn workflow_smoke_marker() {}\n",
+    )
+    .unwrap();
+
     let output = horus_cmd()
         .args(["test"])
         .current_dir(&proj)
         .output()
         .unwrap();
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Should not panic
-    assert!(
-        !stderr.contains("panic"),
-        "horus test should not panic: {}",
-        stderr
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-
-    // If it ran tests, output should contain "test" or "running" or "passed"
-    let combined = format!("{}{}", stdout, stderr);
-    if output.status.success() {
-        assert!(
-            combined.contains("test")
-                || combined.contains("running")
-                || combined.contains("pass")
-                || combined.contains("0 tests"),
-            "Successful test run should report results"
-        );
-    }
+    assert!(output.status.success(), "horus test failed:\n{combined}");
+    assert!(
+        combined.contains("workflow_smoke_marker"),
+        "the test in tests/ was not discovered or run:\n{combined}"
+    );
+    assert!(
+        !combined.contains("panic"),
+        "horus test should not panic:\n{combined}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -870,14 +917,18 @@ fn test_scripts_workflow() {
         .output()
         .unwrap();
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("hello-from-script"),
-            "Script output should contain 'hello-from-script', got: {}",
-            stdout
-        );
-    }
+    assert!(
+        output.status.success(),
+        "horus scripts hello failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("hello-from-script"),
+        "Script output should contain 'hello-from-script', got: {}",
+        stdout
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -919,15 +970,17 @@ fn test_deploy_dry_run() {
         "deploy --dry-run should not panic"
     );
 
+    // A dry run needs no SSH and no network, so it has to succeed.
+    assert!(
+        output.status.success(),
+        "horus deploy --dry-run failed:\n{combined}"
+    );
+
     // Should mention the target or dry-run
-    if output.status.success() {
-        assert!(
-            combined.contains("192.168.1.5")
-                || combined.contains("dry")
-                || combined.contains("deploy"),
-            "dry-run should mention target or deployment plan"
-        );
-    }
+    assert!(
+        combined.contains("192.168.1.5") || combined.contains("dry") || combined.contains("deploy"),
+        "dry-run should mention target or deployment plan:\n{combined}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
