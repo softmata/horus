@@ -53,12 +53,28 @@ and `Unreleased` is left empty rather than deleted.
 
 ## Unreleased
 
+### Added
+
+- `cross_process_benchmark --rt` asks for `SCHED_FIFO` on the measuring
+  process (and the publishers), and `--require-quiet` exits non-zero unless
+  every measured window was quiet. The evidence travels with the numbers in a
+  new `measurement_quality` block in the gate JSON (`rt_granted`,
+  `isolated_cores`, voluntary/involuntary context switches).
+
 ### Fixed
 
 - `horus topic echo`, `hz`, and `bw` now read live macOS POSIX shared-memory
   topics through the public topic path.
 - Mixed `horus run` commands now launch a single Rust file alongside Python
   files.
+- The performance gate no longer fails a build on a far-tail (`p99.9`+)
+  excursion from a run that cannot show its measuring process was not
+  preemptible. One involuntary context switch moves that percentile by an
+  order of magnitude with no code change — three repetitions of one trunk run
+  measured `p99.9` at 27 µs / 1.9 µs / 16 µs with identical medians and
+  `p99`s. Medians, percentiles through `p99`, throughput and the tail *shape*
+  (`p99/median`) still gate on any host. The trunk benchmark now runs daily
+  and scheduled runs record the baseline, so the rolling window matures.
 
 ## [0.4.1] — 2026-09-03
 

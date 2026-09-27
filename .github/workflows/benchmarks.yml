@@ -6,8 +6,14 @@ on:
   pull_request:
     branches: [ main, dev ]
   schedule:
-    # Run weekly on Monday at 00:00 UTC
-    - cron: '0 0 * * 1'
+    # Daily, not weekly. The rolling baseline is a window of trunk runs, and a
+    # weekly cadence never matured it: with `require_same_cpu_model` filtering
+    # a 20-run window down to the runs on this runner class, `min_baseline_runs`
+    # (5) was rarely met, so the gate ran on the 2x fallback band by default —
+    # which is exactly where a single host preemption can look like a gross
+    # tail regression. A daily run grows the window on a timescale a human can
+    # wait for.
+    - cron: '0 0 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -329,6 +335,12 @@ jobs:
         # requests still get the annotation raised by "Report the baseline
         # window".
         TRUNK=""
+        # A scheduled run IS a trunk build: it measures whatever is on main, so
+        # it records like a push does. Before this it did not, which is why the
+        # schedule could never grow the window it was gating against.
+        if [ "${{ github.event_name }}" = "schedule" ]; then
+          TRUNK="--trunk --record --require-baseline"
+        fi
         if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
           TRUNK="--trunk --record --require-baseline"
         fi

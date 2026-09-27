@@ -66,7 +66,7 @@
 //! cubed. See [`RegressionPolicy`] for the full reasoning and the TODOs that
 //! would let them be promoted to blocking.
 
-use crate::{BenchmarkResult, PlatformInfo};
+use crate::{BenchmarkResult, MeasurementQuality, PlatformInfo};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -356,6 +356,22 @@ pub struct MetricPolicy {
     /// `min_baseline_runs` of prior history at each step, so it cannot fire on
     /// a thin window.
     pub single_sample: bool,
+
+    /// Whether a far-tail verdict on this metric needs the host to have been
+    /// quiet (see [`MeasurementQuality`]).
+    ///
+    /// `p99.9` and beyond are dominated by whether the measuring process was
+    /// preemptible: one involuntary context switch becomes a burst of samples
+    /// that waited for the scheduler, and the 0.1 % tail moves by an order of
+    /// magnitude with no code change — measured 2026-09-23, three repetitions
+    /// of one trunk run gave p99.9 = 27 µs / 1.9 µs / 16 µs with identical
+    /// medians, p99s and max. On a shared runner the far tail is a property of
+    /// the host, so a run that cannot show RT or isolated cores reports the
+    /// excursion but does not fail a build on it.
+    ///
+    /// The quiet body is unaffected: median, p95 and p99 are not
+    /// preemption-sensitive at these sample counts, so they gate everywhere.
+    pub requires_quiet_host: bool,
 }
 
 /// The gate's configuration, with the reasoning for every number.
@@ -442,6 +458,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 25.0,
                     gross_multiplier: 3.0,
                     single_sample: false,
+                    requires_quiet_host: false,
                 },
                 MetricPolicy {
                     metric: Metric::P95,
@@ -451,6 +468,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 50.0,
                     gross_multiplier: 4.0,
                     single_sample: false,
+                    requires_quiet_host: false,
                 },
                 // Report-only: spread unmeasured. Gross at 4x, because no
                 // plausible combination of P-state (base-vs-turbo is under ~2x)
@@ -466,6 +484,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 100.0,
                     gross_multiplier: 4.0,
                     single_sample: false,
+                    requires_quiet_host: false,
                 },
                 MetricPolicy {
                     metric: Metric::P999,
@@ -475,6 +494,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 250.0,
                     gross_multiplier: 6.0,
                     single_sample: false,
+                    requires_quiet_host: true,
                 },
                 // Order statistics thin enough that one host preemption moves
                 // them. Advisory at any threshold on a shared runner.
@@ -486,6 +506,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 1_000.0,
                     gross_multiplier: 10.0,
                     single_sample: false,
+                    requires_quiet_host: true,
                 },
                 MetricPolicy {
                     metric: Metric::Max,
@@ -495,6 +516,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 5_000.0,
                     gross_multiplier: 10.0,
                     single_sample: true,
+                    requires_quiet_host: true,
                 },
                 MetricPolicy {
                     metric: Metric::MaxJitter,
@@ -504,6 +526,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 5_000.0,
                     gross_multiplier: 10.0,
                     single_sample: true,
+                    requires_quiet_host: true,
                 },
                 // The blocking tail metric. Dimensionless, so the dominant
                 // characterized noise term -- every sample being
@@ -520,6 +543,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 0.5,
                     gross_multiplier: 4.0,
                     single_sample: false,
+                    requires_quiet_host: false,
                 },
                 // Same construction one percentile further out, where the
                 // numerator is the 100th-worst of 100k rather than the
@@ -534,6 +558,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 1.0,
                     gross_multiplier: 6.0,
                     single_sample: false,
+                    requires_quiet_host: true,
                 },
                 // Throughput, as ns/msg so it shares the lower-is-better
                 // comparison. Report-only to begin with: unlike the latency
@@ -552,6 +577,7 @@ impl Default for RegressionPolicy {
                     abs_floor: 50.0,
                     gross_multiplier: 2.0,
                     single_sample: false,
+                    requires_quiet_host: false,
                 },
             ],
             min_baseline_runs: 5,
@@ -914,6 +940,25 @@ impl BaselineHistory {
             applicable = self.runs.iter().collect();
         }
 
+        // Host-quietness evidence for the CURRENT arm, per benchmark key.
+        //
+        // Repetitions are ANDed: the published current value is a combination
+        // of them, so one preempted repetition makes the combined far tail a
+        // host figure too. Counters keep the worst observed value, which is
+        // what the reason line should report.
+        let mut current_quality: BTreeMap<String, MeasurementQuality> = BTreeMap::new();
+        for report in input.current {
+            for result in &report.results {
+                let key = format!("{}@{}B", result.name, result.message_size);
+                current_quality
+                    .entry(key)
+                    .and_modify(|merged| {
+                        *merged = merge_quality(merged, &result.measurement_quality)
+                    })
+                    .or_insert_with(|| result.measurement_quality.clone());
+            }
+        }
+
         let mut comparisons = Vec::new();
         for (key, reps) in &current_entries {
             comparisons.push(self.compare_one(
@@ -923,6 +968,7 @@ impl BaselineHistory {
                 policy,
                 input.is_trunk_run,
                 cpu_model_mismatch,
+                current_quality.get(key),
             ));
         }
 
@@ -966,6 +1012,7 @@ impl BaselineHistory {
         policy: &RegressionPolicy,
         is_trunk_run: bool,
         cpu_model_mismatch: bool,
+        quality: Option<&MeasurementQuality>,
     ) -> ResultComparison {
         let sample_count = reps.iter().map(|e| e.count).min().unwrap_or(0);
         let mut metrics = Vec::new();
@@ -1136,6 +1183,32 @@ impl BaselineHistory {
                 ));
             } else {
                 cmp.verdict = Verdict::Ok;
+            }
+
+            // The far tail is a host figure unless the run can show the
+            // measuring process was not preemptible. See
+            // `MetricPolicy::requires_quiet_host`: the excursion is still
+            // reported, but a shared runner does not get to fail a build on a
+            // number its own scheduler produced.
+            if mp.requires_quiet_host {
+                let reason = match quality {
+                    Some(q) if q.is_tail_valid() => None,
+                    Some(q) => Some(q.tail_invalid_reason()),
+                    None => Some("no host-quietness evidence was recorded".to_string()),
+                };
+                if let Some(reason) = reason {
+                    if cmp.blocking {
+                        let what = cmp
+                            .note
+                            .take()
+                            .unwrap_or_else(|| "far-tail excursion".to_string());
+                        cmp.note = Some(format!(
+                            "{what} — reported only: this metric's far tail needs a quiet host \
+                             ({reason})"
+                        ));
+                    }
+                    cmp.blocking = false;
+                }
             }
 
             metrics.push(cmp);
@@ -1331,6 +1404,17 @@ fn band_for(
         best = (by_floor, BandSource::AbsoluteFloor);
     }
     best
+}
+
+/// AND two repetitions' host-quietness evidence, keeping the worst counter of
+/// each kind so the reason line reports what was actually seen.
+fn merge_quality(a: &MeasurementQuality, b: &MeasurementQuality) -> MeasurementQuality {
+    MeasurementQuality {
+        rt_granted: a.rt_granted && b.rt_granted,
+        isolated_cores: a.isolated_cores && b.isolated_cores,
+        voluntary_ctx_switches: a.voluntary_ctx_switches.max(b.voluntary_ctx_switches),
+        involuntary_ctx_switches: a.involuntary_ctx_switches.max(b.involuntary_ctx_switches),
+    }
 }
 
 /// Median of a slice, sorting it in place. `None` for an empty slice.
@@ -2216,6 +2300,34 @@ mod tests {
                 deadline_threshold_ns: 1000,
                 run_variance: 0.05,
             },
+            // Tests must state a host. The default is a QUIET one: most tests
+            // in this module assert that a tail regression blocks, and only a
+            // quiet run can produce that verdict. Tests about a shared runner
+            // set `noisy_host()` explicitly.
+            measurement_quality: quiet_host(),
+        }
+    }
+
+    /// A host that can support far-tail claims: SCHED_FIFO granted, no
+    /// involuntary switches in the measured window.
+    pub(super) fn quiet_host() -> MeasurementQuality {
+        MeasurementQuality {
+            rt_granted: true,
+            isolated_cores: false,
+            voluntary_ctx_switches: 0,
+            involuntary_ctx_switches: 0,
+        }
+    }
+
+    /// A shared CI runner: no RT, no isolated cores, and the involuntary
+    /// context switches that the benchmark's own warning calls "the mechanism
+    /// behind the far tail".
+    pub(super) fn noisy_host() -> MeasurementQuality {
+        MeasurementQuality {
+            rt_granted: false,
+            isolated_cores: false,
+            voluntary_ctx_switches: 1,
+            involuntary_ctx_switches: 2,
         }
     }
 
@@ -2600,6 +2712,80 @@ mod tests {
             "a measured window keeps the gross multiplier: {p999:?}"
         );
         assert!(report.has_blocking_regressions());
+    }
+
+    /// The same far tail that blocks on a quiet host (the test above) is only
+    /// *reported* when the run cannot show its measuring process was not
+    /// preemptible. This is the 2026-09-23 trunk failure: p99.9 at 8.3x a 3-run
+    /// center while the median and p99 held, on a shared runner.
+    #[test]
+    fn a_far_tail_on_a_shared_runner_is_reported_but_not_blocking() {
+        let history = window(5, &[215.0, 218.0, 212.0, 216.0, 214.0]);
+        let mut shape = Shape::healthy(215.0);
+        shape.p999 = (shape.p999 as f64 * 8.3) as u64;
+        let mut current = report_with(&shape);
+        current.results[0].measurement_quality = noisy_host();
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        let p999 = report.comparisons[0].metric(Metric::P999).unwrap();
+        assert_eq!(
+            p999.verdict,
+            Verdict::GrossRegression,
+            "the excursion is still reported"
+        );
+        assert!(
+            !p999.blocking,
+            "a preemptible host cannot fail a build on its own tail: {p999:?}"
+        );
+        assert!(
+            p999.note.as_deref().unwrap_or("").contains("quiet host"),
+            "the note has to say why it is not blocking: {:?}",
+            p999.note
+        );
+        assert!(!report.has_blocking_regressions());
+    }
+
+    /// The quiet body does not move with one preemption, so it keeps gating on
+    /// any host: a 10x median regression still fails a shared runner.
+    #[test]
+    fn the_quiet_body_still_blocks_on_a_shared_runner() {
+        let history = window(10, &[100.0, 98.0, 103.0, 101.0, 99.0]);
+        let mut current = report_with(&Shape::healthy(1_000.0));
+        current.results[0].measurement_quality = noisy_host();
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        assert!(
+            report.has_blocking_regressions(),
+            "the median must gate on any host: {:?}",
+            report
+                .blocking_findings()
+                .iter()
+                .map(|(c, m)| (c.key(), m.metric.label()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            report.comparisons[0]
+                .metric(Metric::Median)
+                .unwrap()
+                .blocking
+        );
+    }
+
+    /// A missing evidence block (JSON written before it existed, or a binary
+    /// that does not record it) is not quiet either — no evidence is not
+    /// evidence of quiet.
+    #[test]
+    fn no_host_evidence_is_treated_as_not_quiet() {
+        let history = window(5, &[215.0, 218.0, 212.0, 216.0, 214.0]);
+        let mut shape = Shape::healthy(215.0);
+        shape.p999 = (shape.p999 as f64 * 8.3) as u64;
+        let mut current = report_with(&shape);
+        current.results[0].measurement_quality = MeasurementQuality::default();
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        let p999 = report.comparisons[0].metric(Metric::P999).unwrap();
+        assert_eq!(p999.verdict, Verdict::GrossRegression);
+        assert!(!p999.blocking, "{p999:?}");
     }
 
     #[test]
