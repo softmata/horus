@@ -204,7 +204,11 @@ const RING_CAPACITY: u32 = 256;
 
 /// Set in this process's environment when `--rt` was asked for, so the child
 /// processes (`spawn_child` execs this same binary) attempt the same policy.
-const RT_ENV: &str = "HORUS_BENCH_RT";
+///
+/// Deliberately not `HORUS_*`: that namespace is the product's environment
+/// contract (the docs reference scans for it), and this is a handshake inside
+/// one process tree, not an operator knob.
+const RT_ENV: &str = "BENCH_RT";
 
 /// SCHED_FIFO priority for the measuring process. Low enough to coexist with
 /// `horus setup-rt`'s 99 for actual nodes; high enough to outrank CFS.
@@ -216,7 +220,11 @@ const RT_PRIORITY: i32 = 10;
 /// `rtprio` limit — the caller records it in the JSON rather than aborting,
 /// because a shared-runner run is still a useful *delay* measurement.
 fn request_sched_fifo(priority: i32) -> Result<(), String> {
-    #[cfg(unix)]
+    // Linux only. macOS also has SCHED_FIFO, but its `libc::sched_param` has
+    // private fields and cannot be constructed here; the benchmark's real-time
+    // story is a Linux robot, so a refusal with a reason is the honest answer
+    // on other targets.
+    #[cfg(target_os = "linux")]
     {
         let param = libc::sched_param {
             sched_priority: priority,
@@ -232,10 +240,10 @@ fn request_sched_fifo(priority: i32) -> Result<(), String> {
             Err(std::io::Error::from_raw_os_error(rc).to_string())
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = priority;
-        Err("SCHED_FIFO is not available on this platform".to_string())
+        Err("SCHED_FIFO requests are implemented on Linux only".to_string())
     }
 }
 

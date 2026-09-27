@@ -110,7 +110,7 @@ pub enum Provenance {
 /// Every field is `#[serde(default)]` so JSON written before this existed still
 /// deserializes — as "no evidence", which [`Self::is_tail_valid`] reads as not
 /// quiet.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct MeasurementQuality {
     /// Whether the *measuring* process held `SCHED_FIFO` for the run.
@@ -128,17 +128,6 @@ pub struct MeasurementQuality {
     /// Involuntary context switches over the measured window. The benchmark's
     /// own warning calls this "the mechanism behind the far tail".
     pub involuntary_ctx_switches: u64,
-}
-
-impl Default for MeasurementQuality {
-    fn default() -> Self {
-        Self {
-            rt_granted: false,
-            isolated_cores: false,
-            voluntary_ctx_switches: 0,
-            involuntary_ctx_switches: 0,
-        }
-    }
 }
 
 impl MeasurementQuality {
@@ -189,10 +178,10 @@ pub fn isolcpus_cover(cpus: &[usize]) -> bool {
         let Ok(cmdline) = std::fs::read_to_string("/proc/cmdline") else {
             return false;
         };
-        return cmdline
+        cmdline
             .split_whitespace()
             .find_map(|token| token.strip_prefix("isolcpus="))
-            .is_some_and(|spec| parse_isolcpus(spec, cpus));
+            .is_some_and(|spec| parse_isolcpus(spec, cpus))
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -202,6 +191,8 @@ pub fn isolcpus_cover(cpus: &[usize]) -> bool {
 }
 
 /// `spec` is the value of `isolcpus=` (`2`, `2,4-7`, legacy `domain,2,4-7`).
+// Only the Linux branch of `isolcpus_cover` calls this; the tests cover it everywhere.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn parse_isolcpus(spec: &str, cpus: &[usize]) -> bool {
     if cpus.is_empty() {
         return false;
