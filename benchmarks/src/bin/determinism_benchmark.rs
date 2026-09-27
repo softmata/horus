@@ -46,7 +46,7 @@ use horus::prelude::Topic;
 use horus_benchmarks::{
     coefficient_of_variation, detect_platform, set_cpu_affinity, set_performance_governor,
     timing::PrecisionTimer, write_json_report, BenchmarkConfig, BenchmarkReport, BenchmarkResult,
-    DeterminismMetrics, Provenance, Statistics, ThroughputMetrics,
+    DeterminismMetrics, MeasurementQuality, Provenance, Statistics, ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
@@ -473,6 +473,10 @@ fn run_determinism_benchmark(
         statistics,
         throughput,
         determinism,
+        // No quiet-host evidence: this binary does not request SCHED_FIFO or
+        // record isolcpus coverage, so the gate treats its far tails as
+        // host-limited rather than transport figures. See `MeasurementQuality`.
+        measurement_quality: MeasurementQuality::default(),
     }
 }
 

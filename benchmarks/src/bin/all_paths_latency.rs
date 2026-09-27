@@ -63,7 +63,8 @@ use horus_benchmarks::set_cpu_affinity;
 use horus_benchmarks::stats::{count_zero_samples, Statistics, MIN_TAIL_EXCEEDANCES};
 use horus_benchmarks::timing::{rdtsc, rdtscp, serialize, PrecisionTimer, RdtscCalibration};
 use horus_benchmarks::{
-    BenchmarkConfig, BenchmarkResult, DeterminismMetrics, Provenance, ThroughputMetrics,
+    BenchmarkConfig, BenchmarkResult, DeterminismMetrics, MeasurementQuality, Provenance,
+    ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use horus_robotics::CmdVel;
@@ -2481,6 +2482,10 @@ fn write_json_output(
                 // asserted that there was none.
                 run_variance: f64::NAN,
             },
+            // No quiet-host evidence: this binary does not request SCHED_FIFO or
+            // record isolcpus coverage, so the gate treats its far tails as
+            // host-limited rather than transport figures. See `MeasurementQuality`.
+            measurement_quality: MeasurementQuality::default(),
         };
         report.add_result(result);
     }

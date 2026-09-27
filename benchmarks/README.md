@@ -106,6 +106,37 @@ echo 1 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo
 
 > Cross-process paced benchmarks (SpscShm, MpscShm) are heavily affected by OS scheduling under `powersave` governor. The `PodShm` broadcast path is least affected, since its readers do not block — a one-to-many POD topology resolves to `PodShm`, not `SpmcShm`, which is why no row above names the latter.
 
+### Host quietness: when a far tail is a transport figure
+
+The `p99.9`/`p99.99` numbers in a run are only comparable when the process that
+produced them could not be preempted. One involuntary context switch becomes a
+burst of samples that waited for the scheduler: on 2026-09-23, three
+repetitions of one trunk run measured `p99.9` at 27 µs / 1.9 µs / 16 µs with
+*identical* medians and `p99`s. `cross_process_benchmark` records the evidence
+next to the numbers (`measurement_quality` in the JSON: `rt_granted`,
+`isolated_cores`, voluntary/involuntary context switches), and
+`regression_gate` reports a far-tail excursion from a run without that evidence
+as host-limited instead of failing a build on it. The medians and `p99`s gate
+everywhere, because a preemption does not move them.
+
+For numbers that are going to be published:
+
+```bash
+# 1. Isolate the cores you will pin to on the kernel command line, e.g. cores
+#    2 and 3: `isolcpus=2,3` ... and reboot.
+
+# 2. Ask for real-time priority (needs CAP_SYS_NICE or an rtprio limit;
+#    `horus setup-rt` grants one).
+cargo run --release -p horus_benchmarks --bin cross_process_benchmark -- \
+  --cpus 2,3 --rt --require-quiet --json measured.json
+```
+
+`--require-quiet` exits non-zero unless every measured window was quiet, so a
+run that publishes numbers has proven the host did not produce them. Without
+it, a run on a shared machine is still a useful *delay* measurement — the
+medians and `p99`s are unaffected by preemption — but its far tails describe
+the host.
+
 ## License
 
 Apache-2.0
