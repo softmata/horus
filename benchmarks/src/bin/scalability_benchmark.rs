@@ -37,7 +37,8 @@
 use horus::prelude::Topic;
 use horus_benchmarks::{
     detect_platform, set_cpu_affinity, write_json_report, BenchmarkConfig, BenchmarkReport,
-    BenchmarkResult, DeterminismMetrics, Provenance, Statistics, ThroughputMetrics,
+    BenchmarkResult, DeterminismMetrics, MeasurementQuality, Provenance, Statistics,
+    ThroughputMetrics,
 };
 use horus_core::core::DurationExt;
 use serde::{Deserialize, Serialize};
@@ -502,6 +503,10 @@ fn run_scalability_test(
         statistics,
         throughput,
         determinism,
+        // No quiet-host evidence: this binary does not request SCHED_FIFO or
+        // record isolcpus coverage, so the gate treats its far tails as
+        // host-limited rather than transport figures. See `MeasurementQuality`.
+        measurement_quality: MeasurementQuality::default(),
     };
 
     (result, delivery_ratio)

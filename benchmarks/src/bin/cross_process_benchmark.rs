@@ -122,7 +122,7 @@ use horus_benchmarks::timing::{calibrate_rdtsc, rdtsc, rdtscp, serialize, RdtscC
 use horus_benchmarks::{
     calculate_percentile, coefficient_of_variation, detect_platform, set_cpu_affinity,
     write_json_report, BenchmarkConfig, BenchmarkReport, BenchmarkResult, DeterminismMetrics,
-    PlatformInfo, Provenance, Statistics, ThroughputMetrics,
+    MeasurementQuality, PlatformInfo, Provenance, Statistics, ThroughputMetrics,
 };
 use horus_core::communication::{Topic, TopicMessage};
 use serde::de::DeserializeOwned;
@@ -201,6 +201,51 @@ const DEFAULT_STREAM_ITERATIONS: usize = 200_000;
 /// function of the payload size rather than of the transport. Ring depth is a
 /// parameter of the experiment and is printed with every result.
 const RING_CAPACITY: u32 = 256;
+
+/// Set in this process's environment when `--rt` was asked for, so the child
+/// processes (`spawn_child` execs this same binary) attempt the same policy.
+///
+/// Deliberately not `HORUS_*`: that namespace is the product's environment
+/// contract (the docs reference scans for it), and this is a handshake inside
+/// one process tree, not an operator knob.
+const RT_ENV: &str = "BENCH_RT";
+
+/// SCHED_FIFO priority for the measuring process. Low enough to coexist with
+/// `horus setup-rt`'s 99 for actual nodes; high enough to outrank CFS.
+const RT_PRIORITY: i32 = 10;
+
+/// Ask the kernel for `SCHED_FIFO` on the calling thread.
+///
+/// `Err` carries the reason. Failing is normal without `CAP_SYS_NICE` or an
+/// `rtprio` limit — the caller records it in the JSON rather than aborting,
+/// because a shared-runner run is still a useful *delay* measurement.
+fn request_sched_fifo(priority: i32) -> Result<(), String> {
+    // Linux only. macOS also has SCHED_FIFO, but its `libc::sched_param` has
+    // private fields and cannot be constructed here; the benchmark's real-time
+    // story is a Linux robot, so a refusal with a reason is the honest answer
+    // on other targets.
+    #[cfg(target_os = "linux")]
+    {
+        let param = libc::sched_param {
+            sched_priority: priority,
+        };
+        // SAFETY: `param` is a correctly initialized `sched_param` and
+        // `pthread_self()` is the calling thread's handle. pthread_* return an
+        // errno value rather than setting errno.
+        let rc =
+            unsafe { libc::pthread_setschedparam(libc::pthread_self(), libc::SCHED_FIFO, &param) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::from_raw_os_error(rc).to_string())
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = priority;
+        Err("SCHED_FIFO requests are implemented on Linux only".to_string())
+    }
+}
 
 /// Publish interval for the paced-stream scenario. Flooding measures queueing
 /// delay, not wire latency — `all_paths_latency.rs:905` documents the same
@@ -1836,10 +1881,21 @@ fn statistics_from_sorted(sorted_ns: &[u64]) -> Statistics {
 ///
 /// The gate's identity for a row is `format!("{name}@{message_size}B")`, so
 /// `name` here is the published contract; see the module header.
+/// Host-quietness evidence for one scenario's measured window.
+fn scenario_quality(r: &ScenarioResult, rt_granted: bool) -> MeasurementQuality {
+    MeasurementQuality::from_window(
+        rt_granted,
+        &[r.cpu_a, r.cpu_b],
+        r.perturbation.nvcsw,
+        r.perturbation.nivcsw,
+    )
+}
+
 fn to_benchmark_result(
     r: &ScenarioResult,
     platform: &PlatformInfo,
     include_raw: bool,
+    rt_granted: bool,
 ) -> BenchmarkResult {
     let ns = &r.headline_ns_sorted;
     let statistics = statistics_from_sorted(ns);
@@ -1893,6 +1949,9 @@ fn to_benchmark_result(
         statistics,
         throughput,
         determinism,
+        // The evidence the gate needs to decide whether this row's far tail is
+        // a transport figure or the host's scheduler. See `MeasurementQuality`.
+        measurement_quality: scenario_quality(r, rt_granted),
     }
 }
 
@@ -2163,7 +2222,7 @@ fn usage() {
     println!("  cross_process_benchmark [--iterations N] [--stream-iterations N] [--warmup N]");
     println!("                          [--pace-ns N] [--cpus A,B] [--no-unpaced]");
     println!("                          [--json PATH] [--detail-json PATH] [--raw-dir DIR]");
-    println!("                          [--raw-in-json]");
+    println!("                          [--raw-in-json] [--rt] [--require-quiet]");
     println!();
     println!(
         "  --iterations N        ping-pong samples per payload size (default {DEFAULT_ITERATIONS})."
@@ -2186,6 +2245,21 @@ fn usage() {
         "  --raw-dir DIR        dump raw per-sample cycle counts as little-endian u64 arrays."
     );
     println!("  --raw-in-json        also embed the headline samples in --json (large).");
+    println!(
+        "  --rt                 ask for SCHED_FIFO on the measuring process (and the publishers)."
+    );
+    println!("                        Needs CAP_SYS_NICE or an rtprio limit; without it the run");
+    println!(
+        "                        continues and the JSON records rt_granted=false, so far tails"
+    );
+    println!("                        are reported as host-limited rather than transport figures.");
+    println!(
+        "  --require-quiet      exit non-zero (3) at the end unless every scenario's measured"
+    );
+    println!(
+        "                        window was quiet (RT or isolated cores, no involuntary switches)."
+    );
+    println!("                        For runs whose numbers are going to be published.");
 }
 
 fn main() {
@@ -2199,6 +2273,15 @@ fn main() {
         let bytes: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(64);
         if set_cpu_affinity(cpu).is_err() {
             eprintln!("[child {mode}] warning: could not pin to cpu{cpu}; this run is not a two-core measurement");
+        }
+        // The parent sets this when `--rt` was asked for. The publisher cannot
+        // cause a tail cluster by being preempted (a paused publisher pauses the
+        // stream; a paused consumer makes every message published meanwhile
+        // wait), but an RT publisher keeps the pair symmetric.
+        if std::env::var_os(RT_ENV).is_some() {
+            if let Err(why) = request_sched_fifo(RT_PRIORITY) {
+                eprintln!("[child {mode}] warning: SCHED_FIFO not granted to the publisher: {why}");
+            }
         }
         // No `unwrap_or` on the pace: 0 means FLOOD, so a silently-defaulted
         // parse failure would turn a paced latency run into a saturated-queue
@@ -2242,6 +2325,8 @@ fn main() {
     let mut raw_in_json = false;
     let mut run_unpaced = true;
     let mut cpu_override: Option<(usize, usize)> = None;
+    let mut rt = false;
+    let mut require_quiet = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -2293,6 +2378,14 @@ fn main() {
                 run_unpaced = false;
                 i += 1;
             }
+            "--rt" => {
+                rt = true;
+                i += 1;
+            }
+            "--require-quiet" => {
+                require_quiet = true;
+                i += 1;
+            }
             "--cpus" => {
                 if let Some(v) = args.get(i + 1) {
                     let parts: Vec<&str> = v.split(',').collect();
@@ -2311,6 +2404,29 @@ fn main() {
             _ => i += 1,
         }
     }
+    // `--rt`: ask for SCHED_FIFO before anything is measured, and tell the
+    // children to do the same (`RT_ENV`). A refusal is recorded, not fatal:
+    // the JSON carries `rt_granted=false`, and the gate reports far tails from
+    // such a run as host-limited instead of treating them as transport figures.
+    let rt_granted = if rt {
+        std::env::set_var(RT_ENV, "1");
+        match request_sched_fifo(RT_PRIORITY) {
+            Ok(()) => {
+                println!("[rt] SCHED_FIFO priority {RT_PRIORITY} granted to the measuring process");
+                true
+            }
+            Err(why) => {
+                println!(
+                    "[rt] SCHED_FIFO denied: {why} — continuing; far tails from this run will be \
+                     reported as host-limited. `horus setup-rt` (or an rtprio limit) grants it."
+                );
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     if iterations == 0 {
         iterations = DEFAULT_ITERATIONS;
     }
@@ -2617,7 +2733,7 @@ fn main() {
     if let Some(path) = &json_path {
         let mut report = BenchmarkReport::new(platform.clone());
         for r in &scenarios {
-            report.add_result(to_benchmark_result(r, &platform, raw_in_json));
+            report.add_result(to_benchmark_result(r, &platform, raw_in_json, rt_granted));
         }
         match write_json_report(&report, path) {
             Ok(()) => {
@@ -2647,6 +2763,42 @@ fn main() {
             }
             Err(e) => eprintln!("\nfailed to write {path}: {e}"),
         }
+    }
+
+    // `--require-quiet`: a run whose numbers are going to be published has to
+    // be able to prove its far tails describe the transport. The check runs
+    // after everything is printed and written so the evidence stays available.
+    if require_quiet {
+        let host_limited: Vec<String> = scenarios
+            .iter()
+            .filter(|r| !scenario_quality(r, rt_granted).is_tail_valid())
+            .map(|r| {
+                format!(
+                    "  {}@{}B: {}",
+                    r.metric_key,
+                    r.message_bytes,
+                    scenario_quality(r, rt_granted).tail_invalid_reason()
+                )
+            })
+            .collect();
+        if !host_limited.is_empty() {
+            eprintln!(
+                "\n--require-quiet: {} scenario(s) were measured on a host that cannot support a \
+                 far-tail claim:",
+                host_limited.len()
+            );
+            for line in &host_limited {
+                eprintln!("{line}");
+            }
+            eprintln!(
+                "  Grant SCHED_FIFO (`--rt`, via `horus setup-rt`) or isolate the pinned cores \
+                 (`isolcpus=`), then re-run. Exiting 3."
+            );
+            std::process::exit(3);
+        }
+        println!(
+            "\n--require-quiet: every measured window was quiet; tails describe the transport."
+        );
     }
 
     // Full report: everything the gate schema cannot carry.
