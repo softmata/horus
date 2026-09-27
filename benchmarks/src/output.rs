@@ -1043,17 +1043,39 @@ impl BaselineHistory {
 
             if gross {
                 cmp.verdict = Verdict::GrossRegression;
-                // A single-sample metric cannot block. See
-                // `MetricPolicy::single_sample`: `max` is the worst one
-                // observation of the run, so this ratio compares two single
-                // observations and no multiple of it rules out the runner.
-                cmp.blocking = !mp.single_sample;
+                // Two things a gross multiplier cannot do on its own here:
+                //
+                // - A single-sample metric cannot block. See
+                //   `MetricPolicy::single_sample`: `max` is the worst one
+                //   observation of the run, so this ratio compares two single
+                //   observations and no multiple of it rules out the runner.
+                // - Neither can a report-only metric on a FALLBACK band. The
+                //   multiplier claims "past this, no runner-side effect explains
+                //   it", and that calibration comes from the window's measured
+                //   spread. A fallback band has none — it is 2x the center of
+                //   however few runs exist. On 2026-09-23 a trunk run blocked on
+                //   p99.9 at 8.3x the center of a 3-run baseline while the
+                //   median and p99 both got FASTER; the same benchmark's p99.9
+                //   has measured 1.15x-8x its center on this runner. Metrics the
+                //   policy blocks on are unchanged: a median 10x its center is
+                //   not a draw at any window size, and the same tail blocks as
+                //   before once the window can measure its spread.
+                cmp.blocking = !mp.single_sample
+                    && (source != BandSource::Fallback || mp.enforcement == Enforcement::Blocking);
                 cmp.note = Some(if mp.single_sample {
                     format!(
                         "{:.1}x the baseline center, but this metric is a single \
                          observation — one descheduled sample produces any multiple, \
                          so it is reported and not blocking. Check the median and \
                          percentiles above: a real regression moves those too",
+                        current / center
+                    )
+                } else if source == BandSource::Fallback {
+                    format!(
+                        "{:.1}x the baseline center, but the window has too few runs to \
+                         measure this metric's spread (a fallback band is 2x the center, \
+                         not a measured one) — reported, not blocking. It blocks once \
+                         the window is mature",
                         current / center
                     )
                 } else {
@@ -2527,6 +2549,57 @@ mod tests {
             report.has_blocking_regressions(),
             "a 100x far-tail excursion is past anything a runner explains and must block"
         );
+    }
+
+    /// 2026-09-23: a trunk run failed on
+    /// `Topic_cross_process_unpaced_queue_delay@64B` — p99.9 at 8.3x the center
+    /// of a **3-run** baseline, with the median and p99 untouched.
+    ///
+    /// A Fallback band is 2x the center of however few runs exist; it is not a
+    /// measured spread, so the gross multiplier's calibration ("past 6x no
+    /// runner-side effect explains it") has nothing to stand on. The excursion
+    /// must still be REPORTED; it must not fail the build on its own.
+    #[test]
+    fn a_gross_tail_on_a_fallback_window_is_reported_but_not_blocking() {
+        let history = window(3, &[215.0, 218.0, 212.0]);
+        let mut shape = Shape::healthy(215.0);
+        // The ratio the failing run measured, against a healthy tail for this
+        // median. Median and p99 stay exactly where they were.
+        shape.p999 = (shape.p999 as f64 * 8.3) as u64;
+        let current = report_with(&shape);
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        let p999 = report.comparisons[0].metric(Metric::P999).unwrap();
+        assert_eq!(p999.band_source, BandSource::Fallback);
+        assert_eq!(
+            p999.verdict,
+            Verdict::GrossRegression,
+            "a tail excursion this far out is still reported"
+        );
+        assert!(
+            !p999.blocking,
+            "a 3-run window cannot support a blocking tail verdict: {p999:?}"
+        );
+        assert!(!report.has_blocking_regressions());
+    }
+
+    /// The other half of the contract: once the window has described the
+    /// metric's spread, the same excursion blocks as before.
+    #[test]
+    fn the_same_tail_blocks_once_the_window_can_measure_it() {
+        let history = window(5, &[215.0, 218.0, 212.0, 216.0, 214.0]);
+        let mut shape = Shape::healthy(215.0);
+        shape.p999 = (shape.p999 as f64 * 8.3) as u64;
+        let current = report_with(&shape);
+        let report = history.compare(&[&current], &RegressionPolicy::default());
+
+        let p999 = report.comparisons[0].metric(Metric::P999).unwrap();
+        assert_ne!(p999.band_source, BandSource::Fallback);
+        assert!(
+            p999.blocking,
+            "a measured window keeps the gross multiplier: {p999:?}"
+        );
+        assert!(report.has_blocking_regressions());
     }
 
     #[test]
