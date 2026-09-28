@@ -62,7 +62,7 @@ libc = "0.2"
 rand = "0.9"
 chrono = { workspace = true }
 num_cpus = "1.16"
-iceoryx2 = { version = "0.9", optional = true }
+iceoryx2 = { version = "0.10", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
